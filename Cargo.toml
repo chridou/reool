@@ -1,0 +1,17 @@
+[package]
+name = "reool"
+version = "0.1.0"
+authors = ["chridou <chridou@users.noreply.github.com>"]
+edition = "2018"
+
+[dependencies]
+log = "0.4"
+parking_lot = "0.7"
+futures = "0.1"
+tokio = "0.1"
+tokio-timer = "0.2"
+redis = "0.10"
+rand = "0.6"
+
+[dev-dependencies]
+pretty_env_logger = "0.3.0"
