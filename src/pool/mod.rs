@@ -76,9 +76,16 @@ impl BackoffStrategy {
         };
         if with_jitter {
             let ms = backoff.as_millis() as u64;
-            let twenty_percent = ms / 5;
-            let effective_jitter = std::cmp::min(twenty_percent, 100);
-            if effective_jitter >= 2 {
+            let effective_jitter = if ms >= 100 {
+                let twenty_percent = ms / 5;
+                std::cmp::min(twenty_percent, 3_000)
+            } else if ms == 1 {
+                1
+            } else {
+                ms / 3
+            };
+
+            if effective_jitter >= 1 {
                 let mut rng = rand::thread_rng();
                 let jitter = rng.gen_range(0, effective_jitter);
                 Some(backoff + Duration::from_millis(jitter))

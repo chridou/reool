@@ -46,7 +46,7 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
 
     let pool = Pool::new(Config::default().max_pool_size(1), UnitFactory, executor);
 
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(Duration::from_millis(20));
 
     assert_eq!(1, pool.usable_connections());
 
