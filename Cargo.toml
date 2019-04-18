@@ -1,7 +1,14 @@
 [package]
 name = "reool"
 version = "0.1.0"
-authors = ["chridou <chridou@users.noreply.github.com>"]
+authors = ["Christian Douven <chridou@users.noreply.github.com>"]
+readme = "README.md"
+license = "Apache-2.0/MIT"
+description = "An asynchrounous connection pool for Redis based on tokio and redis-rs"
+documentation = "https://docs.rs/reool"
+homepage = "https://github.com/chridou/reool"
+repository = "https://github.com/chridou/reool"
+keywords = ["redis", "connection", "connection-pool", "tokio"]
 edition = "2018"
 
 [dependencies]
