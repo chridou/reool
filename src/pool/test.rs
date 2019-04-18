@@ -28,13 +28,14 @@ fn given_a_runtime_the_pool_can_be_created() {
 
     let fut = future::lazy(|| {
         Ok::<_, ()>(Pool::new(
-            Config::default().max_pool_size(1),
+            Config::default().pool_size(1),
             UnitFactory,
             ExecutorFlavour::runtime(),
         ))
     });
 
     runtime.block_on(fut).unwrap();
+
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
@@ -44,11 +45,14 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
 
-    let pool = Pool::new(Config::default().max_pool_size(1), UnitFactory, executor);
+    let pool = Pool::new(Config::default().pool_size(1), UnitFactory, executor);
 
     thread::sleep(Duration::from_millis(20));
 
-    assert_eq!(1, pool.usable_connections());
+    assert_eq!(1, pool.stats().pool_size, "pool_size");
+    assert_eq!(1, pool.stats().idle, "idle");
+    assert_eq!(0, pool.stats().in_flight, "in_flight");
+    assert_eq!(0, pool.stats().waiting, "waiting");
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
@@ -62,7 +66,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 
     let pool = Pool::new(
         Config::default()
-            .max_pool_size(2)
+            .pool_size(2)
             .backoff_strategy(BackoffStrategy::Constant {
                 fixed: Duration::from_millis(1),
                 jitter: false,
@@ -73,7 +77,10 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 
     thread::sleep(Duration::from_millis(10));
 
-    assert_eq!(0, pool.usable_connections());
+    assert_eq!(0, pool.stats().pool_size, "pool_size");
+    assert_eq!(0, pool.stats().idle, "idle");
+    assert_eq!(0, pool.stats().in_flight, "in_flight");
+    assert_eq!(0, pool.stats().waiting, "waiting");
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
@@ -84,7 +91,7 @@ fn checkout_one() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
-    let config = Config::default().max_pool_size(1);
+    let config = Config::default().pool_size(1);
 
     let pool = Pool::new(config.clone(), U32Factory::default(), executor);
 
@@ -92,6 +99,13 @@ fn checkout_one() {
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 0);
+
+    thread::sleep(Duration::from_millis(20));
+
+    assert_eq!(1, pool.stats().pool_size, "pool_size");
+    assert_eq!(1, pool.stats().idle, "idle");
+    assert_eq!(0, pool.stats().in_flight, "in_flight");
+    assert_eq!(0, pool.stats().waiting, "waiting");
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
@@ -102,7 +116,7 @@ fn checkout_twice_with_one_not_reusable() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
-    let config = Config::default().max_pool_size(1);
+    let config = Config::default().pool_size(1);
 
     let pool = Pool::new(config.clone(), U32Factory::default(), executor);
 
@@ -128,7 +142,7 @@ fn with_empty_pool_checkout_returns_no_connection() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
-    let config = Config::default().max_pool_size(0);
+    let config = Config::default().pool_size(0);
 
     let pool = Pool::new(config.clone(), U32Factory::default(), executor);
 
@@ -146,7 +160,7 @@ fn create_connection_fails_some_times() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
-    let config = Config::default().max_pool_size(1);
+    let config = Config::default().pool_size(1);
 
     let pool = Pool::new(
         config.clone(),
