@@ -125,6 +125,7 @@ impl Default for BackoffStrategy {
 pub struct Config {
     pub pool_size: usize,
     pub backoff_strategy: BackoffStrategy,
+    pub wait_queue_limit: Option<usize>,
 }
 
 impl Config {
@@ -137,6 +138,11 @@ impl Config {
         self.backoff_strategy = v;
         self
     }
+
+    pub fn wait_queue_limit(mut self, v: Option<usize>) -> Self {
+        self.wait_queue_limit = v;
+        self
+    }
 }
 
 impl Default for Config {
@@ -144,6 +150,7 @@ impl Default for Config {
         Self {
             pool_size: 20,
             backoff_strategy: BackoffStrategy::default(),
+            wait_queue_limit: Some(50),
         }
     }
 }
@@ -208,7 +215,7 @@ where
         self.inner_pool.checkout(timeout)
     }
 
-    pub fn create_new_poolable_conn(&self) -> NewConnFuture<NewConn<T>> {
+    pub(crate) fn create_new_poolable_conn(&self) -> NewConnFuture<NewConn<T>> {
         create_new_poolable_conn(
             Instant::now(),
             self.connection_factory.clone(),
@@ -219,13 +226,7 @@ where
     }
 
     pub fn stats(&self) -> PoolStats {
-        let inner_stats = self.inner_pool.stats();
-        PoolStats {
-            pool_size: inner_stats.pool_size,
-            in_flight: inner_stats.in_flight,
-            waiting: inner_stats.waiting,
-            idle: inner_stats.idle,
-        }
+        self.inner_pool.stats()
     }
 }
 
@@ -249,7 +250,7 @@ where
     trace!("create new conn");
     if let Some(existing_inner_pool) = inner_pool.upgrade() {
         let inner_pool = Arc::downgrade(&existing_inner_pool);
-        drop(existing_inner_pool);
+        //drop(existing_inner_pool);
         let start_connect = Instant::now();
         let fut = connection_factory
             .create_connection()
@@ -266,6 +267,10 @@ where
                     },
                 })),
                 Err(err) => {
+                    inner_pool
+                        .upgrade()
+                        .into_iter()
+                        .for_each(|p| p.notify_conn_factory_failed());
                     if let Some(backoff) = back_off_strategy.get_next_backoff(attempt) {
                         let delay = Delay::new(Instant::now() + backoff);
                         warn!(
@@ -338,9 +343,7 @@ fn start_new_conn_stream<T, C>(
                             1,
                         )
                         .map(|_| ())
-                        .map_err(|err| {
-                            warn!("Failed to create new connection: {}", err);
-                        });
+                        .map_err(|err| warn!("Failed to create new connection: {}", err));
                         executor_a.execute(fut).map_err(|err| {
                             warn!("Failed to execute task for new connection: {}", err);
                             is_shut_down = true;
@@ -430,16 +433,16 @@ impl<T: Poolable> Drop for Managed<T> {
     }
 }
 
-pub struct CheckedOut<T: Poolable> {
+pub(crate) struct CheckedOut<T: Poolable> {
     pub managed: Managed<T>,
 }
 
-pub enum NewConnMessage {
+pub(crate) enum NewConnMessage {
     RequestNewConn,
     Shutdown,
 }
 
-pub struct NewConn<T: Poolable> {
+pub(crate) struct NewConn<T: Poolable> {
     /// the time it took to connect to the backend on success
     connect_time: Duration,
     /// The time for the whole creation process including retries

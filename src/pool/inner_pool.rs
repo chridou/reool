@@ -10,15 +10,8 @@ use log::{debug, error, trace};
 use parking_lot::Mutex;
 use tokio_timer::Timeout;
 
-use super::{CheckedOut, Checkout, Config, Managed, NewConnMessage, Poolable, Waiting};
+use super::{CheckedOut, Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable, Waiting};
 use crate::error::{Error, ErrorKind};
-
-pub(crate) struct InnerPoolStats {
-    pub pool_size: usize,
-    pub in_flight: usize,
-    pub waiting: usize,
-    pub idle: usize,
-}
 
 pub(crate) struct InnerPool<T: Poolable> {
     pool_size: AtomicUsize,
@@ -28,6 +21,7 @@ pub(crate) struct InnerPool<T: Poolable> {
     idle: Mutex<VecDeque<Managed<T>>>,
     waiting: Mutex<VecDeque<Waiting<T>>>,
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
+    config: Config,
 }
 
 impl<T> InnerPool<T>
@@ -46,10 +40,11 @@ where
             idle: Mutex::new(idle),
             waiting: Mutex::new(waiting),
             request_new_conn,
+            config,
         }
     }
 
-    pub fn put(&self, managed: Managed<T>) {
+    pub(super) fn put(&self, managed: Managed<T>) {
         trace!("put managed");
         if let Some(takeoff_at) = managed.takeoff_at {
             self.notify_returned(takeoff_at.elapsed());
@@ -74,53 +69,7 @@ where
         }
     }
 
-    pub fn notify_takeoff(&self) {
-        self.in_flight_connections.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn notify_returned(&self, _flight_time: Duration) {
-        self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
-    }
-
-    pub fn notify_not_returned(&self, _flight_time: Duration) {
-        self.pool_size.fetch_sub(1, Ordering::SeqCst);
-        self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
-    }
-
-    pub fn notify_idle_conns(&self, v: usize) {
-        self.idle_connections.store(v, Ordering::SeqCst);
-    }
-
-    pub fn notify_new_connection(&self) {
-        self.pool_size.fetch_add(1, Ordering::SeqCst);
-    }
-
-    pub fn notify_created(&self, _connected_after: Duration, _total_time: Duration) {}
-
-    pub fn notify_killed(&self, _lifetime: Duration) {
-        self.pool_size.fetch_sub(1, Ordering::SeqCst);
-    }
-
-    pub fn notify_waiting_queue_length(&self, len: usize) {
-        self.waiting_for_checkout.store(len, Ordering::SeqCst);
-    }
-
-    fn notify_waiting(&self) {}
-
-    pub fn notify_fulfilled(&self, _after: Duration) {}
-
-    pub fn notify_not_fulfilled(&self, _after: Duration) {}
-
-    pub fn stats(&self) -> InnerPoolStats {
-        InnerPoolStats {
-            pool_size: self.pool_size.load(Ordering::SeqCst),
-            in_flight: self.in_flight_connections.load(Ordering::SeqCst),
-            waiting: self.waiting_for_checkout.load(Ordering::SeqCst),
-            idle: self.idle_connections.load(Ordering::SeqCst),
-        }
-    }
-
-    pub fn checkout(&self, timeout: Option<Duration>) -> Checkout<T> {
+    pub(super) fn checkout(&self, timeout: Option<Duration>) -> Checkout<T> {
         if let Some(mut managed) = {
             let mut idle = self.idle.lock();
             let taken = idle.pop_front();
@@ -131,15 +80,23 @@ where
             self.notify_takeoff();
             Checkout::new(future::ok(managed.into()))
         } else {
-            trace!("no immediate connection - enqueue for checkout");
-            let (tx, rx) = oneshot::channel();
-            let waiting = Waiting::checkout(tx);
-            {
+            let rx = {
                 let mut all_waiting = self.waiting.lock();
+                if let Some(wait_queue_limit) = self.config.wait_queue_limit {
+                    if all_waiting.len() > wait_queue_limit {
+                        trace!("wait queue limit reached - no connection");
+                        self.notify_queue_limit_reached();
+                        return Checkout::new(future::err(Error::new(ErrorKind::NoConnection)));
+                    }
+                    trace!("no immediate connection - enqueue for checkout");
+                }
+                let (tx, rx) = oneshot::channel();
+                let waiting = Waiting::checkout(tx);
                 all_waiting.push_back(waiting);
                 self.notify_waiting();
                 self.notify_waiting_queue_length(all_waiting.len());
-            }
+                rx
+            };
             let fut = rx
                 .map(From::from)
                 .map_err(|err| Error::with_cause(ErrorKind::NoConnection, err));
@@ -153,7 +110,7 @@ where
         }
     }
 
-    pub fn request_new_conn(&self) {
+    pub(super) fn request_new_conn(&self) {
         if let Err(_) = self
             .request_new_conn
             .unbounded_send(NewConnMessage::RequestNewConn)
@@ -162,12 +119,62 @@ where
         }
     }
 
-    pub fn remove_conn(&self) {
+    pub(super) fn remove_conn(&self) {
         if let Some(mut managed) = { self.idle.lock().pop_front() } {
             managed.marked_for_kill = true;
         } else {
             trace!("no immediate connection - enqueue for kill");
             self.waiting.lock().push_back(Waiting::reduce_pool_size());
+        }
+    }
+
+    pub(super) fn notify_takeoff(&self) {
+        self.in_flight_connections.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn notify_returned(&self, _flight_time: Duration) {
+        self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub(super) fn notify_not_returned(&self, _flight_time: Duration) {
+        self.pool_size.fetch_sub(1, Ordering::SeqCst);
+        self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn notify_idle_conns(&self, v: usize) {
+        self.idle_connections.store(v, Ordering::SeqCst);
+    }
+
+    fn notify_new_connection(&self) {
+        self.pool_size.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(super) fn notify_created(&self, _connected_after: Duration, _total_time: Duration) {}
+
+    pub(super) fn notify_killed(&self, _lifetime: Duration) {
+        self.pool_size.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn notify_waiting_queue_length(&self, len: usize) {
+        self.waiting_for_checkout.store(len, Ordering::SeqCst);
+    }
+
+    fn notify_waiting(&self) {}
+
+    pub(super) fn notify_fulfilled(&self, _after: Duration) {}
+
+    pub(super) fn notify_not_fulfilled(&self, _after: Duration) {}
+
+    pub(super) fn notify_conn_factory_failed(&self) {}
+
+    fn notify_queue_limit_reached(&self) {}
+
+    pub fn stats(&self) -> PoolStats {
+        PoolStats {
+            pool_size: self.pool_size.load(Ordering::SeqCst),
+            in_flight: self.in_flight_connections.load(Ordering::SeqCst),
+            waiting: self.waiting_for_checkout.load(Ordering::SeqCst),
+            idle: self.idle_connections.load(Ordering::SeqCst),
         }
     }
 }
