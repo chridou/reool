@@ -17,6 +17,7 @@ mod node_pool;
 mod pool;
 mod pooled_connection;
 
+pub use backoff_strategy::BackoffStrategy;
 pub use commands::*;
 pub use node_pool::*;
 

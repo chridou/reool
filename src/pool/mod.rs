@@ -54,11 +54,11 @@ impl Default for Config {
     }
 }
 
-pub(crate) struct PoolStats {
-    pool_size: usize,
-    in_flight: usize,
-    waiting: usize,
-    idle: usize,
+pub struct PoolStats {
+    pub pool_size: usize,
+    pub in_flight: usize,
+    pub waiting: usize,
+    pub idle: usize,
 }
 
 pub(crate) struct Pool<T: Poolable> {
