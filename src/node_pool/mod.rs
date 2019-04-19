@@ -114,6 +114,7 @@ impl Default for Config {
     }
 }
 
+#[derive(Clone)]
 pub struct SingleNodePool {
     pool: Arc<Pool<Connection>>,
     checkout_timeout: Option<Duration>,

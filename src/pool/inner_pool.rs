@@ -45,7 +45,7 @@ where
     }
 
     pub(super) fn put(&self, managed: Managed<T>) {
-        trace!("put managed");
+        trace!("put");
         if let Some(takeoff_at) = managed.takeoff_at {
             self.notify_returned(takeoff_at.elapsed());
         } else {
@@ -76,6 +76,7 @@ where
             self.notify_idle_conns(idle.len());
             taken
         } {
+            trace!("checkout idle");
             managed.takeoff_at = Some(Instant::now());
             self.notify_takeoff();
             Checkout::new(future::ok(managed.into()))

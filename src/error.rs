@@ -2,6 +2,8 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::result::Result as StdResult;
 
+use redis::{ErrorKind as RedisErrorKind, RedisError};
+
 pub type Result<T> = StdResult<T, Error>;
 pub type InitializationResult<T> = StdResult<T, InitializationError>;
 
@@ -57,6 +59,12 @@ impl StdError for Error {
 
     fn cause(&self) -> Option<&StdError> {
         self.cause.as_ref().map(|cause| &**cause as &StdError)
+    }
+}
+
+impl From<Error> for RedisError {
+    fn from(error: Error) -> Self {
+        (RedisErrorKind::IoError, "reool error", error.to_string()).into()
     }
 }
 

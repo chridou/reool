@@ -27,6 +27,7 @@ pub(crate) struct Config {
     pub wait_queue_limit: Option<usize>,
 }
 
+#[cfg(test)]
 impl Config {
     pub fn desired_pool_size(mut self, v: usize) -> Self {
         self.desired_pool_size = v;
@@ -54,6 +55,7 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PoolStats {
     pub pool_size: usize,
     pub in_flight: usize,
@@ -265,13 +267,13 @@ fn start_new_conn_stream<T, C>(
 }
 
 pub(crate) struct Checkout<T: Poolable> {
-    inner: Box<Future<Item = Managed<T>, Error = Error>>,
+    inner: Box<Future<Item = Managed<T>, Error = Error> + Send + 'static>,
 }
 
 impl<T: Poolable> Checkout<T> {
     pub fn new<F>(fut: F) -> Self
     where
-        F: Future<Item = Managed<T>, Error = Error> + 'static,
+        F: Future<Item = Managed<T>, Error = Error> + Send + 'static,
     {
         Self {
             inner: Box::new(fut),
@@ -327,7 +329,7 @@ impl<T: Poolable> Drop for Managed<T> {
                 inner_pool.request_new_conn();
             }
         } else {
-            debug!("terminating connection because the pool is gone")
+            trace!("terminating connection because the pool is gone")
         }
     }
 }

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures::future::{self, Future};
 use pretty_env_logger;
-use tokio::runtime::{current_thread, Runtime};
+use tokio::runtime::Runtime;
 use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
@@ -17,7 +17,7 @@ use crate::pool::{Config, ConnectionFactory, NewConnFuture, NewConnectionError, 
 #[test]
 #[should_panic]
 fn given_no_runtime_the_pool_can_not_be_created() {
-    let _pool = Pool::new(Config::default(), UnitFactory, ExecutorFlavour::runtime());
+    let _pool = Pool::new(Config::default(), UnitFactory, ExecutorFlavour::Runtime);
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn given_a_runtime_the_pool_can_be_created() {
         Ok::<_, ()>(Pool::new(
             Config::default().desired_pool_size(1),
             UnitFactory,
-            ExecutorFlavour::runtime(),
+            ExecutorFlavour::Runtime,
         ))
     });
 

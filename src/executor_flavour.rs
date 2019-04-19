@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use futures::{future::Future, stream::Stream, sync::mpsc};
 use log::warn;
 use tokio::executor::{DefaultExecutor, Executor};
@@ -13,12 +11,6 @@ pub enum ExecutorFlavour {
     Runtime,
     TokioTaskExecutor(TaskExecutor),
     TokioHandle(Handle),
-}
-
-impl ExecutorFlavour {
-    pub fn runtime() -> Self {
-        ExecutorFlavour::Runtime
-    }
 }
 
 impl ExecutorFlavour {
@@ -40,8 +32,10 @@ impl ExecutorFlavour {
                 Ok(())
             }
             ExecutorFlavour::TokioHandle(executor) => {
-                executor.spawn(Box::new(task));
-                Ok(())
+                executor.spawn(Box::new(task)).map_err(|err| {
+                    warn!("default executor failed to execute a task: {:?}", err);
+                    Error::with_cause(ErrorKind::TaskExecution, err)
+                })
             }
         }
     }
