@@ -3,6 +3,7 @@ use std::fmt;
 use std::result::Result as StdResult;
 
 pub type Result<T> = StdResult<T, Error>;
+pub type InitializationResult<T> = StdResult<T, InitializationError>;
 
 #[derive(Debug)]
 pub struct Error {
@@ -56,5 +57,34 @@ impl StdError for Error {
 
     fn cause(&self) -> Option<&StdError> {
         self.cause.as_ref().map(|cause| &**cause as &StdError)
+    }
+}
+
+#[derive(Debug)]
+pub struct InitializationError {
+    cause: Box<StdError + Send + Sync>,
+}
+
+impl InitializationError {
+    pub fn new<E: StdError + Send + Sync + 'static>(cause: E) -> Self {
+        Self {
+            cause: Box::new(cause),
+        }
+    }
+}
+
+impl fmt::Display for InitializationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}: {}", self.description(), self.cause)
+    }
+}
+
+impl StdError for InitializationError {
+    fn description(&self) -> &str {
+        "initialization failed"
+    }
+
+    fn cause(&self) -> Option<&StdError> {
+        Some(&*self.cause)
     }
 }

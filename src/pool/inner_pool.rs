@@ -10,7 +10,7 @@ use log::{debug, error, trace};
 use parking_lot::Mutex;
 use tokio_timer::Timeout;
 
-use super::{CheckedOut, Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable, Waiting};
+use super::{Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable, Waiting};
 use crate::error::{Error, ErrorKind};
 
 pub(crate) struct InnerPool<T: Poolable> {
@@ -29,7 +29,7 @@ where
     T: Poolable,
 {
     pub fn new(config: Config, request_new_conn: mpsc::UnboundedSender<NewConnMessage>) -> Self {
-        let idle = VecDeque::with_capacity(config.pool_size);
+        let idle = VecDeque::with_capacity(config.desired_pool_size);
         let waiting = VecDeque::new();
 
         Self {
@@ -182,11 +182,5 @@ where
 impl<T: Poolable> Drop for InnerPool<T> {
     fn drop(&mut self) {
         debug!("inner pool dropped");
-    }
-}
-
-impl<T: Poolable> From<Managed<T>> for CheckedOut<T> {
-    fn from(managed: Managed<T>) -> Self {
-        CheckedOut { managed }
     }
 }

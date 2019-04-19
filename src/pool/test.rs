@@ -9,11 +9,10 @@ use pretty_env_logger;
 use tokio::runtime::{current_thread, Runtime};
 use tokio_timer::Delay;
 
+use crate::backoff_strategy::BackoffStrategy;
 use crate::error::ErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
-use crate::pool::{
-    BackoffStrategy, Config, ConnectionFactory, NewConnFuture, NewConnectionError, Pool, Poolable,
-};
+use crate::pool::{Config, ConnectionFactory, NewConnFuture, NewConnectionError, Pool, Poolable};
 
 #[test]
 #[should_panic]
@@ -28,7 +27,7 @@ fn given_a_runtime_the_pool_can_be_created() {
 
     let fut = future::lazy(|| {
         Ok::<_, ()>(Pool::new(
-            Config::default().pool_size(1),
+            Config::default().desired_pool_size(1),
             UnitFactory,
             ExecutorFlavour::runtime(),
         ))
@@ -45,7 +44,11 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
 
-    let pool = Pool::new(Config::default().pool_size(1), UnitFactory, executor);
+    let pool = Pool::new(
+        Config::default().desired_pool_size(1),
+        UnitFactory,
+        executor,
+    );
 
     thread::sleep(Duration::from_millis(20));
 
@@ -66,7 +69,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 
     let pool = Pool::new(
         Config::default()
-            .pool_size(2)
+            .desired_pool_size(2)
             .backoff_strategy(BackoffStrategy::Constant {
                 fixed: Duration::from_millis(1),
                 jitter: false,
@@ -91,11 +94,11 @@ fn checkout_one() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
-    let config = Config::default().pool_size(1);
+    let config = Config::default().desired_pool_size(1);
 
     let pool = Pool::new(config.clone(), U32Factory::default(), executor);
 
-    let checked_out = pool.checkout(None).map(|c| c.managed.value.unwrap());
+    let checked_out = pool.checkout(None).map(|c| c.value.unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 0);
@@ -116,19 +119,17 @@ fn checkout_twice_with_one_not_reusable() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
-    let config = Config::default().pool_size(1);
+    let config = Config::default().desired_pool_size(1);
 
     let pool = Pool::new(config.clone(), U32Factory::default(), executor);
 
     // We do not return the con with managed
-    let checked_out = pool
-        .checkout(None)
-        .map(|mut c| c.managed.value.take().unwrap());
+    let checked_out = pool.checkout(None).map(|mut c| c.value.take().unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.checkout(None).map(|c| c.managed.value.unwrap());
+    let checked_out = pool.checkout(None).map(|c| c.value.unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 1);
@@ -142,7 +143,7 @@ fn with_empty_pool_checkout_returns_no_connection() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
-    let config = Config::default().pool_size(0);
+    let config = Config::default().desired_pool_size(0);
 
     let pool = Pool::new(config.clone(), U32Factory::default(), executor);
 
@@ -160,7 +161,7 @@ fn create_connection_fails_some_times() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
-    let config = Config::default().pool_size(1);
+    let config = Config::default().desired_pool_size(1);
 
     let pool = Pool::new(
         config.clone(),
@@ -168,14 +169,12 @@ fn create_connection_fails_some_times() {
         executor,
     );
 
-    let checked_out = pool
-        .checkout(None)
-        .map(|mut c| c.managed.value.take().unwrap());
+    let checked_out = pool.checkout(None).map(|mut c| c.value.take().unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 4);
 
-    let checked_out = pool.checkout(None).map(|c| c.managed.value.unwrap());
+    let checked_out = pool.checkout(None).map(|c| c.value.unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 8);
