@@ -39,10 +39,10 @@ impl Config {
         self
     }
 
-    pub fn wait_queue_limit(mut self, v: Option<usize>) -> Self {
+    /*pub fn wait_queue_limit(mut self, v: Option<usize>) -> Self {
         self.wait_queue_limit = v;
         self
-    }
+    }*/
 }
 
 impl Default for Config {
@@ -68,6 +68,7 @@ pub(crate) struct Pool<T: Poolable> {
     inner_pool: Arc<InnerPool<T>>,
     new_con_tx: mpsc::UnboundedSender<NewConnMessage>,
     backoff_strategy: BackoffStrategy,
+    executor: ExecutorFlavour,
 }
 
 impl<T> Pool<T>
@@ -98,16 +99,10 @@ where
             inner_pool,
             new_con_tx,
             backoff_strategy: config.backoff_strategy,
+            executor,
         };
 
-        (0..num_connections).for_each(|_| {
-            let fut = pool.create_new_poolable_conn().map(|_| ()).map_err(|err| {
-                warn!("Failed to create initial connection: {}", err);
-            });
-            if let Err(err) = executor.execute(fut) {
-                warn!("Failed to execute task for initial connection: {}", err);
-            }
-        });
+        (0..num_connections).for_each(|_| pool.add_new_connection());
 
         pool
     }
@@ -116,7 +111,24 @@ where
         self.inner_pool.checkout(timeout)
     }
 
-    pub(crate) fn create_new_poolable_conn(&self) -> NewConnFuture<NewConn<T>> {
+    pub fn add_new_connection(&self) {
+        let fut = self.create_new_poolable_conn().map(|_| ()).map_err(|err| {
+            warn!("Failed to create initial connection: {}", err);
+        });
+        if let Err(err) = self.executor.execute(fut) {
+            warn!("Failed to execute task for initial connection: {}", err);
+        }
+    }
+
+    pub fn remove_connection(&self) {
+        self.inner_pool.remove_conn()
+    }
+
+    pub fn stats(&self) -> PoolStats {
+        self.inner_pool.stats()
+    }
+
+    fn create_new_poolable_conn(&self) -> NewConnFuture<NewConn<T>> {
         create_new_poolable_conn(
             Instant::now(),
             self.connection_factory.clone(),
@@ -124,10 +136,6 @@ where
             self.backoff_strategy,
             1,
         )
-    }
-
-    pub fn stats(&self) -> PoolStats {
-        self.inner_pool.stats()
     }
 }
 
@@ -151,7 +159,7 @@ where
     trace!("create new conn");
     if let Some(existing_inner_pool) = inner_pool.upgrade() {
         let inner_pool = Arc::downgrade(&existing_inner_pool);
-        //drop(existing_inner_pool);
+        drop(existing_inner_pool);
         let start_connect = Instant::now();
         let fut = connection_factory
             .create_connection()

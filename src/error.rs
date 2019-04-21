@@ -1,11 +1,10 @@
 use std::error::Error as StdError;
 use std::fmt;
-use std::result::Result as StdResult;
 
 use redis::{ErrorKind as RedisErrorKind, RedisError};
 
-pub type ReoolResult<T> = StdResult<T, ReoolError>;
-pub type InitializationResult<T> = StdResult<T, InitializationError>;
+pub type ReoolResult<T> = Result<T, ReoolError>;
+pub type InitializationResult<T> = Result<T, InitializationError>;
 
 #[derive(Debug)]
 pub struct ReoolError {
@@ -13,13 +12,10 @@ pub struct ReoolError {
     cause: Option<Box<StdError + Send + Sync>>,
 }
 
+/// An error returned from `reool` when a checkout failed
 impl ReoolError {
     pub(crate) fn new(kind: ErrorKind) -> Self {
         Self { kind, cause: None }
-    }
-
-    pub fn kind(&self) -> ErrorKind {
-        self.kind
     }
 
     pub(crate) fn with_cause<E: StdError + Send + Sync + 'static>(
@@ -31,13 +27,27 @@ impl ReoolError {
             cause: Some(Box::new(cause)),
         }
     }
+
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
+    /// Currently there is no connection available
     NoConnection,
+    /// An enqueued request for a checkout that had a timeout
+    /// set timed out
     Timeout,
+    /// No connection immediately available and no more
+    /// requests can be enqueued to wait for a connection
+    /// because the queue has reached it`s limit  
     QueueLimitReached,
+    /// Something went wrong executing a task. Keep in
+    /// mind that it depends on the `Executor` whether
+    /// this error is returned. Some `Executor`s might simply
+    /// panic.
     TaskExecution,
 }
 
@@ -72,6 +82,7 @@ impl From<ReoolError> for RedisError {
     }
 }
 
+/// An initialization has failed
 #[derive(Debug)]
 pub struct InitializationError {
     cause: Box<StdError + Send + Sync>,

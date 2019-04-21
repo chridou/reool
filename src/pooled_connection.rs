@@ -6,8 +6,14 @@ use redis::{
 
 use crate::pool::Managed;
 
+/// A connection that has been taken from the pool.
+///
+/// The connection returns when dropped unless there was an error.
+///
+/// Pooled connection implements `redis::async::ConnectionLike`
+/// to easily integrate with code that already uses `redis-rs`.
 pub struct PooledConnection {
-    /// Track whether the future has not been cancelled while executing a query
+    /// Track that the future has not been cancelled while executing a query
     pub(crate) last_op_completed: bool,
     pub(crate) managed: Managed<Connection>,
 }

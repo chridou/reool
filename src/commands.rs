@@ -1,11 +1,15 @@
-use futures::future::{self, Future};
+use futures::future::Future;
 use redis::{
     cmd, r#async::ConnectionLike, Cmd, ErrorKind, FromRedisValue, RedisFuture, ToRedisArgs,
 };
 
 impl<T> Commands for T where T: ConnectionLike + Sized + Send + 'static {}
 
+/// A helper trait to easily execute common
+/// asynchronous Redis commands on a
+/// `redis::async::ConnectionLike`
 pub trait Commands: Sized + ConnectionLike + Send + 'static {
+    /// Execute a command and expect a result
     fn query<T>(self, cmd: &Cmd) -> RedisFuture<(Self, T)>
     where
         T: FromRedisValue + Send + 'static,
@@ -13,6 +17,8 @@ pub trait Commands: Sized + ConnectionLike + Send + 'static {
         cmd.query_async(self)
     }
 
+    /// Execute a command and do not expect a result and instead
+    /// just check whether the command did not fail
     fn execute<T>(self, cmd: &Cmd) -> RedisFuture<(Self, ())>
     where
         T: FromRedisValue + Send + 'static,
@@ -20,6 +26,7 @@ pub trait Commands: Sized + ConnectionLike + Send + 'static {
         cmd.query_async(self)
     }
 
+    /// Send a ping command.
     fn ping(self) -> RedisFuture<(Self, ())> {
         Box::new(
             Cmd::new()

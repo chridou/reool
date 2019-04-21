@@ -1,10 +1,7 @@
 use std::env;
-use std::thread;
-use std::time::{Duration, Instant};
 
-use futures::future::{self, join_all, Future};
-use futures::stream::{iter_ok, Stream};
-use log::{debug, error, info};
+use futures::future::{self, Future};
+use log::info;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
@@ -29,22 +26,22 @@ fn main() {
         conn.exists(MY_KEY).and_then(|(conn, exists)| {
             if exists {
                 info!("Key already exist");
-                Box::new(conn.del::<_,()>(MY_KEY).map(|(conn, _)| {
+                Box::new(conn.del::<_, ()>(MY_KEY).map(|(conn, _)| {
                     info!("key deleted");
                     conn
-                })) as Box<dyn Future<Item = _ , Error = _> + Send>
+                })) as Box<dyn Future<Item = _, Error = _> + Send>
             } else {
                 info!("Key does not exist");
                 Box::new(future::ok(conn)) as Box<dyn Future<Item = _, Error = _> + Send>
             }
             .and_then(|conn: PooledConnection| {
-                conn.set::<_,_,()>(MY_KEY, "some data")
+                conn.set::<_, _, ()>(MY_KEY, "some data")
                     .and_then(|(conn, _)| {
                         info!("data written");
-                        conn.get::<_, String>(MY_KEY)
-                            .map(|(_, data)| {
-                                info!("read '{}'", data);
-                                data == "some data"})
+                        conn.get::<_, String>(MY_KEY).map(|(_, data)| {
+                            info!("read '{}'", data);
+                            data == "some data"
+                        })
                     })
             })
         })

@@ -1,9 +1,7 @@
 use std::env;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use futures::future::{join_all, Future};
-use futures::stream::{iter_ok, Stream};
 use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::runtime::Runtime;

@@ -7,7 +7,6 @@ use std::time::Duration;
 use futures::future::{self, Future};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
-use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
 use crate::error::ErrorKind;

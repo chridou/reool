@@ -1,7 +1,6 @@
 use futures::{future::Future, stream::Stream, sync::mpsc};
 use log::warn;
 use tokio::executor::{DefaultExecutor, Executor};
-use tokio::runtime::current_thread::Handle;
 use tokio::runtime::TaskExecutor;
 
 use crate::error::*;
@@ -10,7 +9,6 @@ use crate::error::*;
 pub enum ExecutorFlavour {
     Runtime,
     TokioTaskExecutor(TaskExecutor),
-    TokioHandle(Handle),
 }
 
 impl ExecutorFlavour {
@@ -31,12 +29,6 @@ impl ExecutorFlavour {
                 executor.spawn(Box::new(task));
                 Ok(())
             }
-            ExecutorFlavour::TokioHandle(executor) => {
-                executor.spawn(Box::new(task)).map_err(|err| {
-                    warn!("default executor failed to execute a task: {:?}", err);
-                    ReoolError::with_cause(ErrorKind::TaskExecution, err)
-                })
-            }
         }
     }
 
@@ -49,7 +41,6 @@ impl ExecutorFlavour {
         match self {
             ExecutorFlavour::Runtime => mpsc::spawn_unbounded(stream, &DefaultExecutor::current()),
             ExecutorFlavour::TokioTaskExecutor(executor) => mpsc::spawn_unbounded(stream, executor),
-            ExecutorFlavour::TokioHandle(executor) => mpsc::spawn_unbounded(stream, executor),
         }
     }
 }
@@ -63,11 +54,5 @@ impl From<TaskExecutor> for ExecutorFlavour {
 impl From<()> for ExecutorFlavour {
     fn from(_: ()) -> Self {
         ExecutorFlavour::Runtime
-    }
-}
-
-impl From<Handle> for ExecutorFlavour {
-    fn from(handle: Handle) -> Self {
-        ExecutorFlavour::TokioHandle(handle)
     }
 }
