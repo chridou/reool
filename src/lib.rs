@@ -3,7 +3,7 @@ use std::time::Duration;
 use futures::{future::Future, try_ready, Async, Poll};
 use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
-use crate::error::Error;
+use crate::error::ReoolError;
 use crate::pool::{
     Checkout as PoolCheckout, ConnectionFactory, NewConnFuture, NewConnectionError, Poolable,
 };
@@ -25,7 +25,7 @@ pub struct Checkout(PoolCheckout<Connection>);
 
 impl Future for Checkout {
     type Item = PooledConnection;
-    type Error = Error;
+    type Error = ReoolError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let managed = try_ready!(self.0.poll());

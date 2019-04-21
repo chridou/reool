@@ -13,7 +13,7 @@ use log::{debug, trace, warn};
 use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
-use crate::error::Error;
+use crate::error::ReoolError;
 use crate::executor_flavour::*;
 
 use inner_pool::InnerPool;
@@ -267,13 +267,13 @@ fn start_new_conn_stream<T, C>(
 }
 
 pub(crate) struct Checkout<T: Poolable> {
-    inner: Box<Future<Item = Managed<T>, Error = Error> + Send + 'static>,
+    inner: Box<Future<Item = Managed<T>, Error = ReoolError> + Send + 'static>,
 }
 
 impl<T: Poolable> Checkout<T> {
     pub fn new<F>(fut: F) -> Self
     where
-        F: Future<Item = Managed<T>, Error = Error> + Send + 'static,
+        F: Future<Item = Managed<T>, Error = ReoolError> + Send + 'static,
     {
         Self {
             inner: Box::new(fut),
@@ -283,7 +283,7 @@ impl<T: Poolable> Checkout<T> {
 
 impl<T: Poolable> Future for Checkout<T> {
     type Item = Managed<T>;
-    type Error = Error;
+    type Error = ReoolError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.inner.poll()
@@ -317,6 +317,7 @@ impl<T: Poolable> Drop for Managed<T> {
                     takeoff_at: self.takeoff_at,
                 });
             } else {
+                trace!("no value - request new connection");
                 // No connection. Create a new one.
                 if let Some(takeoff_at) = self.takeoff_at {
                     inner_pool.notify_not_returned(takeoff_at.elapsed());
@@ -378,6 +379,7 @@ impl<T: Poolable> Waiting<T> {
         match self {
             Waiting::Checkout(sender, waiting_since) => {
                 if let Err(mut managed) = sender.send(managed) {
+                    trace!("not fulfilled");
                     inner_pool.notify_not_fulfilled(waiting_since.elapsed());
                     managed.takeoff_at = None;
                     Some(managed)

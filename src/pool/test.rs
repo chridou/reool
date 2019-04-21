@@ -139,18 +139,21 @@ fn checkout_twice_with_one_not_reusable() {
 }
 
 #[test]
-fn with_empty_pool_checkout_returns_no_connection() {
+fn with_empty_pool_checkout_returns_timeout() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(0);
 
-    let pool = Pool::new(config.clone(), U32Factory::default(), executor);
+    let pool = Pool::new(config.clone(), UnitFactory, executor);
 
     let checked_out = pool.checkout(Some(Duration::from_millis(10)));
     let err = checked_out.wait().err().unwrap();
+    assert_eq!(err.kind(), ErrorKind::Timeout);
 
-    assert_eq!(err.kind(), ErrorKind::NoConnection);
+    let checked_out = pool.checkout(Some(Duration::from_millis(10)));
+    let err = checked_out.wait().err().unwrap();
+    assert_eq!(err.kind(), ErrorKind::Timeout);
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();

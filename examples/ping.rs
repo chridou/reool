@@ -2,9 +2,9 @@ use std::env;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use futures::future::Future;
+use futures::future::{join_all, Future};
 use futures::stream::{iter_ok, Stream};
-use log::{error, info};
+use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
@@ -19,11 +19,11 @@ fn main() {
     let pool = SingleNodePool::builder()
         .task_executor(runtime.executor())
         .connect_to("redis://127.0.0.1:6379")
-        .desired_pool_size(2)
-        .checkout_timeout(Some(Duration::from_millis(10)))
+        .desired_pool_size(5)
+        .wait_queue_limit(None)
+        .checkout_timeout(Some(Duration::from_millis(50)))
         .finish()
         .unwrap();
-
 
     info!("Do one ping");
     let start = Instant::now();
@@ -43,18 +43,21 @@ fn main() {
 
     thread::sleep(Duration::from_secs(1));
 
-    info!("Do one thousand pings in a row");
+    info!("Do one hundred pings in a row");
     let pool_ping = pool.clone();
-    let fut = iter_ok(0..1_000)
+    let fut = iter_ok(0..100)
         .for_each(move |_| {
             pool_ping
                 .checkout()
                 .from_err()
                 .and_then(|conn| conn.ping())
-                .map_err(|err| {
-                    error!("PING failed: {}", err);
+                .then(|res| match res {
+                    Err(err) => {
+                        error!("PING failed: {}", err);
+                        Ok(())
+                    }
+                    Ok(_) => Ok::<_, ()>(()),
                 })
-                .map(|_| ())
         })
         .map(|_| {
             info!("finished pinging");
@@ -62,31 +65,37 @@ fn main() {
 
     let start = Instant::now();
     runtime.block_on(fut).unwrap();
-    info!("PINGED 1000 times in a row in {:?}", start.elapsed());
+    info!("PINGED 100 times in a row in {:?}", start.elapsed());
 
     thread::sleep(Duration::from_secs(1));
- 
-    info!("Do one thousand pings in concurrently");
-    let pool_ping = pool.clone();
-    let fut = iter_ok(0..1_000)
-        .for_each(move |_| {
-            pool_ping
-                .checkout()
+
+    info!("Do one hundred pings in concurrently");
+    let futs: Vec<_> = (0..100)
+        .map(|i| {
+            pool.checkout()
                 .from_err()
                 .and_then(|conn| conn.ping())
-                .map_err(|err| {
-                    error!("PING failed: {}", err);
+                .then(move |res| match res {
+                    Err(err) => {
+                        error!("PING {} failed: {}", i, err);
+                        Ok(())
+                    }
+                    Ok(_) => {
+                        debug!("PING {} OK", i);
+                        Ok::<_, ()>(())
+                    }
                 })
-                .map(|_| ())
         })
-        .map(|_| {
-            info!("finished pinging");
-        });
+        .collect();
+    let fut = join_all(futs).map(|_| {
+        info!("finished pinging");
+    });;
 
     let start = Instant::now();
     runtime.block_on(fut).unwrap();
-    info!("PINGED 1000 times concurrently in {:?}", start.elapsed());
+    info!("PINGED 100 times concurrently in {:?}", start.elapsed());
 
     drop(pool);
+    info!("pool dropped");
     runtime.shutdown_on_idle().wait().unwrap();
 }

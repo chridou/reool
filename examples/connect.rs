@@ -29,6 +29,6 @@ fn main() {
     info!("{:#?}", pool.stats());
 
     drop(pool);
-    info!("DROPPED POOL", pool.stats());
+    info!("DROPPED POOL");
     runtime.shutdown_on_idle().wait().unwrap();
 }

@@ -11,14 +11,14 @@ use parking_lot::Mutex;
 use tokio_timer::Timeout;
 
 use super::{Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable, Waiting};
-use crate::error::{Error, ErrorKind};
+use crate::error::{ErrorKind, ReoolError};
 
 pub(crate) struct InnerPool<T: Poolable> {
     pool_size: AtomicUsize,
     pub(super) in_flight_connections: AtomicUsize,
     waiting_for_checkout: AtomicUsize,
     idle_connections: AtomicUsize,
-    idle: Mutex<VecDeque<Managed<T>>>,
+    idle: Mutex<Vec<Managed<T>>>,
     waiting: Mutex<VecDeque<Waiting<T>>>,
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
     config: Config,
@@ -29,7 +29,7 @@ where
     T: Poolable,
 {
     pub fn new(config: Config, request_new_conn: mpsc::UnboundedSender<NewConnMessage>) -> Self {
-        let idle = VecDeque::with_capacity(config.desired_pool_size);
+        let idle = Vec::with_capacity(config.desired_pool_size);
         let waiting = VecDeque::new();
 
         Self {
@@ -45,18 +45,22 @@ where
     }
 
     pub(super) fn put(&self, managed: Managed<T>) {
+        // DANGER! Do not let any Managed get dropped in here
+        // because all_waiting might get locked twice!
         trace!("put");
         if let Some(takeoff_at) = managed.takeoff_at {
-            self.notify_returned(takeoff_at.elapsed());
+            self.notify_conn_returned(takeoff_at.elapsed());
         } else {
             self.notify_new_connection();
         }
         let mut all_waiting = self.waiting.lock();
         if all_waiting.is_empty() {
+            trace!("4A");
             let mut idle = self.idle.lock();
-            idle.push_back(managed);
+            idle.push(managed);
             self.notify_idle_conns(idle.len());
         } else {
+            // Do not let this one get dropped!
             let mut to_fulfill = managed;
             while let Some(one_waiting) = all_waiting.pop_front() {
                 if let Some(not_fulfilled) = one_waiting.fulfill(to_fulfill, self) {
@@ -66,13 +70,16 @@ where
                     return;
                 }
             }
+            let mut idle = self.idle.lock();
+            idle.push(to_fulfill);
+            self.notify_idle_conns(idle.len());
         }
     }
 
     pub(super) fn checkout(&self, timeout: Option<Duration>) -> Checkout<T> {
         if let Some(mut managed) = {
             let mut idle = self.idle.lock();
-            let taken = idle.pop_front();
+            let taken = idle.pop();
             self.notify_idle_conns(idle.len());
             taken
         } {
@@ -87,9 +94,11 @@ where
                     if all_waiting.len() > wait_queue_limit {
                         trace!("wait queue limit reached - no connection");
                         self.notify_queue_limit_reached();
-                        return Checkout::new(future::err(Error::new(ErrorKind::NoConnection)));
+                        return Checkout::new(future::err(ReoolError::new(
+                            ErrorKind::QueueLimitReached,
+                        )));
                     }
-                    trace!("no immediate connection - enqueue for checkout");
+                    trace!("no idle connection to checkout - enqueue for checkout");
                 }
                 let (tx, rx) = oneshot::channel();
                 let waiting = Waiting::checkout(tx);
@@ -100,10 +109,10 @@ where
             };
             let fut = rx
                 .map(From::from)
-                .map_err(|err| Error::with_cause(ErrorKind::NoConnection, err));
+                .map_err(|err| ReoolError::with_cause(ErrorKind::NoConnection, err));
             if let Some(timeout) = timeout {
                 let timeout_fut = Timeout::new(fut, timeout)
-                    .map_err(|err| Error::with_cause(ErrorKind::NoConnection, err));
+                    .map_err(|err| ReoolError::with_cause(ErrorKind::Timeout, err));
                 Checkout::new(timeout_fut)
             } else {
                 Checkout::new(fut)
@@ -121,10 +130,10 @@ where
     }
 
     pub(super) fn remove_conn(&self) {
-        if let Some(mut managed) = { self.idle.lock().pop_front() } {
+        if let Some(mut managed) = { self.idle.lock().pop() } {
             managed.marked_for_kill = true;
         } else {
-            trace!("no immediate connection - enqueue for kill");
+            trace!("no idle connection to kill - enqueue for kill");
             self.waiting.lock().push_back(Waiting::reduce_pool_size());
         }
     }
@@ -133,7 +142,7 @@ where
         self.in_flight_connections.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn notify_returned(&self, _flight_time: Duration) {
+    fn notify_conn_returned(&self, _flight_time: Duration) {
         self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
     }
 
