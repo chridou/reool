@@ -25,7 +25,6 @@ fn main() {
         .finish()
         .unwrap();
 
-
     info!("Do one thousand pings in concurrently");
     let futs: Vec<_> = (0..1_000)
         .map(|i| {
@@ -44,7 +43,6 @@ fn main() {
                 })
         })
         .collect();
-
 
     let fut = join_all(futs).map(|_| {
         info!("finished pinging");

@@ -20,6 +20,7 @@ mod pooled_connection;
 pub use backoff_strategy::BackoffStrategy;
 pub use commands::*;
 pub use node_pool::*;
+pub use pooled_connection::PooledConnection;
 
 pub struct Checkout(PoolCheckout<Connection>);
 
