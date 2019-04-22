@@ -139,6 +139,7 @@ where
     }
 
     #[cfg(test)]
+    #[allow(unused)]
     fn inner_pool(&self) -> &Arc<InnerPool<T>> {
         &self.inner_pool
     }

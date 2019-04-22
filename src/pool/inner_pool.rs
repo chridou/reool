@@ -13,13 +13,18 @@ use tokio_timer::Timeout;
 use super::{Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable};
 use crate::error::{ErrorKind, ReoolError};
 
+/// Used to ensure there is no race between choeckouts and puts
+struct SyncCore<T: Poolable> {
+    pub idle: Vec<Managed<T>>,
+    pub waiting: VecDeque<Waiting<T>>,
+}
+
 pub(crate) struct InnerPool<T: Poolable> {
+    core: Mutex<SyncCore<T>>,
     pool_size: AtomicUsize,
     in_flight_connections: AtomicUsize,
     waiting_for_checkout: AtomicUsize,
     idle_connections: AtomicUsize,
-    idle: Mutex<Vec<Managed<T>>>,
-    waiting: Mutex<VecDeque<Waiting<T>>>,
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
     config: Config,
 }
@@ -32,13 +37,14 @@ where
         let idle = Vec::with_capacity(config.desired_pool_size);
         let waiting = VecDeque::new();
 
+        let core = Mutex::new(SyncCore { idle, waiting });
+
         Self {
+            core,
             pool_size: AtomicUsize::new(0),
             in_flight_connections: AtomicUsize::new(0),
             waiting_for_checkout: AtomicUsize::new(0),
             idle_connections: AtomicUsize::new(0),
-            idle: Mutex::new(idle),
-            waiting: Mutex::new(waiting),
             request_new_conn,
             config,
         }
@@ -48,66 +54,65 @@ where
         trace!("put");
         // Do not let any Managed get dropped in here
         // because all_waiting might get locked twice!
+
         if let Some(takeoff_at) = managed.takeoff_at {
             self.notify_conn_returned(takeoff_at.elapsed());
         } else {
             self.notify_new_connection();
         }
-        let mut all_waiting = self.waiting.lock();
-        if all_waiting.is_empty() {
-            trace!("put - no one waiting");
-            let mut idle = self.idle.lock();
-            idle.push(managed);
-            trace!("put - add to idle");
-            self.notify_idle_conns(idle.len());
+
+        let mut core = self.core.lock();
+
+        if core.waiting.is_empty() {
+            core.idle.push(managed);
+            trace!("put - added to idle");
+            self.notify_idle_conns(core.idle.len());
         } else {
             // Do not let this one get dropped!
             let mut to_fulfill = managed;
-            while let Some(one_waiting) = all_waiting.pop_front() {
+            while let Some(one_waiting) = core.waiting.pop_front() {
                 if let Some(not_fulfilled) = one_waiting.fulfill(to_fulfill, self) {
                     to_fulfill = not_fulfilled;
                 } else {
-                    self.notify_waiting_queue_length(all_waiting.len());
+                    self.notify_waiting_queue_length(core.waiting.len());
                     return;
                 }
             }
-            let mut idle = self.idle.lock();
-            idle.push(to_fulfill);
-            self.notify_idle_conns(idle.len());
+            core.idle.push(to_fulfill);
+            self.notify_idle_conns(core.idle.len());
         }
     }
 
     pub(super) fn checkout(&self, timeout: Option<Duration>) -> Checkout<T> {
         trace!("checkout");
+
+        let mut core = self.core.lock();
+
         if let Some(mut managed) = {
-            let mut idle = self.idle.lock();
-            let taken = idle.pop();
-            self.notify_idle_conns(idle.len());
+            let taken = core.idle.pop();
+            self.notify_idle_conns(core.idle.len());
             taken
         } {
             managed.takeoff_at = Some(Instant::now());
             self.notify_takeoff();
             Checkout::new(future::ok(managed.into()))
         } else {
-            let rx = {
-                let mut all_waiting = self.waiting.lock();
-                if let Some(wait_queue_limit) = self.config.wait_queue_limit {
-                    if all_waiting.len() > wait_queue_limit {
-                        trace!("wait queue limit reached - no connection");
-                        self.notify_queue_limit_reached();
-                        return Checkout::new(future::err(ReoolError::new(
-                            ErrorKind::QueueLimitReached,
-                        )));
-                    }
-                    trace!("no idle connection to checkout - enqueue for checkout");
+            if let Some(wait_queue_limit) = self.config.wait_queue_limit {
+                if core.waiting.len() > wait_queue_limit {
+                    trace!("wait queue limit reached - no connection");
+                    self.notify_queue_limit_reached();
+                    return Checkout::new(future::err(ReoolError::new(
+                        ErrorKind::QueueLimitReached,
+                    )));
                 }
-                let (tx, rx) = oneshot::channel();
-                let waiting = Waiting::checkout(tx);
-                all_waiting.push_back(waiting);
-                self.notify_waiting();
-                self.notify_waiting_queue_length(all_waiting.len());
-                rx
-            };
+                trace!("no idle connection to checkout - enqueue for checkout");
+            }
+            let (tx, rx) = oneshot::channel();
+            let waiting = Waiting::checkout(tx);
+            core.waiting.push_back(waiting);
+            self.notify_waiting();
+            self.notify_waiting_queue_length(core.waiting.len());
+
             let fut = rx
                 .map(From::from)
                 .map_err(|err| ReoolError::with_cause(ErrorKind::NoConnection, err));
@@ -131,11 +136,12 @@ where
     }
 
     pub(super) fn remove_conn(&self) {
-        if let Some(mut managed) = { self.idle.lock().pop() } {
+        let mut core = self.core.lock();
+        if let Some(mut managed) = { core.idle.pop() } {
             managed.marked_for_kill = true;
         } else {
             trace!("no idle connection to kill - enqueue for kill");
-            self.waiting.lock().push_back(Waiting::reduce_pool_size());
+            core.waiting.push_back(Waiting::reduce_pool_size());
         }
     }
 
