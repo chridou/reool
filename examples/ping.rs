@@ -10,6 +10,7 @@ use tokio::runtime::Runtime;
 
 use reool::*;
 
+/// Do some ping commands and measure the time elapsed
 fn main() {
     env::set_var("RUST_LOG", "reool=debug,ping=info");
     let _ = pretty_env_logger::try_init();
@@ -17,11 +18,11 @@ fn main() {
     let mut runtime = Runtime::new().unwrap();
 
     let pool = SingleNodePool::builder()
-        .task_executor(runtime.executor())
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(5)
         .wait_queue_limit(None)
         .checkout_timeout(Some(Duration::from_millis(50)))
+        .task_executor(runtime.executor())
         .finish()
         .unwrap();
 

@@ -51,7 +51,7 @@ where
     }
 
     pub(super) fn put(&self, managed: Managed<T>) {
-        trace!("put");
+        trace!("put connection");
         // Do not let any Managed get dropped in here
         // because all_waiting might get locked twice!
 
@@ -65,7 +65,7 @@ where
 
         if core.waiting.is_empty() {
             core.idle.push(managed);
-            trace!("put - added to idle");
+            trace!("put connection - added to idle");
             self.notify_idle_conns(core.idle.len());
         } else {
             // Do not let this one get dropped!
@@ -79,6 +79,7 @@ where
                 }
             }
             core.idle.push(to_fulfill);
+            trace!("put connection - none fulfilled - added to idle");
             self.notify_idle_conns(core.idle.len());
         }
     }
@@ -99,13 +100,19 @@ where
         } else {
             if let Some(wait_queue_limit) = self.config.wait_queue_limit {
                 if core.waiting.len() > wait_queue_limit {
-                    trace!("wait queue limit reached - no connection");
+                    trace!(
+                        "checkout - wait queue limit reached \
+                         - returning error"
+                    );
                     self.notify_queue_limit_reached();
                     return Checkout::new(future::err(ReoolError::new(
                         ErrorKind::QueueLimitReached,
                     )));
                 }
-                trace!("no idle connection to checkout - enqueue for checkout");
+                trace!(
+                    "checkout - no idle connection - \
+                     enqueue for checkout"
+                );
             }
             let (tx, rx) = oneshot::channel();
             let waiting = Waiting::checkout(tx);
@@ -223,12 +230,12 @@ impl<T: Poolable> Waiting<T> {
         match self {
             Waiting::Checkout(sender, waiting_since) => {
                 if let Err(mut managed) = sender.send(managed) {
-                    trace!("not fulfilled");
+                    trace!("waiting - not fulfilled");
                     inner_pool.notify_not_fulfilled(waiting_since.elapsed());
                     managed.takeoff_at = None;
                     Some(managed)
                 } else {
-                    trace!("fulfilled");
+                    trace!("waiting - fulfilled");
                     inner_pool.notify_takeoff();
                     inner_pool.notify_fulfilled(waiting_since.elapsed());
                     None

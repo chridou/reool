@@ -9,6 +9,7 @@ use tokio::runtime::Runtime;
 
 use reool::*;
 
+/// Simply connect to redis and establish some connections
 fn main() {
     env::set_var("RUST_LOG", "reool=debug,connect=info");
     let _ = pretty_env_logger::try_init();
@@ -16,9 +17,9 @@ fn main() {
     let runtime = Runtime::new().unwrap();
 
     let pool = SingleNodePool::builder()
-        .task_executor(runtime.executor())
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(5)
+        .task_executor(runtime.executor())
         .finish()
         .unwrap();
 

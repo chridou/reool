@@ -162,7 +162,7 @@ fn create_new_poolable_conn<T>(
 where
     T: Poolable,
 {
-    trace!("create new conn");
+    trace!("create new connection");
     if let Some(existing_inner_pool) = inner_pool.upgrade() {
         let inner_pool = Arc::downgrade(&existing_inner_pool);
         drop(existing_inner_pool);
@@ -171,7 +171,7 @@ where
             .create_connection()
             .then(move |res| match res {
                 Ok(conn) => {
-                    trace!("new conn created");
+                    trace!("new connection created");
                     NewConnFuture::new(future::ok(NewConn {
                         total_time: initiated_at.elapsed(),
                         connect_time: start_connect.elapsed(),
@@ -245,7 +245,7 @@ fn start_new_conn_stream<T, C>(
     let executor_a = executor.clone();
     let fut = spawn_handle.for_each(move |msg| {
         if is_shut_down {
-            trace!("new conn requested on finished stream");
+            trace!("new connection requested on finished stream");
             Err(())
         } else {
             match msg {
@@ -323,7 +323,7 @@ impl<T: Poolable> Drop for Managed<T> {
     fn drop(&mut self) {
         if let Some(inner_pool) = self.inner_pool.upgrade() {
             if self.marked_for_kill {
-                trace!("killed");
+                trace!("connection killed");
                 inner_pool.notify_killed(self.created_at.elapsed());
             } else if let Some(value) = self.value.take() {
                 inner_pool.put(Managed {

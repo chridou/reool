@@ -1,5 +1,5 @@
 use std::env;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures::future::{join_all, Future};
 use log::{debug, error, info};
@@ -8,10 +8,10 @@ use tokio::runtime::Runtime;
 
 use reool::*;
 
-/// Do many ping commands where many will faile because either
-/// the checkout ties out or the chackout queue is full
+/// Do many ping commands with no checkout timeout
+/// and an unbounded checkout queue
 fn main() {
-    env::set_var("RUST_LOG", "reool=debug,too_many_pings=debug");
+    env::set_var("RUST_LOG", "reool=debug,many_pings_unbounded=debug");
     let _ = pretty_env_logger::try_init();
 
     let mut runtime = Runtime::new().unwrap();
@@ -19,13 +19,13 @@ fn main() {
     let pool = SingleNodePool::builder()
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(10)
-        .wait_queue_limit(Some(500))
-        .checkout_timeout(Some(Duration::from_millis(50)))
+        .wait_queue_limit(None) // No limit
+        .checkout_timeout(None) // No timeout
         .task_executor(runtime.executor())
         .finish()
         .unwrap();
 
-    info!("Do 1000 pings concurrently");
+    info!("Do one 1000 concurrently");
     let futs: Vec<_> = (0..1_000)
         .map(|i| {
             pool.checkout()

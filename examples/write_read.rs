@@ -9,6 +9,7 @@ use reool::*;
 
 const MY_KEY: &str = "my_key";
 
+/// Write and read a single key.
 fn main() {
     env::set_var("RUST_LOG", "reool=debug,write_read=info");
     let _ = pretty_env_logger::try_init();
@@ -16,9 +17,9 @@ fn main() {
     let mut runtime = Runtime::new().unwrap();
 
     let pool = SingleNodePool::builder()
-        .task_executor(runtime.executor())
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(1)
+        .task_executor(runtime.executor())
         .finish()
         .unwrap();
 
