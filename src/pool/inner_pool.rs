@@ -10,12 +10,12 @@ use log::{debug, error, trace};
 use parking_lot::Mutex;
 use tokio_timer::Timeout;
 
-use super::{Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable, Waiting};
+use super::{Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable};
 use crate::error::{ErrorKind, ReoolError};
 
 pub(crate) struct InnerPool<T: Poolable> {
     pool_size: AtomicUsize,
-    pub(super) in_flight_connections: AtomicUsize,
+    in_flight_connections: AtomicUsize,
     waiting_for_checkout: AtomicUsize,
     idle_connections: AtomicUsize,
     idle: Mutex<Vec<Managed<T>>>,
@@ -45,9 +45,9 @@ where
     }
 
     pub(super) fn put(&self, managed: Managed<T>) {
-        // DANGER! Do not let any Managed get dropped in here
-        // because all_waiting might get locked twice!
         trace!("put");
+        // Do not let any Managed get dropped in here
+        // because all_waiting might get locked twice!
         if let Some(takeoff_at) = managed.takeoff_at {
             self.notify_conn_returned(takeoff_at.elapsed());
         } else {
@@ -55,9 +55,10 @@ where
         }
         let mut all_waiting = self.waiting.lock();
         if all_waiting.is_empty() {
-            trace!("4A");
+            trace!("put - no one waiting");
             let mut idle = self.idle.lock();
             idle.push(managed);
+            trace!("put - add to idle");
             self.notify_idle_conns(idle.len());
         } else {
             // Do not let this one get dropped!
@@ -77,13 +78,13 @@ where
     }
 
     pub(super) fn checkout(&self, timeout: Option<Duration>) -> Checkout<T> {
+        trace!("checkout");
         if let Some(mut managed) = {
             let mut idle = self.idle.lock();
             let taken = idle.pop();
             self.notify_idle_conns(idle.len());
             taken
         } {
-            trace!("checkout idle");
             managed.takeoff_at = Some(Instant::now());
             self.notify_takeoff();
             Checkout::new(future::ok(managed.into()))
@@ -192,5 +193,46 @@ where
 impl<T: Poolable> Drop for InnerPool<T> {
     fn drop(&mut self) {
         debug!("inner pool dropped");
+    }
+}
+
+enum Waiting<T: Poolable> {
+    Checkout(oneshot::Sender<Managed<T>>, Instant),
+    ReducePoolSize,
+}
+
+impl<T: Poolable> Waiting<T> {
+    pub fn checkout(sender: oneshot::Sender<Managed<T>>) -> Self {
+        Waiting::Checkout(sender, Instant::now())
+    }
+
+    pub fn reduce_pool_size() -> Self {
+        Waiting::ReducePoolSize
+    }
+}
+
+impl<T: Poolable> Waiting<T> {
+    fn fulfill(self, mut managed: Managed<T>, inner_pool: &InnerPool<T>) -> Option<Managed<T>> {
+        managed.takeoff_at = Some(Instant::now());
+        match self {
+            Waiting::Checkout(sender, waiting_since) => {
+                if let Err(mut managed) = sender.send(managed) {
+                    trace!("not fulfilled");
+                    inner_pool.notify_not_fulfilled(waiting_since.elapsed());
+                    managed.takeoff_at = None;
+                    Some(managed)
+                } else {
+                    trace!("fulfilled");
+                    inner_pool.notify_takeoff();
+                    inner_pool.notify_fulfilled(waiting_since.elapsed());
+                    None
+                }
+            }
+            Waiting::ReducePoolSize => {
+                managed.takeoff_at = None;
+                managed.marked_for_kill = true;
+                None
+            }
+        }
     }
 }

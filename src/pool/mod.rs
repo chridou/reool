@@ -1,12 +1,12 @@
 use std::error::Error as StdError;
 use std::fmt;
-use std::sync::{atomic::Ordering, Arc, Weak};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use futures::{
     future::{self, Future},
     stream::Stream,
-    sync::{mpsc, oneshot},
+    sync::mpsc,
     Poll,
 };
 use log::{debug, trace, warn};
@@ -137,6 +137,11 @@ where
             1,
         )
     }
+
+    #[cfg(test)]
+    fn inner_pool(&self) -> &Arc<InnerPool<T>> {
+        &self.inner_pool
+    }
 }
 
 impl<T: Poolable> Drop for Pool<T> {
@@ -164,17 +169,20 @@ where
         let fut = connection_factory
             .create_connection()
             .then(move |res| match res {
-                Ok(conn) => NewConnFuture::new(future::ok(NewConn {
-                    total_time: initiated_at.elapsed(),
-                    connect_time: start_connect.elapsed(),
-                    managed: Managed {
-                        value: Some(conn),
-                        inner_pool: inner_pool,
-                        marked_for_kill: false,
-                        created_at: Instant::now(),
-                        takeoff_at: None,
-                    },
-                })),
+                Ok(conn) => {
+                    trace!("new conn created");
+                    NewConnFuture::new(future::ok(NewConn {
+                        total_time: initiated_at.elapsed(),
+                        connect_time: start_connect.elapsed(),
+                        managed: Managed {
+                            value: Some(conn),
+                            inner_pool: inner_pool,
+                            marked_for_kill: false,
+                            created_at: Instant::now(),
+                            takeoff_at: None,
+                        },
+                    }))
+                }
                 Err(err) => {
                     inner_pool
                         .upgrade()
@@ -330,10 +338,10 @@ impl<T: Poolable> Drop for Managed<T> {
                 if let Some(takeoff_at) = self.takeoff_at {
                     inner_pool.notify_not_returned(takeoff_at.elapsed());
                 } else {
-                    inner_pool
-                        .in_flight_connections
-                        .fetch_sub(1, Ordering::SeqCst);
-                    warn!("Returning connection without takeoff time. This is a BUG.");
+                    warn!(
+                        "Returning connection without takeoff time. \
+                         In flight counter will be wrong. This is a BUG."
+                    );
                 }
                 inner_pool.request_new_conn();
             }
@@ -362,47 +370,6 @@ impl<T: Poolable> Drop for NewConn<T> {
             inner_pool.notify_created(self.connect_time, self.total_time);
         } else {
             debug!("dropping new connection because pool is gone")
-        }
-    }
-}
-
-enum Waiting<T: Poolable> {
-    Checkout(oneshot::Sender<Managed<T>>, Instant),
-    ReducePoolSize,
-}
-
-impl<T: Poolable> Waiting<T> {
-    pub fn checkout(sender: oneshot::Sender<Managed<T>>) -> Self {
-        Waiting::Checkout(sender, Instant::now())
-    }
-
-    pub fn reduce_pool_size() -> Self {
-        Waiting::ReducePoolSize
-    }
-}
-
-impl<T: Poolable> Waiting<T> {
-    fn fulfill(self, mut managed: Managed<T>, inner_pool: &InnerPool<T>) -> Option<Managed<T>> {
-        managed.takeoff_at = Some(Instant::now());
-        match self {
-            Waiting::Checkout(sender, waiting_since) => {
-                if let Err(mut managed) = sender.send(managed) {
-                    trace!("not fulfilled");
-                    inner_pool.notify_not_fulfilled(waiting_since.elapsed());
-                    managed.takeoff_at = None;
-                    Some(managed)
-                } else {
-                    trace!("fulfilled");
-                    inner_pool.notify_takeoff();
-                    inner_pool.notify_fulfilled(waiting_since.elapsed());
-                    None
-                }
-            }
-            Waiting::ReducePoolSize => {
-                managed.takeoff_at = None;
-                managed.marked_for_kill = true;
-                None
-            }
         }
     }
 }

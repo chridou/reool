@@ -1,17 +1,23 @@
 use std::error::Error as StdError;
 use std::fmt;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::{self, Future};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
+use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
 use crate::error::ErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
-use crate::pool::{Config, ConnectionFactory, NewConnFuture, NewConnectionError, Pool, Poolable};
+use crate::pool::{
+    Config, ConnectionFactory, Managed, NewConnFuture, NewConnectionError, Pool, Poolable,
+};
 
 #[test]
 #[should_panic]
@@ -138,6 +144,30 @@ fn checkout_twice_with_one_not_reusable() {
 }
 
 #[test]
+fn checkout_twice_with_delay_factory_with_one_not_reusable() {
+    let _ = pretty_env_logger::try_init();
+    let runtime = Runtime::new().unwrap();
+    let executor = runtime.executor().into();
+    let config = Config::default().desired_pool_size(1);
+
+    let pool = Pool::new(config.clone(), U32DelayFactory::default(), executor);
+
+    // We do not return the con with managed
+    let checked_out = pool.checkout(None).map(|mut c| c.value.take().unwrap());
+    let v = checked_out.wait().unwrap();
+
+    assert_eq!(v, 0);
+
+    let checked_out = pool.checkout(None).map(|c| c.value.unwrap());
+    let v = checked_out.wait().unwrap();
+
+    assert_eq!(v, 1);
+
+    drop(pool);
+    runtime.shutdown_on_idle().wait().unwrap();
+}
+
+#[test]
 fn with_empty_pool_checkout_returns_timeout() {
     let _ = pretty_env_logger::try_init();
     let runtime = Runtime::new().unwrap();
@@ -185,6 +215,40 @@ fn create_connection_fails_some_times() {
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
+#[test]
+fn put_and_checkout_do_not_race() {
+    let n = 10000;
+    let _ = pretty_env_logger::try_init();
+    let runtime = Runtime::new().unwrap();
+    for _ in 0..n {
+        let executor = runtime.executor().into();
+        let config = Config::default().desired_pool_size(0);
+
+        let pool = Pool::new(config.clone(), U32Factory::default(), executor);
+        let inner_pool = pool.inner_pool().clone();
+
+        thread::spawn(move || {
+            let managed = Managed {
+                created_at: Instant::now(),
+                takeoff_at: None,
+                value: Some(0),
+                inner_pool: Arc::downgrade(&inner_pool),
+                marked_for_kill: false,
+            };
+
+            inner_pool.put(managed);
+        });
+
+        let checked_out = pool.inner_pool().checkout(None).map(|c| c.value.unwrap());
+        let v = checked_out.wait().unwrap();
+
+        assert_eq!(v, 0);
+
+        drop(pool);
+    }
+    runtime.shutdown_on_idle().wait().unwrap();
+}
+
 impl Poolable for () {}
 
 struct UnitFactory;
@@ -196,6 +260,7 @@ impl ConnectionFactory for UnitFactory {
 }
 
 impl Poolable for u32 {}
+
 struct U32Factory {
     counter: AtomicU32,
 }
@@ -205,6 +270,13 @@ impl Default for U32Factory {
         Self {
             counter: AtomicU32::new(0),
         }
+    }
+}
+
+impl ConnectionFactory for U32Factory {
+    type Connection = u32;
+    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
+        NewConnFuture::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
     }
 }
 
@@ -245,13 +317,6 @@ impl Default for U32FactoryFailsThreeTimesInARow {
     }
 }
 
-impl ConnectionFactory for U32Factory {
-    type Connection = u32;
-    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
-        NewConnFuture::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
-    }
-}
-
 struct UnitFactoryAlwaysFails;
 impl ConnectionFactory for UnitFactoryAlwaysFails {
     type Connection = u32;
@@ -276,5 +341,32 @@ impl ConnectionFactory for UnitFactoryAlwaysFails {
         }
 
         NewConnFuture::new(future::err(NewConnectionError::new(MyError)))
+    }
+}
+
+struct U32DelayFactory {
+    counter: AtomicU32,
+    delay: Duration,
+}
+
+impl Default for U32DelayFactory {
+    fn default() -> Self {
+        Self {
+            counter: AtomicU32::new(0),
+            delay: Duration::from_millis(20),
+        }
+    }
+}
+
+impl ConnectionFactory for U32DelayFactory {
+    type Connection = u32;
+    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
+        let delay = Delay::new(Instant::now() + self.delay);
+        let next = self.counter.fetch_add(1, Ordering::SeqCst);
+        NewConnFuture::new(
+            delay
+                .map_err(|err| NewConnectionError::new(err))
+                .and_then(move |()| future::ok(next)),
+        )
     }
 }
