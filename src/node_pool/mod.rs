@@ -9,6 +9,74 @@ use crate::instrumentation::Instrumentation;
 use crate::pool::{Config as PoolConfig, Pool, PoolStats};
 use crate::*;
 
+/// A configuration for creating a `SingleNodePool`.
+///
+/// You should prefer using the `SingleNodePool::builder()` function.
+pub struct Config {
+    /// The number of connections the pool should initially have
+    /// and try to maintain
+    pub desired_pool_size: usize,
+    /// The timeout for a checkout if no specific tinmeout is given
+    /// with a checkout.
+    pub checkout_timeout: Option<Duration>,
+    /// The `BackoffStrategy` to use when retrying on
+    /// failures to create new connections
+    pub backoff_strategy: BackoffStrategy,
+    /// The maximum length of the queue for waiting checkouts
+    /// when no idle connections are available
+    pub reservation_limit: Option<usize>,
+}
+
+impl Config {
+    /// Sets the number of connections the pool should initially have
+    /// and try to maintain
+    pub fn desired_pool_size(mut self, v: usize) -> Self {
+        self.desired_pool_size = v;
+        self
+    }
+
+    /// Sets the timeout for a checkout if no specific tinmeout is given
+    /// with a checkout.
+    pub fn checkout_timeout(mut self, v: Option<Duration>) -> Self {
+        self.checkout_timeout = v;
+        self
+    }
+
+    /// Sets the `BackoffStrategy` to use when retrying on
+    /// failures to create new connections
+    pub fn backoff_strategy(mut self, v: BackoffStrategy) -> Self {
+        self.backoff_strategy = v;
+        self
+    }
+
+    /// Sets the maximum length of the queue for waiting checkouts
+    /// when no idle connections are available
+    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
+        self.reservation_limit = v;
+        self
+    }
+
+    /// Create a `Builder` initialized with the values from this `Config`
+    pub fn builder(&self) -> Builder<(), ()> {
+        Builder::default()
+            .desired_pool_size(self.desired_pool_size)
+            .checkout_timeout(self.checkout_timeout)
+            .backoff_strategy(self.backoff_strategy)
+            .reservation_limit(self.reservation_limit)
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            desired_pool_size: 20,
+            checkout_timeout: Some(Duration::from_millis(20)),
+            backoff_strategy: BackoffStrategy::default(),
+            reservation_limit: Some(100),
+        }
+    }
+}
+
 /// A builder for a `SingleNodePool`
 pub struct Builder<T, I> {
     config: Config,
@@ -86,6 +154,20 @@ impl<T, I> Builder<T, I> {
             instrumentation: Some(instrumentation),
         }
     }
+
+    #[cfg(feature = "metrix")]
+    pub fn instrumented_with_metrix<A: metrix::processor::AggregatesProcessors>(
+        self,
+        aggregates_processors: &mut A,
+    ) -> Builder<T, instrumentation::metrix::MetrixInstrumentation> {
+        let instrumentation = instrumentation::metrix::create(aggregates_processors);
+        Builder {
+            config: self.config,
+            executor_flavour: self.executor_flavour,
+            connect_to: self.connect_to,
+            instrumentation: Some(instrumentation),
+        }
+    }
 }
 
 impl<T, I> Builder<T, I>
@@ -101,74 +183,6 @@ where
             self.executor_flavour,
             self.instrumentation,
         )
-    }
-}
-
-/// A configuration for creating a `SingleNodePool`.
-///
-/// You should prefer using the `SingleNodePool::builder()` function.
-pub struct Config {
-    /// The number of connections the pool should initially have
-    /// and try to maintain
-    pub desired_pool_size: usize,
-    /// The timeout for a checkout if no specific tinmeout is given
-    /// with a checkout.
-    pub checkout_timeout: Option<Duration>,
-    /// The `BackoffStrategy` to use when retrying on
-    /// failures to create new connections
-    pub backoff_strategy: BackoffStrategy,
-    /// The maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub reservation_limit: Option<usize>,
-}
-
-impl Config {
-    /// Sets the number of connections the pool should initially have
-    /// and try to maintain
-    pub fn desired_pool_size(mut self, v: usize) -> Self {
-        self.desired_pool_size = v;
-        self
-    }
-
-    /// Sets the timeout for a checkout if no specific tinmeout is given
-    /// with a checkout.
-    pub fn checkout_timeout(mut self, v: Option<Duration>) -> Self {
-        self.checkout_timeout = v;
-        self
-    }
-
-    /// Sets the `BackoffStrategy` to use when retrying on
-    /// failures to create new connections
-    pub fn backoff_strategy(mut self, v: BackoffStrategy) -> Self {
-        self.backoff_strategy = v;
-        self
-    }
-
-    /// Sets the maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
-        self.reservation_limit = v;
-        self
-    }
-
-    /// Create a `Builder` initialized with the values from this `Config`
-    pub fn builder(&self) -> Builder<(), ()> {
-        Builder::default()
-            .desired_pool_size(self.desired_pool_size)
-            .checkout_timeout(self.checkout_timeout)
-            .backoff_strategy(self.backoff_strategy)
-            .reservation_limit(self.reservation_limit)
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            desired_pool_size: 20,
-            checkout_timeout: Some(Duration::from_millis(20)),
-            backoff_strategy: BackoffStrategy::default(),
-            reservation_limit: Some(100),
-        }
     }
 }
 

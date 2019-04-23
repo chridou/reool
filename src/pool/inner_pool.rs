@@ -192,11 +192,11 @@ where
     }
 
     #[inline]
-    pub(super) fn notify_dropped_connection(&self, flight_time: Duration) {
+    pub(super) fn notify_connection_dropped(&self, flight_time: Duration, lifetime: Duration) {
         self.pool_size.fetch_sub(1, Ordering::SeqCst);
         self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
         if let Some(instrumentation) = self.instrumentation.as_ref() {
-            instrumentation.dropped_connection(flight_time)
+            instrumentation.connection_dropped(flight_time, lifetime)
         }
     }
 

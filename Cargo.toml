@@ -1,6 +1,6 @@
 [package]
 name = "reool"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Christian Douven <chridou@users.noreply.github.com>"]
 readme = "README.md"
 license = "Apache-2.0/MIT"
@@ -19,6 +19,10 @@ tokio = "0.1"
 tokio-timer = "0.2"
 redis = "0.10"
 rand = "0.6"
+metrix = { version = "0.9", optional = true}
+
+[features]
+default = []
 
 [dev-dependencies]
 pretty_env_logger = "0.3.0"

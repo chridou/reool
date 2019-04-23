@@ -332,7 +332,10 @@ impl<T: Poolable> Drop for Managed<T> {
                 debug!("no value - drop connection and request new one");
                 // No connection. Create a new one.
                 if let Some(checked_out_at) = self.checked_out_at {
-                    inner_pool.notify_dropped_connection(checked_out_at.elapsed());
+                    inner_pool.notify_connection_dropped(
+                        checked_out_at.elapsed(),
+                        self.created_at.elapsed(),
+                    );
                 } else {
                     warn!(
                         "Returning connection without takeoff time. \
