@@ -23,7 +23,7 @@ fn main() {
         .finish()
         .unwrap();
 
-    let fut = pool.checkout().from_err().and_then(|conn| {
+    let fut = pool.check_out().from_err().and_then(|conn| {
         conn.exists(MY_KEY).and_then(|(conn, exists)| {
             if exists {
                 info!("Key already exist");

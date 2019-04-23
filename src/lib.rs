@@ -7,6 +7,7 @@
 //! Reool is a connection pool for Redis based on [redis-rs](https://crates.io/crates/redis).
 //!
 //! Currently `reool` is a fixed size connection pool.
+//! `Reool` provides an interface for instrumentation.
 //!
 //! The `PooledConnection` of `reool` implements the `ConnectionLike`
 //! interface of [redis-rs](https://crates.io/crates/redis) for easier integration.
@@ -27,13 +28,15 @@ use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
 use crate::error::ReoolError;
 use crate::pool::{
-    Checkout as PoolCheckout, ConnectionFactory, NewConnFuture, NewConnectionError, Poolable,
+    Checkout as PoolCheckout, ConnectionFactory, ConnectionFactoryFuture, NewConnectionError,
+    Poolable,
 };
 
 mod backoff_strategy;
 mod commands;
 mod error;
 pub(crate) mod executor_flavour;
+pub mod instrumentation;
 mod node_pool;
 mod pool;
 mod pooled_connection;
@@ -70,10 +73,10 @@ impl Future for Checkout {
 pub trait RedisPool {
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the implementor.
-    fn checkout(&self) -> Checkout;
+    fn check_out(&self) -> Checkout;
     /// Checkout a new connection and if the request has to be enqueued
     /// use the given timeout or wait indefinetly.
-    fn checkout_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout;
+    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout;
 }
 
 impl Poolable for Connection {}
@@ -81,8 +84,8 @@ impl Poolable for Connection {}
 impl ConnectionFactory for Client {
     type Connection = Connection;
 
-    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
-        NewConnFuture::new(
+    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
+        Box::new(
             self.get_async_connection()
                 .map_err(|err| NewConnectionError::new(err)),
         )

@@ -28,7 +28,7 @@ fn main() {
     info!("Do 1000 pings concurrently");
     let futs: Vec<_> = (0..1_000)
         .map(|i| {
-            pool.checkout()
+            pool.check_out()
                 .from_err()
                 .and_then(|conn| conn.ping())
                 .then(move |res| match res {

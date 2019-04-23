@@ -171,7 +171,14 @@ impl SingleNodePool {
         connect_to: T,
         executor_flavour: ExecutorFlavour,
     ) -> InitializationResult<Self> {
-        let client = Client::open(connect_to).map_err(|err| InitializationError::new(err))?;
+        if config.desired_pool_size == 0 {
+            return Err(InitializationError::message_only(
+                "'desired_pool_size' must be at least 1",
+            ));
+        }
+
+        let client =
+            Client::open(connect_to).map_err(|err| InitializationError::cause_only(err))?;
 
         let pool_conf = PoolConfig {
             desired_pool_size: config.desired_pool_size,
@@ -191,7 +198,9 @@ impl SingleNodePool {
     ///
     /// This might not happen immediately.
     pub fn add_connections(&self, n: usize) {
-        (0..n).for_each(|_| self.pool.add_new_connection());
+        (0..n).for_each(|_| {
+            let _ = self.pool.add_new_connection();
+        });
     }
 
     /// Remove a connection from the pool.
@@ -211,11 +220,11 @@ impl SingleNodePool {
 }
 
 impl RedisPool for SingleNodePool {
-    fn checkout(&self) -> Checkout {
-        Checkout(self.pool.checkout(self.checkout_timeout))
+    fn check_out(&self) -> Checkout {
+        Checkout(self.pool.check_out(self.checkout_timeout))
     }
 
-    fn checkout_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
-        Checkout(self.pool.checkout(timeout))
+    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+        Checkout(self.pool.check_out(timeout))
     }
 }

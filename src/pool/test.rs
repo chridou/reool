@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use futures::future::{self, Future};
+use log::debug;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 use tokio_timer::Delay;
@@ -12,7 +13,10 @@ use tokio_timer::Delay;
 use crate::backoff_strategy::BackoffStrategy;
 use crate::error::ErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
-use crate::pool::{Config, ConnectionFactory, NewConnFuture, NewConnectionError, Pool, Poolable};
+use crate::pool::{
+    Config, ConnectionFactory, ConnectionFactoryFuture, NewConnFuture, NewConnectionError, Pool,
+    Poolable,
+};
 
 #[test]
 #[should_panic]
@@ -69,7 +73,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 
     let pool = Pool::new(
         Config::default()
-            .desired_pool_size(2)
+            .desired_pool_size(5)
             .backoff_strategy(BackoffStrategy::Constant {
                 fixed: Duration::from_millis(1),
                 jitter: false,
@@ -85,6 +89,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     assert_eq!(0, pool.stats().in_flight, "in_flight");
     assert_eq!(0, pool.stats().waiting, "waiting");
 
+    debug!("drop pool");
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
 }
@@ -98,7 +103,7 @@ fn checkout_one() {
 
     let pool = Pool::new(config.clone(), U32Factory::default(), executor);
 
-    let checked_out = pool.checkout(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 0);
@@ -124,12 +129,12 @@ fn checkout_twice_with_one_not_reusable() {
     let pool = Pool::new(config.clone(), U32Factory::default(), executor);
 
     // We do not return the con with managed
-    let checked_out = pool.checkout(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.checkout(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 1);
@@ -148,12 +153,12 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
     let pool = Pool::new(config.clone(), U32DelayFactory::default(), executor);
 
     // We do not return the con with managed
-    let checked_out = pool.checkout(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.checkout(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 1);
@@ -171,11 +176,11 @@ fn with_empty_pool_checkout_returns_timeout() {
 
     let pool = Pool::new(config.clone(), UnitFactory, executor);
 
-    let checked_out = pool.checkout(Some(Duration::from_millis(10)));
+    let checked_out = pool.check_out(Some(Duration::from_millis(10)));
     let err = checked_out.wait().err().unwrap();
     assert_eq!(err.kind(), ErrorKind::Timeout);
 
-    let checked_out = pool.checkout(Some(Duration::from_millis(10)));
+    let checked_out = pool.check_out(Some(Duration::from_millis(10)));
     let err = checked_out.wait().err().unwrap();
     assert_eq!(err.kind(), ErrorKind::Timeout);
 
@@ -196,12 +201,12 @@ fn create_connection_fails_some_times() {
         executor,
     );
 
-    let checked_out = pool.checkout(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 4);
 
-    let checked_out = pool.checkout(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
     let v = checked_out.wait().unwrap();
 
     assert_eq!(v, 8);
@@ -251,8 +256,8 @@ impl Poolable for () {}
 struct UnitFactory;
 impl ConnectionFactory for UnitFactory {
     type Connection = ();
-    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
-        NewConnFuture::new(future::ok(()))
+    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
+        Box::new(future::ok(()))
     }
 }
 
@@ -272,15 +277,15 @@ impl Default for U32Factory {
 
 impl ConnectionFactory for U32Factory {
     type Connection = u32;
-    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
-        NewConnFuture::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
+    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
+        Box::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
     }
 }
 
 struct U32FactoryFailsThreeTimesInARow(AtomicU32);
 impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
     type Connection = u32;
-    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
+    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
         #[derive(Debug)]
         struct MyError;
 
@@ -302,9 +307,9 @@ impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
 
         let current_count = self.0.fetch_add(1, Ordering::SeqCst);
         if current_count % 4 == 0 {
-            NewConnFuture::new(future::ok(current_count))
+            Box::new(future::ok(current_count))
         } else {
-            NewConnFuture::new(future::err(NewConnectionError::new(MyError)))
+            Box::new(future::err(NewConnectionError::new(MyError)))
         }
     }
 }
@@ -317,7 +322,7 @@ impl Default for U32FactoryFailsThreeTimesInARow {
 struct UnitFactoryAlwaysFails;
 impl ConnectionFactory for UnitFactoryAlwaysFails {
     type Connection = u32;
-    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
+    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
         #[derive(Debug)]
         struct MyError;
 
@@ -337,7 +342,7 @@ impl ConnectionFactory for UnitFactoryAlwaysFails {
             }
         }
 
-        NewConnFuture::new(future::err(NewConnectionError::new(MyError)))
+        Box::new(future::err(NewConnectionError::new(MyError)))
     }
 }
 
@@ -357,10 +362,10 @@ impl Default for U32DelayFactory {
 
 impl ConnectionFactory for U32DelayFactory {
     type Connection = u32;
-    fn create_connection(&self) -> NewConnFuture<Self::Connection> {
+    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
         let delay = Delay::new(Instant::now() + self.delay);
         let next = self.counter.fetch_add(1, Ordering::SeqCst);
-        NewConnFuture::new(
+        Box::new(
             delay
                 .map_err(|err| NewConnectionError::new(err))
                 .and_then(move |()| future::ok(next)),

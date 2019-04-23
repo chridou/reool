@@ -29,7 +29,7 @@ fn main() {
     info!("Do one ping");
     let start = Instant::now();
     runtime
-        .block_on(pool.checkout().from_err().and_then(|conn| conn.ping()))
+        .block_on(pool.check_out().from_err().and_then(|conn| conn.ping()))
         .unwrap();
     info!("PINGED in {:?}", start.elapsed());
 
@@ -38,7 +38,7 @@ fn main() {
     info!("Do another ping");
     let start = Instant::now();
     runtime
-        .block_on(pool.checkout().from_err().and_then(|conn| conn.ping()))
+        .block_on(pool.check_out().from_err().and_then(|conn| conn.ping()))
         .unwrap();
     info!("PINGED in {:?}", start.elapsed());
 
@@ -49,7 +49,7 @@ fn main() {
     let fut = iter_ok(0..100)
         .for_each(move |_| {
             pool_ping
-                .checkout()
+                .check_out()
                 .from_err()
                 .and_then(|conn| conn.ping())
                 .then(|res| match res {
@@ -73,7 +73,7 @@ fn main() {
     info!("Do one hundred pings in concurrently");
     let futs: Vec<_> = (0..100)
         .map(|i| {
-            pool.checkout()
+            pool.check_out()
                 .from_err()
                 .and_then(|conn| conn.ping())
                 .then(move |res| match res {

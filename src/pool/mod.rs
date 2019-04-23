@@ -4,12 +4,12 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use futures::{
-    future::{self, Future},
+    future::{self, Future, Loop},
     stream::Stream,
     sync::mpsc,
     Poll,
 };
-use log::{debug, trace, warn};
+use log::{debug, error, trace, warn};
 use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
@@ -102,21 +102,24 @@ where
             executor,
         };
 
-        (0..num_connections).for_each(|_| pool.add_new_connection());
+        (0..num_connections).for_each(|_| {
+            pool.add_new_connection();
+        });
 
         pool
     }
 
-    pub fn checkout(&self, timeout: Option<Duration>) -> Checkout<T> {
-        self.inner_pool.checkout(timeout)
+    pub fn check_out(&self, timeout: Option<Duration>) -> Checkout<T> {
+        self.inner_pool.check_out(timeout)
     }
 
     pub fn add_new_connection(&self) {
-        let fut = self.create_new_poolable_conn().map(|_| ()).map_err(|err| {
-            warn!("Failed to create initial connection: {}", err);
-        });
-        if let Err(err) = self.executor.execute(fut) {
-            warn!("Failed to execute task for initial connection: {}", err);
+        trace!("add new connection request");
+        if let Err(_) = self
+            .new_con_tx
+            .unbounded_send(NewConnMessage::RequestNewConn)
+        {
+            error!("could not request a new connection")
         }
     }
 
@@ -126,16 +129,6 @@ where
 
     pub fn stats(&self) -> PoolStats {
         self.inner_pool.stats()
-    }
-
-    fn create_new_poolable_conn(&self) -> NewConnFuture<NewConn<T>> {
-        create_new_poolable_conn(
-            Instant::now(),
-            self.connection_factory.clone(),
-            Arc::downgrade(&self.inner_pool),
-            self.backoff_strategy,
-            1,
-        )
     }
 
     #[cfg(test)]
@@ -152,83 +145,6 @@ impl<T: Poolable> Drop for Pool<T> {
     }
 }
 
-fn create_new_poolable_conn<T>(
-    initiated_at: Instant,
-    connection_factory: Arc<dyn ConnectionFactory<Connection = T> + Send + Sync + 'static>,
-    inner_pool: Weak<InnerPool<T>>,
-    back_off_strategy: BackoffStrategy,
-    attempt: usize,
-) -> NewConnFuture<NewConn<T>>
-where
-    T: Poolable,
-{
-    trace!("create new connection");
-    if let Some(existing_inner_pool) = inner_pool.upgrade() {
-        let inner_pool = Arc::downgrade(&existing_inner_pool);
-        drop(existing_inner_pool);
-        let start_connect = Instant::now();
-        let fut = connection_factory
-            .create_connection()
-            .then(move |res| match res {
-                Ok(conn) => {
-                    trace!("new connection created");
-                    NewConnFuture::new(future::ok(NewConn {
-                        total_time: initiated_at.elapsed(),
-                        connect_time: start_connect.elapsed(),
-                        managed: Managed {
-                            value: Some(conn),
-                            inner_pool: inner_pool,
-                            marked_for_kill: false,
-                            created_at: Instant::now(),
-                            takeoff_at: None,
-                        },
-                    }))
-                }
-                Err(err) => {
-                    inner_pool
-                        .upgrade()
-                        .into_iter()
-                        .for_each(|p| p.notify_conn_factory_failed());
-                    if let Some(backoff) = back_off_strategy.get_next_backoff(attempt) {
-                        let delay = Delay::new(Instant::now() + backoff);
-                        warn!(
-                            "Attempt {} to create a connection failed. Retry in {:?}. Error: {}",
-                            attempt, backoff, err
-                        );
-                        let fut = delay
-                            .map_err(|err| NewConnectionError::new(Box::new(err)))
-                            .and_then(move |()| {
-                                create_new_poolable_conn(
-                                    initiated_at,
-                                    connection_factory,
-                                    inner_pool,
-                                    back_off_strategy,
-                                    attempt + 1,
-                                )
-                            });
-                        NewConnFuture::new(fut)
-                    } else {
-                        warn!(
-                        "Attempt {} to create a connection failed. Retry immediately. Error: {}",
-                        attempt, err);
-                        create_new_poolable_conn(
-                            initiated_at,
-                            connection_factory,
-                            inner_pool,
-                            back_off_strategy,
-                            attempt + 1,
-                        )
-                    }
-                }
-            });
-        NewConnFuture::new(fut)
-    } else {
-        NewConnFuture::new(future::err(NewConnectionError::new(Box::new(
-            PoolIsGoneError,
-        ))))
-    }
-}
-
 fn start_new_conn_stream<T, C>(
     receiver: mpsc::UnboundedReceiver<NewConnMessage>,
     connection_factory: Arc<C>,
@@ -242,45 +158,106 @@ fn start_new_conn_stream<T, C>(
     let spawn_handle = executor.spawn_unbounded(receiver);
 
     let mut is_shut_down = false;
-    let executor_a = executor.clone();
     let fut = spawn_handle.for_each(move |msg| {
         if is_shut_down {
             trace!("new connection requested on finished stream");
-            Err(())
+            Box::new(future::err(()))
         } else {
+            trace!("creating new connection");
             match msg {
                 NewConnMessage::RequestNewConn => {
                     if let Some(existing_inner_pool) = inner_pool.upgrade() {
-                        let inner_pool = Arc::downgrade(&existing_inner_pool);
-                        drop(existing_inner_pool);
                         let fut = create_new_poolable_conn(
                             Instant::now(),
                             connection_factory.clone(),
-                            inner_pool,
+                            Arc::downgrade(&existing_inner_pool),
                             back_off_strategy,
-                            1,
                         )
                         .map(|_| ())
                         .map_err(|err| warn!("Failed to create new connection: {}", err));
-                        executor_a.execute(fut).map_err(|err| {
-                            warn!("Failed to execute task for new connection: {}", err);
-                            is_shut_down = true;
-                            ()
-                        })
+                        drop(existing_inner_pool);
+                        Box::new(fut)
                     } else {
-                        Err(())
+                        Box::new(future::err(())) as Box<Future<Item = _, Error = _> + Send>
                     }
                 }
                 NewConnMessage::Shutdown => {
                     debug!("shutdown new conn stream");
                     is_shut_down = true;
-                    Err(())
+                    Box::new(future::err(()))
                 }
             }
         }
     });
 
     executor.execute(fut).unwrap()
+}
+
+fn create_new_poolable_conn<T: Poolable>(
+    initiated_at: Instant,
+    connection_factory: Arc<dyn ConnectionFactory<Connection = T> + Send + Sync + 'static>,
+    weak_inner_pool: Weak<InnerPool<T>>,
+    back_off_strategy: BackoffStrategy,
+) -> NewConnFuture<T>
+where
+    T: Poolable,
+{
+    let fut = future::loop_fn((weak_inner_pool, 1), move |(weak_inner, attempt)| {
+        let fut = if let Some(inner_pool) = weak_inner.upgrade() {
+            let start_connect = Instant::now();
+            let fut = connection_factory
+                .create_connection()
+                .then(move |res| match res {
+                    Ok(conn) => {
+                        trace!("new connection created");
+                        inner_pool.notify_connection_created(
+                            initiated_at.elapsed(),
+                            start_connect.elapsed(),
+                        );
+                        Box::new(future::ok(Loop::Break(Managed::fresh(
+                            conn,
+                            Arc::downgrade(&inner_pool),
+                        ))))
+                    }
+                    Err(err) => {
+                        inner_pool.notify_connection_factory_failed();
+                        if let Some(backoff) = back_off_strategy.get_next_backoff(attempt) {
+                            let delay = Delay::new(Instant::now() + backoff);
+                            warn!(
+                            "Attempt {} to create a connection failed. Retry in {:?}. Error: {}",
+                            attempt, backoff, err
+                        );
+                            Box::new(
+                                delay
+                                    .map_err(|err| NewConnectionError::new(Box::new(err)))
+                                    .and_then(move |()| {
+                                        future::ok(Loop::Continue((
+                                            Arc::downgrade(&inner_pool),
+                                            attempt + 1,
+                                        )))
+                                    }),
+                            )
+                                as Box<dyn Future<Item = _, Error = _> + Send>
+                        } else {
+                            warn!(
+                        "Attempt {} to create a connection failed. Retry immediately. Error: {}",
+                        attempt, err);
+                            Box::new(future::ok(Loop::Continue((
+                                Arc::downgrade(&inner_pool),
+                                attempt + 1,
+                            ))))
+                        }
+                    }
+                });
+            Box::new(fut) as Box<dyn Future<Item = _, Error = _> + Send>
+        } else {
+            Box::new(future::err(NewConnectionError::new(Box::new(
+                PoolIsGoneError,
+            ))))
+        };
+        fut
+    });
+    NewConnFuture::new(fut)
 }
 
 pub(crate) struct Checkout<T: Poolable> {
@@ -309,35 +286,45 @@ impl<T: Poolable> Future for Checkout<T> {
 
 pub trait Poolable: Send + Sized + 'static {}
 
-pub struct Managed<T: Poolable> {
+pub(crate) struct Managed<T: Poolable> {
     created_at: Instant,
-    takeoff_at: Option<Instant>,
+    checked_out_at: Option<Instant>,
     pub value: Option<T>,
     inner_pool: Weak<InnerPool<T>>,
     marked_for_kill: bool,
 }
 
-impl<T: Poolable> Managed<T> {}
+impl<T: Poolable> Managed<T> {
+    pub fn fresh(value: T, inner_pool: Weak<InnerPool<T>>) -> Self {
+        Managed {
+            value: Some(value),
+            inner_pool,
+            marked_for_kill: false,
+            created_at: Instant::now(),
+            checked_out_at: None,
+        }
+    }
+}
 
 impl<T: Poolable> Drop for Managed<T> {
     fn drop(&mut self) {
         if let Some(inner_pool) = self.inner_pool.upgrade() {
             if self.marked_for_kill {
                 trace!("connection killed");
-                inner_pool.notify_killed(self.created_at.elapsed());
+                inner_pool.notify_connection_killed(self.created_at.elapsed());
             } else if let Some(value) = self.value.take() {
-                inner_pool.put(Managed {
+                inner_pool.check_in(Managed {
                     inner_pool: Arc::downgrade(&inner_pool),
                     value: Some(value),
                     marked_for_kill: false,
                     created_at: self.created_at,
-                    takeoff_at: self.takeoff_at,
+                    checked_out_at: self.checked_out_at,
                 });
             } else {
-                trace!("no value - request new connection");
+                trace!("no value - drop connection and request new one");
                 // No connection. Create a new one.
-                if let Some(takeoff_at) = self.takeoff_at {
-                    inner_pool.notify_not_returned(takeoff_at.elapsed());
+                if let Some(checked_out_at) = self.checked_out_at {
+                    inner_pool.notify_connection_dropped(checked_out_at.elapsed());
                 } else {
                     warn!(
                         "Returning connection without takeoff time. \
@@ -357,39 +344,21 @@ pub(crate) enum NewConnMessage {
     Shutdown,
 }
 
-pub(crate) struct NewConn<T: Poolable> {
-    /// the time it took to connect to the backend on success
-    connect_time: Duration,
-    /// The time for the whole creation process including retries
-    total_time: Duration,
-    managed: Managed<T>,
+pub(crate) struct NewConnFuture<T: Poolable> {
+    inner: Box<Future<Item = Managed<T>, Error = NewConnectionError> + Send + 'static>,
 }
 
-impl<T: Poolable> Drop for NewConn<T> {
-    fn drop(&mut self) {
-        if let Some(inner_pool) = self.managed.inner_pool.upgrade() {
-            inner_pool.notify_created(self.connect_time, self.total_time);
-        } else {
-            debug!("dropping new connection because pool is gone")
-        }
-    }
-}
-
-pub(crate) struct NewConnFuture<T> {
-    inner: Box<Future<Item = T, Error = NewConnectionError> + Send + 'static>,
-}
-
-impl<T> NewConnFuture<T> {
+impl<T: Poolable> NewConnFuture<T> {
     pub fn new<F>(f: F) -> Self
     where
-        F: Future<Item = T, Error = NewConnectionError> + Send + 'static,
+        F: Future<Item = Managed<T>, Error = NewConnectionError> + Send + 'static,
     {
         Self { inner: Box::new(f) }
     }
 }
 
-impl<T> Future for NewConnFuture<T> {
-    type Item = T;
+impl<T: Poolable> Future for NewConnFuture<T> {
+    type Item = Managed<T>;
     type Error = NewConnectionError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -437,9 +406,12 @@ impl StdError for PoolIsGoneError {
     }
 }
 
+pub(crate) type ConnectionFactoryFuture<T> =
+    Box<Future<Item = T, Error = NewConnectionError> + Send>;
+
 pub(crate) trait ConnectionFactory {
     type Connection: Poolable;
-    fn create_connection(&self) -> NewConnFuture<Self::Connection>;
+    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection>;
 }
 
 #[cfg(test)]

@@ -85,20 +85,44 @@ impl From<ReoolError> for RedisError {
 /// An initialization has failed
 #[derive(Debug)]
 pub struct InitializationError {
-    cause: Box<StdError + Send + Sync>,
+    message: Option<String>,
+    cause: Option<Box<dyn StdError + Send + Sync>>,
 }
 
 impl InitializationError {
-    pub fn new<E: StdError + Send + Sync + 'static>(cause: E) -> Self {
+    pub fn new<T: Into<String>, E: StdError + Send + Sync + 'static>(
+        msg: T,
+        cause: Option<E>,
+    ) -> Self {
         Self {
-            cause: Box::new(cause),
+            message: Some(msg.into()),
+            cause: cause.map(|cause| Box::new(cause) as Box<dyn StdError + Send + Sync>),
+        }
+    }
+
+    pub fn message_only<T: Into<String>>(msg: T) -> Self {
+        Self {
+            message: Some(msg.into()),
+            cause: None,
+        }
+    }
+
+    pub fn cause_only<E: StdError + Send + Sync + 'static>(cause: E) -> Self {
+        Self {
+            message: None,
+            cause: Some(Box::new(cause)),
         }
     }
 }
 
 impl fmt::Display for InitializationError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}: {}", self.description(), self.cause)
+        match (self.message.as_ref(), self.cause.as_ref()) {
+            (Some(msg), Some(cause)) => write!(f, "{}: {}", msg, cause),
+            (Some(msg), None) => write!(f, "{}", msg),
+            (None, Some(cause)) => write!(f, "{}: {}", self.description(), cause),
+            (None, None) => write!(f, "{}", self.description()),
+        }
     }
 }
 
@@ -107,7 +131,7 @@ impl StdError for InitializationError {
         "initialization failed"
     }
 
-    fn cause(&self) -> Option<&StdError> {
-        Some(&*self.cause)
+    fn cause(&self) -> Option<&dyn StdError> {
+        self.cause.as_ref().map(|cause| &**cause as &dyn StdError)
     }
 }

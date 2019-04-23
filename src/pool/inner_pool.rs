@@ -50,23 +50,24 @@ where
         }
     }
 
-    pub(super) fn put(&self, managed: Managed<T>) {
-        trace!("put connection");
+    pub(super) fn check_in(&self, managed: Managed<T>) {
+        trace!("check in");
         // Do not let any Managed get dropped in here
-        // because all_waiting might get locked twice!
+        // because core might get locked twice!
 
-        if let Some(takeoff_at) = managed.takeoff_at {
-            self.notify_conn_returned(takeoff_at.elapsed());
+        if let Some(checked_out_at) = managed.checked_out_at {
+            self.notify_checked_in_returned_connection(checked_out_at.elapsed());
         } else {
-            self.notify_new_connection();
+            trace!("check in - new connection");
+            self.notify_checked_in_new_connection();
         }
 
         let mut core = self.core.lock();
 
         if core.waiting.is_empty() {
             core.idle.push(managed);
-            trace!("put connection - added to idle");
-            self.notify_idle_conns(core.idle.len());
+            trace!("check in - added to idle");
+            self.notify_idle_connections_changed(core.idle.len());
         } else {
             // Do not let this one get dropped!
             let mut to_fulfill = managed;
@@ -79,29 +80,30 @@ where
                 }
             }
             core.idle.push(to_fulfill);
-            trace!("put connection - none fulfilled - added to idle");
-            self.notify_idle_conns(core.idle.len());
+            trace!("check in - none fulfilled - added to idle");
+            self.notify_idle_connections_changed(core.idle.len());
+            self.notify_waiting_queue_length(core.waiting.len());
         }
     }
 
-    pub(super) fn checkout(&self, timeout: Option<Duration>) -> Checkout<T> {
-        trace!("checkout");
+    pub(super) fn check_out(&self, timeout: Option<Duration>) -> Checkout<T> {
+        trace!("check out");
 
         let mut core = self.core.lock();
 
         if let Some(mut managed) = {
             let taken = core.idle.pop();
-            self.notify_idle_conns(core.idle.len());
+            self.notify_idle_connections_changed(core.idle.len());
             taken
         } {
-            managed.takeoff_at = Some(Instant::now());
-            self.notify_takeoff();
+            managed.checked_out_at = Some(Instant::now());
+            self.notify_checked_out();
             Checkout::new(future::ok(managed.into()))
         } else {
             if let Some(wait_queue_limit) = self.config.wait_queue_limit {
                 if core.waiting.len() > wait_queue_limit {
                     trace!(
-                        "checkout - wait queue limit reached \
+                        "check out - wait queue limit reached \
                          - returning error"
                     );
                     self.notify_queue_limit_reached();
@@ -110,7 +112,7 @@ where
                     )));
                 }
                 trace!(
-                    "checkout - no idle connection - \
+                    "check out - no idle connection - \
                      enqueue for checkout"
                 );
             }
@@ -152,30 +154,37 @@ where
         }
     }
 
-    pub(super) fn notify_takeoff(&self) {
+    // ==== Instrumentation ====
+
+    pub(super) fn notify_checked_out(&self) {
         self.in_flight_connections.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn notify_conn_returned(&self, _flight_time: Duration) {
+    fn notify_checked_in_returned_connection(&self, _flight_time: Duration) {
         self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
     }
 
-    pub(super) fn notify_not_returned(&self, _flight_time: Duration) {
+    fn notify_checked_in_new_connection(&self) {
+        self.pool_size.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(super) fn notify_connection_dropped(&self, _flight_time: Duration) {
         self.pool_size.fetch_sub(1, Ordering::SeqCst);
         self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
     }
 
-    fn notify_idle_conns(&self, v: usize) {
+    fn notify_idle_connections_changed(&self, v: usize) {
         self.idle_connections.store(v, Ordering::SeqCst);
     }
 
-    fn notify_new_connection(&self) {
-        self.pool_size.fetch_add(1, Ordering::SeqCst);
+    pub(super) fn notify_connection_created(
+        &self,
+        _connected_after: Duration,
+        _total_time: Duration,
+    ) {
     }
 
-    pub(super) fn notify_created(&self, _connected_after: Duration, _total_time: Duration) {}
-
-    pub(super) fn notify_killed(&self, _lifetime: Duration) {
+    pub(super) fn notify_connection_killed(&self, _lifetime: Duration) {
         self.pool_size.fetch_sub(1, Ordering::SeqCst);
     }
 
@@ -189,7 +198,7 @@ where
 
     pub(super) fn notify_not_fulfilled(&self, _after: Duration) {}
 
-    pub(super) fn notify_conn_factory_failed(&self) {}
+    pub(super) fn notify_connection_factory_failed(&self) {}
 
     fn notify_queue_limit_reached(&self) {}
 
@@ -226,23 +235,23 @@ impl<T: Poolable> Waiting<T> {
 
 impl<T: Poolable> Waiting<T> {
     fn fulfill(self, mut managed: Managed<T>, inner_pool: &InnerPool<T>) -> Option<Managed<T>> {
-        managed.takeoff_at = Some(Instant::now());
+        managed.checked_out_at = Some(Instant::now());
         match self {
             Waiting::Checkout(sender, waiting_since) => {
                 if let Err(mut managed) = sender.send(managed) {
                     trace!("waiting - not fulfilled");
                     inner_pool.notify_not_fulfilled(waiting_since.elapsed());
-                    managed.takeoff_at = None;
+                    managed.checked_out_at = None;
                     Some(managed)
                 } else {
                     trace!("waiting - fulfilled");
-                    inner_pool.notify_takeoff();
+                    inner_pool.notify_checked_out();
                     inner_pool.notify_fulfilled(waiting_since.elapsed());
                     None
                 }
             }
             Waiting::ReducePoolSize => {
-                managed.takeoff_at = None;
+                managed.checked_out_at = None;
                 managed.marked_for_kill = true;
                 None
             }
