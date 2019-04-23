@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use redis::r#async::Connection;
@@ -76,7 +75,7 @@ impl<T, I> Builder<T, I> {
     }
 
     /// Adds instrumentation to the pool
-    pub fn instrumented<II>(mut self, instrumentation: II) -> Builder<T, II>
+    pub fn instrumented<II>(self, instrumentation: II) -> Builder<T, II>
     where
         II: Instrumentation + Send + Sync + 'static,
     {
@@ -151,6 +150,15 @@ impl Config {
         self.reservation_limit = v;
         self
     }
+
+    /// Create a `Builder` initialized with the values from this `Config`
+    pub fn builder(&self) -> Builder<(), ()> {
+        Builder::default()
+            .desired_pool_size(self.desired_pool_size)
+            .checkout_timeout(self.checkout_timeout)
+            .backoff_strategy(self.backoff_strategy)
+            .reservation_limit(self.reservation_limit)
+    }
 }
 
 impl Default for Config {
@@ -171,7 +179,7 @@ impl Default for Config {
 /// Once the last instance drops the shared connections will be dropped.
 #[derive(Clone)]
 pub struct SingleNodePool {
-    pool: Arc<Pool<Connection>>,
+    pool: Pool<Connection>,
     checkout_timeout: Option<Duration>,
 }
 
@@ -220,7 +228,7 @@ impl SingleNodePool {
         let pool = Pool::new(pool_conf, client, executor_flavour, instrumentation);
 
         Ok(Self {
-            pool: Arc::new(pool),
+            pool,
             checkout_timeout: config.checkout_timeout,
         })
     }

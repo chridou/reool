@@ -282,7 +282,10 @@ where
 
 impl<T: Poolable> Drop for InnerPool<T> {
     fn drop(&mut self) {
-        debug!("inner pool dropped");
+        let _ = self
+            .request_new_conn
+            .unbounded_send(NewConnMessage::Shutdown);
+        debug!("inner pool dropped - all connections will be closed");
     }
 }
 

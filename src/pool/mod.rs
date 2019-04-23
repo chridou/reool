@@ -9,7 +9,7 @@ use futures::{
     sync::mpsc,
     Poll,
 };
-use log::{debug, error, trace, warn};
+use log::{debug, trace, warn};
 use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
@@ -66,7 +66,6 @@ pub struct PoolStats {
 
 pub(crate) struct Pool<T: Poolable> {
     inner_pool: Arc<InnerPool<T>>,
-    new_con_tx: mpsc::UnboundedSender<NewConnMessage>,
 }
 
 impl<T> Pool<T>
@@ -100,10 +99,7 @@ where
             config.backoff_strategy,
         );
 
-        let pool = Self {
-            inner_pool,
-            new_con_tx,
-        };
+        let pool = Self { inner_pool };
 
         (0..num_connections).for_each(|_| {
             pool.add_new_connection();
@@ -130,12 +126,7 @@ where
 
     pub fn add_new_connection(&self) {
         trace!("add new connection request");
-        if let Err(_) = self
-            .new_con_tx
-            .unbounded_send(NewConnMessage::RequestNewConn)
-        {
-            error!("could not request a new connection")
-        }
+        self.inner_pool.request_new_conn();
     }
 
     pub fn remove_connection(&self) {
@@ -150,13 +141,6 @@ where
     #[allow(unused)]
     fn inner_pool(&self) -> &Arc<InnerPool<T>> {
         &self.inner_pool
-    }
-}
-
-impl<T: Poolable> Drop for Pool<T> {
-    fn drop(&mut self) {
-        let _ = self.new_con_tx.unbounded_send(NewConnMessage::Shutdown);
-        debug!("pool dropped");
     }
 }
 
@@ -206,6 +190,14 @@ fn start_new_conn_stream<T, C>(
     });
 
     executor.execute(fut).unwrap()
+}
+
+impl<T: Poolable> Clone for Pool<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner_pool: self.inner_pool.clone(),
+        }
+    }
 }
 
 fn create_new_poolable_conn<T: Poolable, C>(
