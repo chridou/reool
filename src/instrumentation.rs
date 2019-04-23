@@ -1,29 +1,45 @@
 use std::time::Duration;
 
 pub trait Instrumentation {
-    fn notify_checked_out(&self);
+    fn checked_out_connection(&self);
 
-    fn notify_checked_in_returned_connection(&self, flight_time: Duration);
+    fn checked_in_returned_connection(&self, flight_time: Duration);
 
-    fn notify_checked_in_new_connection(&self);
+    fn checked_in_new_connection(&self);
 
-    fn notify_connection_dropped(&self, flight_time: Duration);
+    fn dropped_connection(&self, flight_time: Duration);
 
-    fn notify_idle_connections_changed(&self, v: usize);
+    fn idle_connections_changed(&self, len: usize);
 
-    fn notify_created(&self, connected_after: Duration, total_time: Duration);
+    fn connection_created(&self, connected_after: Duration, total_time: Duration);
 
-    fn notify_connection_killed(&self, lifetime: Duration);
+    fn killed_connection(&self, lifetime: Duration);
 
-    fn notify_waiting_queue_length(&self, len: usize);
+    fn reservations_changed(&self, len: usize);
 
-    fn notify_waiting(&self);
+    fn reservation_added(&self);
 
-    fn notify_fulfilled(&self, after: Duration);
+    fn reservation_fulfilled(&self, after: Duration);
 
-    fn notify_not_fulfilled(&self, after: Duration);
+    fn reservation_not_fulfilled(&self, after: Duration);
 
-    fn notify_connection_factory_failed(&self);
+    fn reservation_limit_reached(&self);
 
-    fn notify_queue_limit_reached(&self);
+    fn connection_factory_failed(&self);
+}
+
+impl Instrumentation for () {
+    fn checked_out_connection(&self) {}
+    fn checked_in_returned_connection(&self, _flight_time: Duration) {}
+    fn checked_in_new_connection(&self) {}
+    fn dropped_connection(&self, _flight_time: Duration) {}
+    fn idle_connections_changed(&self, _len: usize) {}
+    fn connection_created(&self, _connected_after: Duration, _total_time: Duration) {}
+    fn killed_connection(&self, _lifetime: Duration) {}
+    fn reservations_changed(&self, _len: usize) {}
+    fn reservation_added(&self) {}
+    fn reservation_fulfilled(&self, _after: Duration) {}
+    fn reservation_not_fulfilled(&self, _after: Duration) {}
+    fn reservation_limit_reached(&self) {}
+    fn connection_factory_failed(&self) {}
 }

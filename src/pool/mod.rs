@@ -15,6 +15,7 @@ use tokio_timer::Delay;
 use crate::backoff_strategy::BackoffStrategy;
 use crate::error::ReoolError;
 use crate::executor_flavour::*;
+use crate::instrumentation::Instrumentation;
 
 use inner_pool::InnerPool;
 
@@ -24,7 +25,7 @@ mod inner_pool;
 pub(crate) struct Config {
     pub desired_pool_size: usize,
     pub backoff_strategy: BackoffStrategy,
-    pub wait_queue_limit: Option<usize>,
+    pub reservation_limit: Option<usize>,
 }
 
 #[cfg(test)]
@@ -50,7 +51,7 @@ impl Default for Config {
         Self {
             desired_pool_size: 20,
             backoff_strategy: BackoffStrategy::default(),
-            wait_queue_limit: Some(50),
+            reservation_limit: Some(50),
         }
     }
 }
@@ -64,42 +65,44 @@ pub struct PoolStats {
 }
 
 pub(crate) struct Pool<T: Poolable> {
-    connection_factory: Arc<dyn ConnectionFactory<Connection = T> + Send + Sync>,
     inner_pool: Arc<InnerPool<T>>,
     new_con_tx: mpsc::UnboundedSender<NewConnMessage>,
-    backoff_strategy: BackoffStrategy,
-    executor: ExecutorFlavour,
 }
 
 impl<T> Pool<T>
 where
     T: Poolable,
 {
-    pub fn new<C>(config: Config, connection_factory: C, executor: ExecutorFlavour) -> Self
+    pub fn new<C, I>(
+        config: Config,
+        connection_factory: C,
+        executor: ExecutorFlavour,
+        instrumentation: Option<I>,
+    ) -> Self
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
+        I: Instrumentation + Send + Sync + 'static,
     {
-        let connection_factory = Arc::new(connection_factory);
-
         let (new_con_tx, new_conn_rx) = mpsc::unbounded();
 
         let num_connections = config.desired_pool_size;
-        let inner_pool = Arc::new(InnerPool::new(config.clone(), new_con_tx.clone()));
+        let inner_pool = Arc::new(InnerPool::new(
+            config.clone(),
+            new_con_tx.clone(),
+            instrumentation,
+        ));
 
         start_new_conn_stream(
             new_conn_rx,
-            connection_factory.clone(),
+            Arc::new(connection_factory),
             Arc::downgrade(&inner_pool),
-            &executor,
+            executor,
             config.backoff_strategy,
         );
 
         let pool = Self {
-            connection_factory: connection_factory.clone(),
             inner_pool,
             new_con_tx,
-            backoff_strategy: config.backoff_strategy,
-            executor,
         };
 
         (0..num_connections).for_each(|_| {
@@ -107,6 +110,18 @@ where
         });
 
         pool
+    }
+
+    #[cfg(test)]
+    pub fn no_instrumentation<C>(
+        config: Config,
+        connection_factory: C,
+        executor: ExecutorFlavour,
+    ) -> Self
+    where
+        C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
+    {
+        Self::new::<_, ()>(config, connection_factory, executor, None)
     }
 
     pub fn check_out(&self, timeout: Option<Duration>) -> Checkout<T> {
@@ -149,7 +164,7 @@ fn start_new_conn_stream<T, C>(
     receiver: mpsc::UnboundedReceiver<NewConnMessage>,
     connection_factory: Arc<C>,
     inner_pool: Weak<InnerPool<T>>,
-    executor: &ExecutorFlavour,
+    executor: ExecutorFlavour,
     back_off_strategy: BackoffStrategy,
 ) where
     T: Poolable,
@@ -193,14 +208,15 @@ fn start_new_conn_stream<T, C>(
     executor.execute(fut).unwrap()
 }
 
-fn create_new_poolable_conn<T: Poolable>(
+fn create_new_poolable_conn<T: Poolable, C>(
     initiated_at: Instant,
-    connection_factory: Arc<dyn ConnectionFactory<Connection = T> + Send + Sync + 'static>,
+    connection_factory: Arc<C>,
     weak_inner_pool: Weak<InnerPool<T>>,
     back_off_strategy: BackoffStrategy,
 ) -> NewConnFuture<T>
 where
     T: Poolable,
+    C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
 {
     let fut = future::loop_fn((weak_inner_pool, 1), move |(weak_inner, attempt)| {
         let fut = if let Some(inner_pool) = weak_inner.upgrade() {
@@ -310,8 +326,8 @@ impl<T: Poolable> Drop for Managed<T> {
     fn drop(&mut self) {
         if let Some(inner_pool) = self.inner_pool.upgrade() {
             if self.marked_for_kill {
-                trace!("connection killed");
-                inner_pool.notify_connection_killed(self.created_at.elapsed());
+                debug!("connection killed");
+                inner_pool.notify_killed_connection(self.created_at.elapsed());
             } else if let Some(value) = self.value.take() {
                 inner_pool.check_in(Managed {
                     inner_pool: Arc::downgrade(&inner_pool),
@@ -321,10 +337,10 @@ impl<T: Poolable> Drop for Managed<T> {
                     checked_out_at: self.checked_out_at,
                 });
             } else {
-                trace!("no value - drop connection and request new one");
+                debug!("no value - drop connection and request new one");
                 // No connection. Create a new one.
                 if let Some(checked_out_at) = self.checked_out_at {
-                    inner_pool.notify_connection_dropped(checked_out_at.elapsed());
+                    inner_pool.notify_dropped_connection(checked_out_at.elapsed());
                 } else {
                     warn!(
                         "Returning connection without takeoff time. \

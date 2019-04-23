@@ -6,27 +6,30 @@ use redis::r#async::Connection;
 use crate::backoff_strategy::BackoffStrategy;
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
+use crate::instrumentation::Instrumentation;
 use crate::pool::{Config as PoolConfig, Pool, PoolStats};
 use crate::*;
 
 /// A builder for a `SingleNodePool`
-pub struct Builder<T> {
+pub struct Builder<T, I> {
     config: Config,
     executor_flavour: ExecutorFlavour,
     connect_to: T,
+    instrumentation: Option<I>,
 }
 
-impl Default for Builder<()> {
+impl Default for Builder<(), ()> {
     fn default() -> Self {
         Self {
             config: Config::default(),
             executor_flavour: ExecutorFlavour::Runtime,
             connect_to: (),
+            instrumentation: None,
         }
     }
 }
 
-impl<T> Builder<T> {
+impl<T, I> Builder<T, I> {
     /// The number of connections the pool should initially have
     /// and try to maintain
     pub fn desired_pool_size(mut self, v: usize) -> Self {
@@ -50,17 +53,18 @@ impl<T> Builder<T> {
 
     /// The maximum length of the queue for waiting checkouts
     /// when no idle connections are available
-    pub fn wait_queue_limit(mut self, v: Option<usize>) -> Self {
-        self.config.wait_queue_limit = v;
+    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
+        self.config.reservation_limit = v;
         self
     }
 
     /// The Redis node to connect to
-    pub fn connect_to<C: IntoConnectionInfo>(self, connect_to: C) -> Builder<C> {
+    pub fn connect_to<C: IntoConnectionInfo>(self, connect_to: C) -> Builder<C, I> {
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
             connect_to: connect_to,
+            instrumentation: self.instrumentation,
         }
     }
 
@@ -70,15 +74,34 @@ impl<T> Builder<T> {
         self.executor_flavour = ExecutorFlavour::TokioTaskExecutor(executor);
         self
     }
+
+    /// Adds instrumentation to the pool
+    pub fn instrumented<II>(mut self, instrumentation: II) -> Builder<T, II>
+    where
+        II: Instrumentation + Send + Sync + 'static,
+    {
+        Builder {
+            config: self.config,
+            executor_flavour: self.executor_flavour,
+            connect_to: self.connect_to,
+            instrumentation: Some(instrumentation),
+        }
+    }
 }
 
-impl<T> Builder<T>
+impl<T, I> Builder<T, I>
 where
     T: IntoConnectionInfo,
+    I: Instrumentation + Send + Sync + 'static,
 {
     /// Build a new `SingleNodePool`
     pub fn finish(self) -> InitializationResult<SingleNodePool> {
-        SingleNodePool::create(self.config, self.connect_to, self.executor_flavour)
+        SingleNodePool::create(
+            self.config,
+            self.connect_to,
+            self.executor_flavour,
+            self.instrumentation,
+        )
     }
 }
 
@@ -97,7 +120,7 @@ pub struct Config {
     pub backoff_strategy: BackoffStrategy,
     /// The maximum length of the queue for waiting checkouts
     /// when no idle connections are available
-    pub wait_queue_limit: Option<usize>,
+    pub reservation_limit: Option<usize>,
 }
 
 impl Config {
@@ -124,8 +147,8 @@ impl Config {
 
     /// Sets the maximum length of the queue for waiting checkouts
     /// when no idle connections are available
-    pub fn wait_queue_limit(mut self, v: Option<usize>) -> Self {
-        self.wait_queue_limit = v;
+    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
+        self.reservation_limit = v;
         self
     }
 }
@@ -136,7 +159,7 @@ impl Default for Config {
             desired_pool_size: 20,
             checkout_timeout: Some(Duration::from_millis(20)),
             backoff_strategy: BackoffStrategy::default(),
-            wait_queue_limit: Some(100),
+            reservation_limit: Some(100),
         }
     }
 }
@@ -154,7 +177,7 @@ pub struct SingleNodePool {
 
 impl SingleNodePool {
     /// Creates a builder for a `SingleNodePool`
-    pub fn builder() -> Builder<()> {
+    pub fn builder() -> Builder<(), ()> {
         Builder::default()
     }
 
@@ -162,15 +185,23 @@ impl SingleNodePool {
     ///
     /// This function must be
     /// called on a thread of the tokio runtime.
-    pub fn new<T: IntoConnectionInfo>(config: Config, connect_to: T) -> InitializationResult<Self> {
-        Self::create(config, connect_to, ExecutorFlavour::Runtime)
+    pub fn new<T>(config: Config, connect_to: T) -> InitializationResult<Self>
+    where
+        T: IntoConnectionInfo,
+    {
+        Self::create::<T, ()>(config, connect_to, ExecutorFlavour::Runtime, None)
     }
 
-    pub(crate) fn create<T: IntoConnectionInfo>(
+    pub(crate) fn create<T, I>(
         config: Config,
         connect_to: T,
         executor_flavour: ExecutorFlavour,
-    ) -> InitializationResult<Self> {
+        instrumentation: Option<I>,
+    ) -> InitializationResult<Self>
+    where
+        T: IntoConnectionInfo,
+        I: Instrumentation + Send + Sync + 'static,
+    {
         if config.desired_pool_size == 0 {
             return Err(InitializationError::message_only(
                 "'desired_pool_size' must be at least 1",
@@ -183,10 +214,10 @@ impl SingleNodePool {
         let pool_conf = PoolConfig {
             desired_pool_size: config.desired_pool_size,
             backoff_strategy: config.backoff_strategy,
-            wait_queue_limit: config.wait_queue_limit,
+            reservation_limit: config.reservation_limit,
         };
 
-        let pool = Pool::new(pool_conf, client, executor_flavour);
+        let pool = Pool::new(pool_conf, client, executor_flavour, instrumentation);
 
         Ok(Self {
             pool: Arc::new(pool),

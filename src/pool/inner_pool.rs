@@ -12,11 +12,12 @@ use tokio_timer::Timeout;
 
 use super::{Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable};
 use crate::error::{ErrorKind, ReoolError};
+use crate::instrumentation::Instrumentation;
 
 /// Used to ensure there is no race between choeckouts and puts
 struct SyncCore<T: Poolable> {
     pub idle: Vec<Managed<T>>,
-    pub waiting: VecDeque<Waiting<T>>,
+    pub reservations: VecDeque<Reservation<T>>,
 }
 
 pub(crate) struct InnerPool<T: Poolable> {
@@ -27,17 +28,25 @@ pub(crate) struct InnerPool<T: Poolable> {
     idle_connections: AtomicUsize,
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
     config: Config,
+    instrumentation: Option<Box<dyn Instrumentation + Send + Sync>>,
 }
 
 impl<T> InnerPool<T>
 where
     T: Poolable,
 {
-    pub fn new(config: Config, request_new_conn: mpsc::UnboundedSender<NewConnMessage>) -> Self {
+    pub fn new<I>(
+        config: Config,
+        request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
+        instrumentation: Option<I>,
+    ) -> Self
+    where
+        I: Instrumentation + Send + Sync + 'static,
+    {
         let idle = Vec::with_capacity(config.desired_pool_size);
-        let waiting = VecDeque::new();
+        let reservations = VecDeque::new();
 
-        let core = Mutex::new(SyncCore { idle, waiting });
+        let core = Mutex::new(SyncCore { idle, reservations });
 
         Self {
             core,
@@ -47,6 +56,8 @@ where
             idle_connections: AtomicUsize::new(0),
             request_new_conn,
             config,
+            instrumentation: instrumentation
+                .map(|i| Box::new(i) as Box<dyn Instrumentation + Send + Sync>),
         }
     }
 
@@ -64,25 +75,25 @@ where
 
         let mut core = self.core.lock();
 
-        if core.waiting.is_empty() {
+        if core.reservations.is_empty() {
             core.idle.push(managed);
-            trace!("check in - added to idle");
+            trace!("check in - no reservations - added to idle");
             self.notify_idle_connections_changed(core.idle.len());
         } else {
             // Do not let this one get dropped!
             let mut to_fulfill = managed;
-            while let Some(one_waiting) = core.waiting.pop_front() {
+            while let Some(one_waiting) = core.reservations.pop_front() {
                 if let Some(not_fulfilled) = one_waiting.fulfill(to_fulfill, self) {
                     to_fulfill = not_fulfilled;
                 } else {
-                    self.notify_waiting_queue_length(core.waiting.len());
+                    self.notify_reservations_changed(core.reservations.len());
                     return;
                 }
             }
             core.idle.push(to_fulfill);
             trace!("check in - none fulfilled - added to idle");
             self.notify_idle_connections_changed(core.idle.len());
-            self.notify_waiting_queue_length(core.waiting.len());
+            self.notify_reservations_changed(core.reservations.len());
         }
     }
 
@@ -97,30 +108,30 @@ where
             taken
         } {
             managed.checked_out_at = Some(Instant::now());
-            self.notify_checked_out();
+            self.notify_checked_out_connection();
             Checkout::new(future::ok(managed.into()))
         } else {
-            if let Some(wait_queue_limit) = self.config.wait_queue_limit {
-                if core.waiting.len() > wait_queue_limit {
+            if let Some(reservation_limit) = self.config.reservation_limit {
+                if core.reservations.len() > reservation_limit {
                     trace!(
-                        "check out - wait queue limit reached \
+                        "check out - reservation limit reached \
                          - returning error"
                     );
-                    self.notify_queue_limit_reached();
+                    self.notify_reservation_limit_reached();
                     return Checkout::new(future::err(ReoolError::new(
                         ErrorKind::QueueLimitReached,
                     )));
                 }
                 trace!(
                     "check out - no idle connection - \
-                     enqueue for checkout"
+                     enqueue reservation"
                 );
             }
             let (tx, rx) = oneshot::channel();
-            let waiting = Waiting::checkout(tx);
-            core.waiting.push_back(waiting);
-            self.notify_waiting();
-            self.notify_waiting_queue_length(core.waiting.len());
+            let waiting = Reservation::checkout(tx);
+            core.reservations.push_back(waiting);
+            self.notify_reservation_added();
+            self.notify_reservations_changed(core.reservations.len());
 
             let fut = rx
                 .map(From::from)
@@ -150,57 +161,114 @@ where
             managed.marked_for_kill = true;
         } else {
             trace!("no idle connection to kill - enqueue for kill");
-            core.waiting.push_back(Waiting::reduce_pool_size());
+            core.reservations.push_back(Reservation::reduce_pool_size());
         }
     }
 
     // ==== Instrumentation ====
 
-    pub(super) fn notify_checked_out(&self) {
+    #[inline]
+    pub(super) fn notify_checked_out_connection(&self) {
         self.in_flight_connections.fetch_add(1, Ordering::SeqCst);
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.checked_out_connection()
+        }
     }
 
-    fn notify_checked_in_returned_connection(&self, _flight_time: Duration) {
+    #[inline]
+    fn notify_checked_in_returned_connection(&self, flight_time: Duration) {
         self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.checked_in_returned_connection(flight_time)
+        }
     }
 
+    #[inline]
     fn notify_checked_in_new_connection(&self) {
         self.pool_size.fetch_add(1, Ordering::SeqCst);
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.checked_in_new_connection()
+        }
     }
 
-    pub(super) fn notify_connection_dropped(&self, _flight_time: Duration) {
+    #[inline]
+    pub(super) fn notify_dropped_connection(&self, flight_time: Duration) {
         self.pool_size.fetch_sub(1, Ordering::SeqCst);
         self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.dropped_connection(flight_time)
+        }
     }
 
-    fn notify_idle_connections_changed(&self, v: usize) {
-        self.idle_connections.store(v, Ordering::SeqCst);
+    #[inline]
+    fn notify_idle_connections_changed(&self, len: usize) {
+        self.idle_connections.store(len, Ordering::SeqCst);
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.idle_connections_changed(len)
+        }
     }
 
+    #[inline]
     pub(super) fn notify_connection_created(
         &self,
-        _connected_after: Duration,
-        _total_time: Duration,
+        connected_after: Duration,
+        total_time: Duration,
     ) {
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.connection_created(connected_after, total_time)
+        }
     }
 
-    pub(super) fn notify_connection_killed(&self, _lifetime: Duration) {
+    #[inline]
+    pub(super) fn notify_killed_connection(&self, lifetime: Duration) {
         self.pool_size.fetch_sub(1, Ordering::SeqCst);
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.killed_connection(lifetime)
+        }
     }
 
-    fn notify_waiting_queue_length(&self, len: usize) {
+    #[inline]
+    fn notify_reservations_changed(&self, len: usize) {
         self.waiting_for_checkout.store(len, Ordering::SeqCst);
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.reservations_changed(len)
+        }
     }
 
-    fn notify_waiting(&self) {}
+    #[inline]
+    fn notify_reservation_added(&self) {
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.reservation_added()
+        }
+    }
 
-    pub(super) fn notify_fulfilled(&self, _after: Duration) {}
+    #[inline]
+    pub(super) fn notify_reservation_fulfilled(&self, after: Duration) {
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.reservation_fulfilled(after)
+        }
+    }
 
-    pub(super) fn notify_not_fulfilled(&self, _after: Duration) {}
+    #[inline]
+    pub(super) fn notify_reservation_not_fulfilled(&self, after: Duration) {
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.reservation_not_fulfilled(after)
+        }
+    }
 
-    pub(super) fn notify_connection_factory_failed(&self) {}
+    #[inline]
+    fn notify_reservation_limit_reached(&self) {
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.reservation_limit_reached()
+        }
+    }
 
-    fn notify_queue_limit_reached(&self) {}
+    #[inline]
+    pub(super) fn notify_connection_factory_failed(&self) {
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            instrumentation.connection_factory_failed()
+        }
+    }
 
     pub fn stats(&self) -> PoolStats {
         PoolStats {
@@ -218,39 +286,40 @@ impl<T: Poolable> Drop for InnerPool<T> {
     }
 }
 
-enum Waiting<T: Poolable> {
+enum Reservation<T: Poolable> {
     Checkout(oneshot::Sender<Managed<T>>, Instant),
     ReducePoolSize,
 }
 
-impl<T: Poolable> Waiting<T> {
+impl<T: Poolable> Reservation<T> {
     pub fn checkout(sender: oneshot::Sender<Managed<T>>) -> Self {
-        Waiting::Checkout(sender, Instant::now())
+        Reservation::Checkout(sender, Instant::now())
     }
 
     pub fn reduce_pool_size() -> Self {
-        Waiting::ReducePoolSize
+        Reservation::ReducePoolSize
     }
 }
 
-impl<T: Poolable> Waiting<T> {
+impl<T: Poolable> Reservation<T> {
     fn fulfill(self, mut managed: Managed<T>, inner_pool: &InnerPool<T>) -> Option<Managed<T>> {
         managed.checked_out_at = Some(Instant::now());
         match self {
-            Waiting::Checkout(sender, waiting_since) => {
+            Reservation::Checkout(sender, waiting_since) => {
                 if let Err(mut managed) = sender.send(managed) {
-                    trace!("waiting - not fulfilled");
-                    inner_pool.notify_not_fulfilled(waiting_since.elapsed());
+                    trace!("fulfill reservation - not fulfilled");
+                    inner_pool.notify_reservation_not_fulfilled(waiting_since.elapsed());
                     managed.checked_out_at = None;
                     Some(managed)
                 } else {
-                    trace!("waiting - fulfilled");
-                    inner_pool.notify_checked_out();
-                    inner_pool.notify_fulfilled(waiting_since.elapsed());
+                    trace!("fulfill reservation - fulfilled");
+                    inner_pool.notify_checked_out_connection();
+                    inner_pool.notify_reservation_fulfilled(waiting_since.elapsed());
                     None
                 }
             }
-            Waiting::ReducePoolSize => {
+            Reservation::ReducePoolSize => {
+                trace!("reservation - mark for kill");
                 managed.checked_out_at = None;
                 managed.marked_for_kill = true;
                 None

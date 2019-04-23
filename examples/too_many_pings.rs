@@ -19,7 +19,7 @@ fn main() {
     let pool = SingleNodePool::builder()
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(10)
-        .wait_queue_limit(Some(500))
+        .reservation_limit(Some(500))
         .checkout_timeout(Some(Duration::from_millis(50)))
         .task_executor(runtime.executor())
         .finish()
