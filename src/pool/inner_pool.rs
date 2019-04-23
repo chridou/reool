@@ -24,7 +24,7 @@ pub(crate) struct InnerPool<T: Poolable> {
     core: Mutex<SyncCore<T>>,
     pool_size: AtomicUsize,
     in_flight_connections: AtomicUsize,
-    waiting_for_checkout: AtomicUsize,
+    reservations: AtomicUsize,
     idle_connections: AtomicUsize,
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
     config: Config,
@@ -52,7 +52,7 @@ where
             core,
             pool_size: AtomicUsize::new(0),
             in_flight_connections: AtomicUsize::new(0),
-            waiting_for_checkout: AtomicUsize::new(0),
+            reservations: AtomicUsize::new(0),
             idle_connections: AtomicUsize::new(0),
             request_new_conn,
             config,
@@ -62,7 +62,6 @@ where
     }
 
     pub(super) fn check_in(&self, managed: Managed<T>) {
-        trace!("check in");
         // Do not let any Managed get dropped in here
         // because core might get locked twice!
 
@@ -98,8 +97,6 @@ where
     }
 
     pub(super) fn check_out(&self, timeout: Option<Duration>) -> Checkout<T> {
-        trace!("check out");
-
         let mut core = self.core.lock();
 
         if let Some(mut managed) = {
@@ -107,6 +104,7 @@ where
             self.notify_idle_connections_changed(core.idle.len());
             taken
         } {
+            trace!("check out - fulfilling with idle connection");
             managed.checked_out_at = Some(Instant::now());
             self.notify_checked_out_connection();
             Checkout::new(future::ok(managed.into()))
@@ -229,7 +227,7 @@ where
 
     #[inline]
     fn notify_reservations_changed(&self, len: usize) {
-        self.waiting_for_checkout.store(len, Ordering::SeqCst);
+        self.reservations.store(len, Ordering::SeqCst);
         if let Some(instrumentation) = self.instrumentation.as_ref() {
             instrumentation.reservations_changed(len)
         }
@@ -274,7 +272,7 @@ where
         PoolStats {
             pool_size: self.pool_size.load(Ordering::SeqCst),
             in_flight: self.in_flight_connections.load(Ordering::SeqCst),
-            waiting: self.waiting_for_checkout.load(Ordering::SeqCst),
+            reservations: self.reservations.load(Ordering::SeqCst),
             idle: self.idle_connections.load(Ordering::SeqCst),
         }
     }

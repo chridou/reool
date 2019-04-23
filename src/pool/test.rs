@@ -58,7 +58,7 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     assert_eq!(1, pool.stats().pool_size, "pool_size");
     assert_eq!(1, pool.stats().idle, "idle");
     assert_eq!(0, pool.stats().in_flight, "in_flight");
-    assert_eq!(0, pool.stats().waiting, "waiting");
+    assert_eq!(0, pool.stats().reservations, "reservations");
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
@@ -86,7 +86,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     assert_eq!(0, pool.stats().pool_size, "pool_size");
     assert_eq!(0, pool.stats().idle, "idle");
     assert_eq!(0, pool.stats().in_flight, "in_flight");
-    assert_eq!(0, pool.stats().waiting, "waiting");
+    assert_eq!(0, pool.stats().reservations, "reservations");
 
     debug!("drop pool");
     drop(pool);
@@ -112,7 +112,7 @@ fn checkout_one() {
     assert_eq!(1, pool.stats().pool_size, "pool_size");
     assert_eq!(1, pool.stats().idle, "idle");
     assert_eq!(0, pool.stats().in_flight, "in_flight");
-    assert_eq!(0, pool.stats().waiting, "waiting");
+    assert_eq!(0, pool.stats().reservations, "reservations");
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();

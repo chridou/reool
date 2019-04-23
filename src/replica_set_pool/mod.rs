@@ -1,19 +1,21 @@
-//! A connection pool for conencting to a single node
+//! A connection pool for connecting to the nodes of a replica set
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
+use crate::backoff_strategy::BackoffStrategy;
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::Instrumentation;
 use crate::pool::{Config as PoolConfig, Pool, PoolStats};
 use crate::{Checkout, RedisPool};
 
-pub use crate::backoff_strategy::BackoffStrategy;
-
-/// A configuration for creating a `SingleNodePool`.
+/// A configuration for creating a `ReplicaSetPool`.
 ///
-/// You should prefer using the `SingleNodePool::builder()` function.
+/// You should prefer using the `ReplicaSetPool::builder()` function.
 pub struct Config {
     /// The number of connections the pool should initially have
     /// and try to maintain
@@ -79,11 +81,11 @@ impl Default for Config {
     }
 }
 
-/// A builder for a `SingleNodePool`
+/// A builder for a `ReplicaSetPool`
 pub struct Builder<T, I> {
     config: Config,
     executor_flavour: ExecutorFlavour,
-    connect_to: T,
+    connect_to: Vec<T>,
     instrumentation: Option<I>,
 }
 
@@ -92,7 +94,7 @@ impl Default for Builder<(), ()> {
         Self {
             config: Config::default(),
             executor_flavour: ExecutorFlavour::Runtime,
-            connect_to: (),
+            connect_to: Vec::default(),
             instrumentation: None,
         }
     }
@@ -127,8 +129,8 @@ impl<T, I> Builder<T, I> {
         self
     }
 
-    /// The Redis node to connect to
-    pub fn connect_to<C: IntoConnectionInfo>(self, connect_to: C) -> Builder<C, I> {
+    /// The Redis nodes to connect to
+    pub fn connect_to<C: IntoConnectionInfo>(self, connect_to: Vec<C>) -> Builder<C, I> {
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
@@ -177,9 +179,9 @@ where
     T: IntoConnectionInfo,
     I: Instrumentation + Send + Sync + 'static,
 {
-    /// Build a new `SingleNodePool`
-    pub fn finish(self) -> InitializationResult<SingleNodePool> {
-        SingleNodePool::create(
+    /// Build a new `ReplicaSetPool`
+    pub fn finish(self) -> InitializationResult<ReplicaSetPool> {
+        ReplicaSetPool::create(
             self.config,
             self.connect_to,
             self.executor_flavour,
@@ -189,27 +191,31 @@ where
 }
 
 /// A connection pool that maintains multiple connections
-/// to a single Redis instance.
+/// to a multiple Redis instances. All the instances should
+/// be part of the same replica set. You should only perform
+/// read operations on the connections received from this kind of pool.
+///
+/// The replicas are selected in a round robin fashion.
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
 #[derive(Clone)]
-pub struct SingleNodePool {
-    pool: Pool<Connection>,
+pub struct ReplicaSetPool {
+    inner: Arc<Inner>,
     checkout_timeout: Option<Duration>,
 }
 
-impl SingleNodePool {
-    /// Creates a builder for a `SingleNodePool`
+impl ReplicaSetPool {
+    /// Creates a builder for a `ReplicaSetPool`
     pub fn builder() -> Builder<(), ()> {
         Builder::default()
     }
 
-    /// Creates a new instance of a `SingleNodePool`.
+    /// Creates a new instance of a `ReplicaSetPool`.
     ///
     /// This function must be
     /// called on a thread of the tokio runtime.
-    pub fn new<T>(config: Config, connect_to: T) -> InitializationResult<Self>
+    pub fn new<T>(config: Config, connect_to: Vec<T>) -> InitializationResult<Self>
     where
         T: IntoConnectionInfo,
     {
@@ -218,7 +224,7 @@ impl SingleNodePool {
 
     pub(crate) fn create<T, I>(
         config: Config,
-        connect_to: T,
+        connect_to: Vec<T>,
         executor_flavour: ExecutorFlavour,
         instrumentation: Option<I>,
     ) -> InitializationResult<Self>
@@ -226,61 +232,140 @@ impl SingleNodePool {
         T: IntoConnectionInfo,
         I: Instrumentation + Send + Sync + 'static,
     {
-        if config.desired_pool_size == 0 {
+        if connect_to.is_empty() {
             return Err(InitializationError::message_only(
-                "'desired_pool_size' must be at least 1",
+                "There must be at least on node to connect to.",
             ));
         }
 
-        let client =
-            Client::open(connect_to).map_err(|err| InitializationError::cause_only(err))?;
+        let mut pools = Vec::new();
 
-        let pool_conf = PoolConfig {
-            desired_pool_size: config.desired_pool_size,
-            backoff_strategy: config.backoff_strategy,
-            reservation_limit: config.reservation_limit,
-        };
+        let instrumentation = instrumentation.map(InstrumentationInterceptor::new);
 
-        let pool = Pool::new(pool_conf, client, executor_flavour, instrumentation);
+        for connect_to in connect_to {
+            let client =
+                Client::open(connect_to).map_err(|err| InitializationError::cause_only(err))?;
+
+            let pool_conf = PoolConfig {
+                desired_pool_size: config.desired_pool_size,
+                backoff_strategy: config.backoff_strategy,
+                reservation_limit: config.reservation_limit,
+            };
+
+            let pool = Pool::new(
+                pool_conf,
+                client,
+                executor_flavour.clone(),
+                instrumentation.clone(),
+            );
+
+            pools.push(pool);
+        }
 
         Ok(Self {
-            pool,
+            inner: Arc::new(Inner {
+                conn_count: AtomicUsize::new(0),
+                pools,
+            }),
             checkout_timeout: config.checkout_timeout,
         })
     }
 
-    /// Add `n` new connections to the pool.
-    ///
-    /// This might not happen immediately.
-    pub fn add_connections(&self, n: usize) {
-        (0..n).for_each(|_| {
-            let _ = self.pool.add_new_connection();
-        });
-    }
-
-    /// Remove a connection from the pool.
-    ///
-    /// This might not happen immediately.
-    ///
-    /// Do not call this function when there are no more connections
-    /// managed by the pool. The requests to reduce the
-    /// number of connections will are taken from a queue.
-    pub fn remove_connection(&self) {
-        self.pool.remove_connection();
-    }
-
-    /// Get some statistics from the pool.
-    pub fn stats(&self) -> PoolStats {
-        self.pool.stats()
+    /// Get some statistics from each the pools.
+    pub fn stats(&self) -> Vec<PoolStats> {
+        self.inner.pools.iter().map(|p| p.stats()).collect()
     }
 }
 
-impl RedisPool for SingleNodePool {
+impl RedisPool for ReplicaSetPool {
     fn check_out(&self) -> Checkout {
-        Checkout(self.pool.check_out(self.checkout_timeout))
+        self.inner.check_out(self.checkout_timeout)
     }
 
     fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
-        Checkout(self.pool.check_out(timeout))
+        self.inner.check_out(timeout)
+    }
+}
+
+struct Inner {
+    conn_count: AtomicUsize,
+    pools: Vec<Pool<Connection>>,
+}
+
+impl Inner {
+    fn check_out(&self, checkout_timeout: Option<Duration>) -> Checkout {
+        let conn_count = self.conn_count.fetch_add(1, Ordering::SeqCst);
+
+        let idx = self.pools.len() % conn_count;
+
+        Checkout(self.pools[idx].check_out(checkout_timeout))
+    }
+}
+
+struct InstrumentationInterceptor<I> {
+    inner: Arc<I>,
+}
+
+impl<I> Clone for InstrumentationInterceptor<I> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<I> InstrumentationInterceptor<I>
+where
+    I: Instrumentation + Send + Sync,
+{
+    pub fn new(instrumentation: I) -> Self {
+        InstrumentationInterceptor {
+            inner: Arc::new(instrumentation),
+        }
+    }
+}
+
+impl<I> Instrumentation for InstrumentationInterceptor<I>
+where
+    I: Instrumentation,
+{
+    fn checked_out_connection(&self) {
+        self.inner.checked_out_connection()
+    }
+    fn checked_in_returned_connection(&self, flight_time: Duration) {
+        self.inner.checked_in_returned_connection(flight_time)
+    }
+    fn checked_in_new_connection(&self) {
+        self.inner.checked_in_new_connection()
+    }
+    fn connection_dropped(&self, flight_time: Duration, lifetime: Duration) {
+        self.inner.connection_dropped(flight_time, lifetime)
+    }
+    fn idle_connections_changed(&self, len: usize) {
+        self.inner.idle_connections_changed(len)
+    }
+    fn connection_created(&self, connected_after: Duration, total_time: Duration) {
+        self.inner.connection_created(connected_after, total_time)
+    }
+    fn killed_connection(&self, lifetime: Duration) {
+        self.inner.killed_connection(lifetime)
+    }
+    fn reservations_changed(&self, len: usize) {
+        self.inner.reservations_changed(len)
+    }
+    fn reservation_added(&self) {
+        self.inner.reservation_added()
+    }
+    fn reservation_fulfilled(&self, after: Duration) {
+        self.inner.reservation_fulfilled(after)
+    }
+    fn reservation_not_fulfilled(&self, after: Duration) {
+        self.inner.reservation_not_fulfilled(after)
+    }
+    fn reservation_limit_reached(&self) {
+        self.inner.reservation_limit_reached()
+    }
+    fn connection_factory_failed(&self) {
+        self.inner.connection_factory_failed()
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "reool"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Christian Douven <chridou@users.noreply.github.com>"]
 readme = "README.md"
 license = "Apache-2.0/MIT"
@@ -8,7 +8,7 @@ description = "An asynchrounous connection pool for Redis based on tokio and red
 documentation = "https://docs.rs/reool"
 homepage = "https://github.com/chridou/reool"
 repository = "https://github.com/chridou/reool"
-keywords = ["redis", "connection", "connection-pool", "tokio"]
+keywords = ["redis", "connection", "connection-pool", "tokio", "async"]
 edition = "2018"
 
 [dependencies]
@@ -19,10 +19,10 @@ tokio = "0.1"
 tokio-timer = "0.2"
 redis = "0.10"
 rand = "0.6"
-metrix = { version = "0.9", optional = true}
+metrix = { version = "0.9", optional = true }
 
 [features]
 default = []
 
 [dev-dependencies]
-pretty_env_logger = "0.3.0"
+pretty_env_logger = "0.3"

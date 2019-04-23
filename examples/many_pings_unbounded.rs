@@ -6,7 +6,8 @@ use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::*;
+use reool::node_pool::SingleNodePool;
+use reool::{Commands, RedisPool};
 
 /// Do many ping commands with no checkout timeout
 /// and an unbounded checkout queue

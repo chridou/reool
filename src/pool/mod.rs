@@ -60,7 +60,7 @@ impl Default for Config {
 pub struct PoolStats {
     pub pool_size: usize,
     pub in_flight: usize,
-    pub waiting: usize,
+    pub reservations: usize,
     pub idle: usize,
 }
 

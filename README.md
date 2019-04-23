@@ -1,5 +1,11 @@
 # Reool
 
+[![crates.io](https://img.shields.io/crates/v/reool.svg)](https://crates.io/crates/reool)
+[![docs.rs](https://docs.rs/reool/badge.svg)](https://docs.rs/reool)
+[![downloads](https://img.shields.io/crates/d/reool.svg)](https://crates.io/crates/reool)
+[![license-mit](http://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/chridou/reool/blob/master/LICENSE-MIT)
+[![license-apache](http://img.shields.io/badge/license-APACHE-blue.svg)](https://github.com/chridou/reool/blob/master/LICENSE-APACHE)
+
 Currently in early development. 
 
 ## About

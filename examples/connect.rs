@@ -7,7 +7,7 @@ use log::info;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::*;
+use reool::node_pool::SingleNodePool;
 
 /// Simply connect to redis and establish some connections
 fn main() {

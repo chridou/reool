@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use futures::{future::Future, try_ready, Async, Poll};
-use redis::{r#async::Connection, Client, IntoConnectionInfo};
+use redis::{r#async::Connection, Client};
 
 use crate::error::ReoolError;
 use crate::pool::{
@@ -37,13 +37,12 @@ mod commands;
 mod error;
 pub(crate) mod executor_flavour;
 pub mod instrumentation;
-mod node_pool;
+pub mod node_pool;
 mod pool;
 mod pooled_connection;
+pub mod replica_set_pool;
 
-pub use backoff_strategy::BackoffStrategy;
 pub use commands::*;
-pub use node_pool::*;
 pub use pooled_connection::PooledConnection;
 
 /// A `Future` that represents a checkout.

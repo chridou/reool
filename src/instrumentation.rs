@@ -1,30 +1,46 @@
+//! Pluggable instrumentation
 use std::time::Duration;
 
+/// A trait with methods that get called by the pool on certain events.
 pub trait Instrumentation {
+    /// A connection was checked out
     fn checked_out_connection(&self);
 
+    /// A connection that was previously checked out was checked in again
     fn checked_in_returned_connection(&self, flight_time: Duration);
 
+    /// A newly created connection was checked in
     fn checked_in_new_connection(&self);
 
+    /// A connection was dropped because it was marked as defect
     fn connection_dropped(&self, flight_time: Duration, lifetime: Duration);
 
+    /// The number of idle connections changed
     fn idle_connections_changed(&self, len: usize);
 
+    /// A new connection was created
     fn connection_created(&self, connected_after: Duration, total_time: Duration);
 
+    /// A connection was intentionally killed. Happens when connections are removed.
     fn killed_connection(&self, lifetime: Duration);
 
+    /// The number of reservations in the reservation queue changed
     fn reservations_changed(&self, len: usize);
 
+    /// A reservation has been enqueued
     fn reservation_added(&self);
 
+    /// A reservation was fulfilled. A connection was available in time.
     fn reservation_fulfilled(&self, after: Duration);
 
+    /// A reservation was not fulfilled. A connection was mostly not available in time.
     fn reservation_not_fulfilled(&self, after: Duration);
 
+    /// The reservation queue has a limit and that limit was just reached.
+    /// This means a checkout has instantaneously failed.
     fn reservation_limit_reached(&self);
 
+    /// The connection factory was asked to create a new connection but it failed to do so.
     fn connection_factory_failed(&self);
 }
 
@@ -170,6 +186,7 @@ pub(crate) mod metrix {
         MetrixInstrumentation { transmitter: tx }
     }
 
+    #[derive(Clone)]
     pub struct MetrixInstrumentation {
         transmitter: TelemetryTransmitter<Metric>,
     }
