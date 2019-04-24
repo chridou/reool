@@ -1,5 +1,5 @@
 use std::env;
-use std::time::{Duration, Instant};
+use std::time::{Instant};
 
 use futures::future::{join_all, Future};
 use log::{debug, error, info};
@@ -30,8 +30,8 @@ fn main() {
             "redis://127.0.0.1:6379",
         ])
         .desired_pool_size(20)
-        .reservation_limit(Some(500))
-        .checkout_timeout(Some(Duration::from_millis(100)))
+        .reservation_limit(None) // No limit
+        .checkout_timeout(None) // No timeout
         .task_executor(runtime.executor())
         .instrumented_with_metrix(&mut driver)
         .finish()
