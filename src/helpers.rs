@@ -36,7 +36,7 @@ where
     let prefix = make_prefix(prefix);
 
     let key = format!("{}_{}", prefix, "CHECKOUT_TIMEOUT_MS");
-    match env::var(&key) {
+    match env::var(&key).map(|s| s.to_uppercase()) {
         Ok(s) => {
             if s == "NONE" {
                 f(None);
@@ -61,7 +61,7 @@ where
     let prefix = make_prefix(prefix);
 
     let key = format!("{}_{}", prefix, "RESERVATION_LIMIT");
-    match env::var(&key) {
+    match env::var(&key).map(|s| s.to_uppercase()) {
         Ok(s) => {
             if s == "NONE" {
                 f(None);
@@ -125,4 +125,17 @@ where
             key
         )))
     }
+}
+
+#[test]
+fn prefix_reool_is_default() {
+    let prefix = make_prefix::<String>(None);
+
+    assert_eq!(prefix, "REOOL");
+}
+#[test]
+fn prefix_can_be_customized() {
+    let prefix = make_prefix(Some("TEST"));
+
+    assert_eq!(prefix, "TEST");
 }

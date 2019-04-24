@@ -79,21 +79,16 @@ impl Config {
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
-    pub fn update_from_environment<T: Into<String>>(
-        mut self,
-        prefix: Option<T>,
-    ) -> InitializationResult<Self> {
-        let prefix = prefix.map(Into::into);
-
-        helpers::set_desired_pool_size(prefix.clone(), |v| {
+    pub fn update_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
+        helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
         })?;
 
-        helpers::set_checkout_timeout(prefix.clone(), |v| {
+        helpers::set_checkout_timeout(prefix, |v| {
             self.checkout_timeout = v;
         })?;
 
-        helpers::set_reservation_limit(prefix.clone(), |v| {
+        helpers::set_reservation_limit(prefix, |v| {
             self.reservation_limit = v;
         })?;
 
@@ -206,13 +201,11 @@ impl<T, I> Builder<T, I> {
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
-    pub fn update_config_from_environment<P: Into<String>>(
+    pub fn update_config_from_environment(
         self,
-        prefix: Option<P>,
+        prefix: Option<&str>,
     ) -> InitializationResult<Builder<T, I>> {
-        let prefix = prefix.map(Into::into);
-
-        let config = self.config.update_from_environment(prefix.clone())?;
+        let config = self.config.update_from_environment(prefix)?;
 
         Ok(Builder {
             config,
@@ -264,13 +257,11 @@ where
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Seperated by `;`. MANDATORY
-    pub fn update_from_environment<P: Into<String>>(
+    pub fn update_from_environment(
         self,
-        prefix: Option<P>,
+        prefix: Option<&str>,
     ) -> InitializationResult<Builder<String, I>> {
-        let prefix = prefix.map(Into::into);
-
-        let config = self.config.update_from_environment(prefix.clone())?;
+        let config = self.config.update_from_environment(prefix)?;
 
         if let Some(connect_to) = helpers::get_connect_to(prefix)? {
             Ok(Builder {

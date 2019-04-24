@@ -21,7 +21,7 @@ fn main() {
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(10)
         .reservation_limit(Some(500))
-        .checkout_timeout(Some(Duration::from_millis(50)))
+        .checkout_timeout(Some(Duration::from_millis(150)))
         .task_executor(runtime.executor())
         .finish()
         .unwrap();

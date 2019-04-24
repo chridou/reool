@@ -26,7 +26,7 @@ fn main() {
         .finish()
         .unwrap();
 
-    info!("Do one 1000 concurrently");
+    info!("Do one 1000 pings concurrently");
     let futs: Vec<_> = (0..1_000)
         .map(|i| {
             pool.check_out()
