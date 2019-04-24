@@ -10,7 +10,7 @@ use reool::node_pool::SingleNodePool;
 use reool::{Commands, RedisPool};
 
 /// Do many ping commands where many will faile because either
-/// the checkout ties out or the chackout queue is full
+/// the checkout ties out or the checkout queue is full
 fn main() {
     env::set_var("RUST_LOG", "reool=debug,too_many_pings=debug");
     let _ = pretty_env_logger::try_init();

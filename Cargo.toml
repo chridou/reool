@@ -26,3 +26,11 @@ default = []
 
 [dev-dependencies]
 pretty_env_logger = "0.3"
+
+[[example]]
+name = "metrix_single_node"
+required-features = ["metrix"]
+
+[[example]]
+name = "metrix_replica_set"
+required-features = ["metrix"]

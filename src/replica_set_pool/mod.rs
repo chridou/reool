@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use log::debug;
 use parking_lot::Mutex;
 use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
@@ -356,12 +357,18 @@ impl ReplicaSetPool {
                 reservation_limit: config.reservation_limit,
             };
 
-            let instrumentation = instrumentation_aggregator.as_ref().map(|agg| {
-                IndexedInstrumentation::new(agg.clone(), pool_idx);
+            let indexed_instrumentation = instrumentation_aggregator.as_ref().map(|agg| {
+                let instr = IndexedInstrumentation::new(agg.clone(), pool_idx);
                 agg.increase_pool_values();
+                instr
             });
 
-            let pool = Pool::new(pool_conf, client, executor_flavour.clone(), instrumentation);
+            let pool = Pool::new(
+                pool_conf,
+                client,
+                executor_flavour.clone(),
+                indexed_instrumentation,
+            );
 
             pools.push(pool);
 
@@ -376,9 +383,11 @@ impl ReplicaSetPool {
             )));
         }
 
+        debug!("replica set has {} nodes", pools.len());
+
         Ok(Self {
             inner: Arc::new(Inner {
-                conn_count: AtomicUsize::new(0),
+                count: AtomicUsize::new(0),
                 pools,
             }),
             checkout_timeout: config.checkout_timeout,
@@ -402,15 +411,15 @@ impl RedisPool for ReplicaSetPool {
 }
 
 struct Inner {
-    conn_count: AtomicUsize,
+    count: AtomicUsize,
     pools: Vec<Pool<Connection>>,
 }
 
 impl Inner {
     fn check_out(&self, checkout_timeout: Option<Duration>) -> Checkout {
-        let conn_count = self.conn_count.fetch_add(1, Ordering::SeqCst);
+        let count = self.count.fetch_add(1, Ordering::SeqCst);
 
-        let idx = self.pools.len() % conn_count;
+        let idx = count % self.pools.len();
 
         Checkout(self.pools[idx].check_out(checkout_timeout))
     }
