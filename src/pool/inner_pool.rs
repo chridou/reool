@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::{
@@ -22,8 +22,8 @@ struct SyncCore<T: Poolable> {
 
 pub(crate) struct InnerPool<T: Poolable> {
     core: Mutex<SyncCore<T>>,
-    pool_size: AtomicUsize,
-    in_flight_connections: AtomicUsize,
+    pool_size: AtomicIsize,
+    in_flight_connections: AtomicIsize,
     reservations: AtomicUsize,
     idle_connections: AtomicUsize,
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
@@ -50,8 +50,8 @@ where
 
         Self {
             core,
-            pool_size: AtomicUsize::new(0),
-            in_flight_connections: AtomicUsize::new(0),
+            pool_size: AtomicIsize::new(0),
+            in_flight_connections: AtomicIsize::new(0),
             reservations: AtomicUsize::new(0),
             idle_connections: AtomicUsize::new(0),
             request_new_conn,
@@ -65,14 +65,14 @@ where
         // Do not let any Managed get dropped in here
         // because core might get locked twice!
 
+        let mut core = self.core.lock();
+
         if let Some(checked_out_at) = managed.checked_out_at {
             self.notify_checked_in_returned_connection(checked_out_at.elapsed());
         } else {
             trace!("check in - new connection");
             self.notify_checked_in_new_connection();
         }
-
-        let mut core = self.core.lock();
 
         if core.reservations.is_empty() {
             core.idle.push(managed);
@@ -107,7 +107,7 @@ where
             trace!("check out - fulfilling with idle connection");
             managed.checked_out_at = Some(Instant::now());
             self.notify_checked_out_connection();
-            Checkout::new(future::ok(managed.into()))
+            Checkout::new(future::ok(managed))
         } else {
             if let Some(reservation_limit) = self.config.reservation_limit {
                 if core.reservations.len() > reservation_limit {
@@ -145,9 +145,10 @@ where
     }
 
     pub(super) fn request_new_conn(&self) {
-        if let Err(_) = self
+        if self
             .request_new_conn
             .unbounded_send(NewConnMessage::RequestNewConn)
+            .is_err()
         {
             error!("could not request a new connection")
         }
@@ -166,35 +167,48 @@ where
     // ==== Instrumentation ====
 
     #[inline]
-    pub(super) fn notify_checked_out_connection(&self) {
-        self.in_flight_connections.fetch_add(1, Ordering::SeqCst);
+    fn notify_checked_out_connection(&self) {
+        trace!("inc inflight");
+        let in_flight = self.in_flight_connections.fetch_add(1, Ordering::SeqCst);
+        let in_flight = (std::cmp::max(0, in_flight + 1)) as usize;
         if let Some(instrumentation) = self.instrumentation.as_ref() {
-            instrumentation.checked_out_connection()
+            instrumentation.checked_out_connection();
+            instrumentation.in_flight_connections_changed(in_flight, in_flight);
         }
     }
 
     #[inline]
     fn notify_checked_in_returned_connection(&self, flight_time: Duration) {
-        self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
+        trace!("dec inflight returned");
+        let in_flight = self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
+        let in_flight = std::cmp::max(0, in_flight - 1) as usize;
         if let Some(instrumentation) = self.instrumentation.as_ref() {
-            instrumentation.checked_in_returned_connection(flight_time)
+            instrumentation.checked_in_returned_connection(flight_time);
+            instrumentation.in_flight_connections_changed(in_flight, in_flight);
         }
     }
 
     #[inline]
     fn notify_checked_in_new_connection(&self) {
-        self.pool_size.fetch_add(1, Ordering::SeqCst);
+        let pool_size = self.pool_size.fetch_add(1, Ordering::SeqCst);
+        let pool_size = std::cmp::max(0, pool_size + 1) as usize;
         if let Some(instrumentation) = self.instrumentation.as_ref() {
-            instrumentation.checked_in_new_connection()
+            instrumentation.checked_in_new_connection();
+            instrumentation.usable_connections_changed(pool_size, pool_size);
         }
     }
 
     #[inline]
     pub(super) fn notify_connection_dropped(&self, flight_time: Duration, lifetime: Duration) {
-        self.pool_size.fetch_sub(1, Ordering::SeqCst);
-        self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
+        let pool_size = self.pool_size.fetch_sub(1, Ordering::SeqCst);
+        let pool_size = std::cmp::max(0, pool_size - 1) as usize;
+        trace!("dec inflight dropped");
+        let in_flight = self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
+        let in_flight = std::cmp::max(0, in_flight - 1) as usize;
         if let Some(instrumentation) = self.instrumentation.as_ref() {
-            instrumentation.connection_dropped(flight_time, lifetime)
+            instrumentation.connection_dropped(flight_time, lifetime);
+            instrumentation.usable_connections_changed(pool_size, pool_size);
+            instrumentation.in_flight_connections_changed(in_flight, in_flight);
         }
     }
 
@@ -202,7 +216,7 @@ where
     fn notify_idle_connections_changed(&self, len: usize) {
         self.idle_connections.store(len, Ordering::SeqCst);
         if let Some(instrumentation) = self.instrumentation.as_ref() {
-            instrumentation.idle_connections_changed(len)
+            instrumentation.idle_connections_changed(len, len)
         }
     }
 
@@ -219,9 +233,11 @@ where
 
     #[inline]
     pub(super) fn notify_killed_connection(&self, lifetime: Duration) {
-        self.pool_size.fetch_sub(1, Ordering::SeqCst);
+        let pool_size = self.pool_size.fetch_sub(1, Ordering::SeqCst);
+        let pool_size = std::cmp::max(0, pool_size - 1) as usize;
         if let Some(instrumentation) = self.instrumentation.as_ref() {
-            instrumentation.killed_connection(lifetime)
+            instrumentation.killed_connection(lifetime);
+            instrumentation.usable_connections_changed(pool_size, pool_size);
         }
     }
 
@@ -229,7 +245,7 @@ where
     fn notify_reservations_changed(&self, len: usize) {
         self.reservations.store(len, Ordering::SeqCst);
         if let Some(instrumentation) = self.instrumentation.as_ref() {
-            instrumentation.reservations_changed(len)
+            instrumentation.reservations_changed(len, len, self.config.reservation_limit)
         }
     }
 
@@ -270,8 +286,8 @@ where
 
     pub fn stats(&self) -> PoolStats {
         PoolStats {
-            pool_size: self.pool_size.load(Ordering::SeqCst),
-            in_flight: self.in_flight_connections.load(Ordering::SeqCst),
+            pool_size: std::cmp::max(0, self.pool_size.load(Ordering::SeqCst)) as usize,
+            in_flight: std::cmp::max(0, self.in_flight_connections.load(Ordering::SeqCst)) as usize,
             reservations: self.reservations.load(Ordering::SeqCst),
             idle: self.idle_connections.load(Ordering::SeqCst),
         }

@@ -132,7 +132,7 @@ impl<T, I> Builder<T, I> {
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
-            connect_to: connect_to,
+            connect_to,
             instrumentation: self.instrumentation,
         }
     }

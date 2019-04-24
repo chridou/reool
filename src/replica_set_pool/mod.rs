@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
 use crate::backoff_strategy::BackoffStrategy;
@@ -29,6 +30,8 @@ pub struct Config {
     /// The maximum length of the queue for waiting checkouts
     /// when no idle connections are available
     pub reservation_limit: Option<usize>,
+    /// The minimum required nodes to start
+    pub min_required_nodes: usize,
 }
 
 impl Config {
@@ -60,6 +63,13 @@ impl Config {
         self
     }
 
+    /// Sets the maximum length of the queue for waiting checkouts
+    /// when no idle connections are available
+    pub fn min_required_nodes(mut self, v: usize) -> Self {
+        self.min_required_nodes = v;
+        self
+    }
+
     /// Create a `Builder` initialized with the values from this `Config`
     pub fn builder(&self) -> Builder<(), ()> {
         Builder::default()
@@ -77,6 +87,7 @@ impl Default for Config {
             checkout_timeout: Some(Duration::from_millis(20)),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
+            min_required_nodes: 1,
         }
     }
 }
@@ -129,12 +140,18 @@ impl<T, I> Builder<T, I> {
         self
     }
 
+    /// The minimum required nodes to start
+    pub fn min_required_nodes(mut self, v: usize) -> Self {
+        self.config.min_required_nodes = v;
+        self
+    }
+
     /// The Redis nodes to connect to
     pub fn connect_to<C: IntoConnectionInfo>(self, connect_to: Vec<C>) -> Builder<C, I> {
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
-            connect_to: connect_to,
+            connect_to,
             instrumentation: self.instrumentation,
         }
     }
@@ -240,11 +257,13 @@ impl ReplicaSetPool {
 
         let mut pools = Vec::new();
 
-        let instrumentation = instrumentation.map(InstrumentationInterceptor::new);
+        let instrumentation_aggregator = instrumentation
+            .map(InstrumentationAggregator::new)
+            .map(Arc::new);
 
+        let mut pool_idx = 0;
         for connect_to in connect_to {
-            let client =
-                Client::open(connect_to).map_err(|err| InitializationError::cause_only(err))?;
+            let client = Client::open(connect_to).map_err(InitializationError::cause_only)?;
 
             let pool_conf = PoolConfig {
                 desired_pool_size: config.desired_pool_size,
@@ -252,14 +271,24 @@ impl ReplicaSetPool {
                 reservation_limit: config.reservation_limit,
             };
 
-            let pool = Pool::new(
-                pool_conf,
-                client,
-                executor_flavour.clone(),
-                instrumentation.clone(),
-            );
+            let instrumentation = instrumentation_aggregator.as_ref().map(|agg| {
+                IndexedInstrumentation::new(agg.clone(), pool_idx);
+                agg.increase_pool_values();
+            });
+
+            let pool = Pool::new(pool_conf, client, executor_flavour.clone(), instrumentation);
 
             pools.push(pool);
+
+            pool_idx += 1;
+        }
+
+        if pools.len() < config.min_required_nodes {
+            return Err(InitializationError::message_only(format!(
+                "The minimum required nodes is {} but there are only {}",
+                config.min_required_nodes,
+                pools.len()
+            )));
         }
 
         Ok(Self {
@@ -273,7 +302,7 @@ impl ReplicaSetPool {
 
     /// Get some statistics from each the pools.
     pub fn stats(&self) -> Vec<PoolStats> {
-        self.inner.pools.iter().map(|p| p.stats()).collect()
+        self.inner.pools.iter().map(Pool::stats).collect()
     }
 }
 
@@ -302,70 +331,174 @@ impl Inner {
     }
 }
 
-struct InstrumentationInterceptor<I> {
-    inner: Arc<I>,
+struct InstrumentationAggregator<I> {
+    outbound: I,
+    usable_connections: Mutex<Vec<usize>>,
+    idle_connections: Mutex<Vec<usize>>,
+    in_flight_connections: Mutex<Vec<usize>>,
+    reservations: Mutex<Vec<usize>>,
 }
 
-impl<I> Clone for InstrumentationInterceptor<I> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<I> InstrumentationInterceptor<I>
+impl<I> InstrumentationAggregator<I>
 where
     I: Instrumentation + Send + Sync,
 {
     pub fn new(instrumentation: I) -> Self {
-        InstrumentationInterceptor {
-            inner: Arc::new(instrumentation),
+        InstrumentationAggregator {
+            outbound: instrumentation,
+            usable_connections: Mutex::new(Vec::default()),
+            idle_connections: Mutex::new(Vec::default()),
+            in_flight_connections: Mutex::new(Vec::default()),
+            reservations: Mutex::new(Vec::default()),
         }
+    }
+
+    pub fn increase_pool_values(&self) {
+        self.usable_connections.lock().push(0);
+        self.idle_connections.lock().push(0);
+        self.in_flight_connections.lock().push(0);
+        self.reservations.lock().push(0);
     }
 }
 
-impl<I> Instrumentation for InstrumentationInterceptor<I>
+impl<I> InstrumentationAggregator<I>
+where
+    I: Instrumentation,
+{
+    fn checked_out_connection(&self, _pool_idx: usize) {
+        self.outbound.checked_out_connection()
+    }
+    fn checked_in_returned_connection(&self, flight_time: Duration, _pool_idx: usize) {
+        self.outbound.checked_in_returned_connection(flight_time)
+    }
+    fn checked_in_new_connection(&self, _pool_idx: usize) {
+        self.outbound.checked_in_new_connection()
+    }
+    fn connection_dropped(&self, flight_time: Duration, lifetime: Duration, _pool_idx: usize) {
+        self.outbound.connection_dropped(flight_time, lifetime)
+    }
+    fn idle_connections_changed(&self, v: usize, pool_idx: usize) {
+        let mut idle_connections = self.idle_connections.lock();
+        idle_connections[pool_idx] = v;
+        let min = idle_connections.iter().cloned().min().unwrap_or(0);
+        let max = idle_connections.iter().cloned().max().unwrap_or(0);
+        self.outbound.idle_connections_changed(min, max);
+    }
+    fn connection_created(
+        &self,
+        connected_after: Duration,
+        total_time: Duration,
+        _pool_idx: usize,
+    ) {
+        self.outbound
+            .connection_created(connected_after, total_time)
+    }
+    fn killed_connection(&self, lifetime: Duration, _pool_idx: usize) {
+        self.outbound.killed_connection(lifetime)
+    }
+    fn reservations_changed(&self, v: usize, limit: Option<usize>, pool_idx: usize) {
+        let mut reservations = self.reservations.lock();
+        reservations[pool_idx] = v;
+        let min = reservations.iter().cloned().min().unwrap_or(0);
+        let max = reservations.iter().cloned().max().unwrap_or(0);
+        self.outbound.reservations_changed(min, max, limit);
+    }
+    fn reservation_added(&self, _pool_idx: usize) {
+        self.outbound.reservation_added()
+    }
+    fn reservation_fulfilled(&self, after: Duration, _pool_idx: usize) {
+        self.outbound.reservation_fulfilled(after)
+    }
+    fn reservation_not_fulfilled(&self, after: Duration, _pool_idx: usize) {
+        self.outbound.reservation_not_fulfilled(after)
+    }
+    fn reservation_limit_reached(&self, _pool_idx: usize) {
+        self.outbound.reservation_limit_reached()
+    }
+    fn connection_factory_failed(&self, _pool_idx: usize) {
+        self.outbound.connection_factory_failed()
+    }
+    fn usable_connections_changed(&self, v: usize, pool_idx: usize) {
+        let mut usable_connections = self.usable_connections.lock();
+        usable_connections[pool_idx] = v;
+        let min = usable_connections.iter().cloned().min().unwrap_or(0);
+        let max = usable_connections.iter().cloned().max().unwrap_or(0);
+        self.outbound.usable_connections_changed(min, max);
+    }
+    fn in_flight_connections_changed(&self, v: usize, pool_idx: usize) {
+        let mut in_flight_connections = self.in_flight_connections.lock();
+        in_flight_connections[pool_idx] = v;
+        let min = in_flight_connections.iter().cloned().min().unwrap_or(0);
+        let max = in_flight_connections.iter().cloned().max().unwrap_or(0);
+        self.outbound.in_flight_connections_changed(min, max);
+    }
+}
+
+struct IndexedInstrumentation<I> {
+    index: usize,
+    aggregator: Arc<InstrumentationAggregator<I>>,
+}
+
+impl<I> IndexedInstrumentation<I>
+where
+    I: Instrumentation,
+{
+    pub fn new(aggregator: Arc<InstrumentationAggregator<I>>, index: usize) -> Self {
+        Self { index, aggregator }
+    }
+}
+
+impl<I> Instrumentation for IndexedInstrumentation<I>
 where
     I: Instrumentation,
 {
     fn checked_out_connection(&self) {
-        self.inner.checked_out_connection()
+        self.aggregator.checked_out_connection(self.index)
     }
     fn checked_in_returned_connection(&self, flight_time: Duration) {
-        self.inner.checked_in_returned_connection(flight_time)
+        self.aggregator
+            .checked_in_returned_connection(flight_time, self.index)
     }
     fn checked_in_new_connection(&self) {
-        self.inner.checked_in_new_connection()
+        self.aggregator.checked_in_new_connection(self.index)
     }
     fn connection_dropped(&self, flight_time: Duration, lifetime: Duration) {
-        self.inner.connection_dropped(flight_time, lifetime)
+        self.aggregator
+            .connection_dropped(flight_time, lifetime, self.index)
     }
-    fn idle_connections_changed(&self, len: usize) {
-        self.inner.idle_connections_changed(len)
+    fn idle_connections_changed(&self, _min: usize, max: usize) {
+        self.aggregator.idle_connections_changed(max, self.index)
     }
     fn connection_created(&self, connected_after: Duration, total_time: Duration) {
-        self.inner.connection_created(connected_after, total_time)
+        self.aggregator
+            .connection_created(connected_after, total_time, self.index)
     }
     fn killed_connection(&self, lifetime: Duration) {
-        self.inner.killed_connection(lifetime)
+        self.aggregator.killed_connection(lifetime, self.index)
     }
-    fn reservations_changed(&self, len: usize) {
-        self.inner.reservations_changed(len)
+    fn reservations_changed(&self, _min: usize, max: usize, limit: Option<usize>) {
+        self.aggregator.reservations_changed(max, limit, self.index)
     }
     fn reservation_added(&self) {
-        self.inner.reservation_added()
+        self.aggregator.reservation_added(self.index)
     }
     fn reservation_fulfilled(&self, after: Duration) {
-        self.inner.reservation_fulfilled(after)
+        self.aggregator.reservation_fulfilled(after, self.index)
     }
     fn reservation_not_fulfilled(&self, after: Duration) {
-        self.inner.reservation_not_fulfilled(after)
+        self.aggregator.reservation_not_fulfilled(after, self.index)
     }
     fn reservation_limit_reached(&self) {
-        self.inner.reservation_limit_reached()
+        self.aggregator.reservation_limit_reached(self.index)
     }
     fn connection_factory_failed(&self) {
-        self.inner.connection_factory_failed()
+        self.aggregator.connection_factory_failed(self.index)
+    }
+    fn usable_connections_changed(&self, _min: usize, max: usize) {
+        self.aggregator.usable_connections_changed(max, self.index)
+    }
+    fn in_flight_connections_changed(&self, _min: usize, max: usize) {
+        self.aggregator
+            .in_flight_connections_changed(max, self.index)
     }
 }
