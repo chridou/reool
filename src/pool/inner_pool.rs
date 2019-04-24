@@ -22,7 +22,11 @@ struct SyncCore<T: Poolable> {
 
 pub(crate) struct InnerPool<T: Poolable> {
     core: Mutex<SyncCore<T>>,
+    // inc/dec based and we can not guarantee ordering
+    // so can temporarely be negative
     pool_size: AtomicIsize,
+    // inc/dec based and we can not guarantee ordering
+    // so can temporarely be negative
     in_flight_connections: AtomicIsize,
     reservations: AtomicUsize,
     idle_connections: AtomicUsize,
@@ -168,7 +172,6 @@ where
 
     #[inline]
     fn notify_checked_out_connection(&self) {
-        trace!("inc inflight");
         let in_flight = self.in_flight_connections.fetch_add(1, Ordering::SeqCst);
         let in_flight = (std::cmp::max(0, in_flight + 1)) as usize;
         if let Some(instrumentation) = self.instrumentation.as_ref() {
@@ -179,7 +182,6 @@ where
 
     #[inline]
     fn notify_checked_in_returned_connection(&self, flight_time: Duration) {
-        trace!("dec inflight returned");
         let in_flight = self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
         let in_flight = std::cmp::max(0, in_flight - 1) as usize;
         if let Some(instrumentation) = self.instrumentation.as_ref() {
@@ -202,7 +204,6 @@ where
     pub(super) fn notify_connection_dropped(&self, flight_time: Duration, lifetime: Duration) {
         let pool_size = self.pool_size.fetch_sub(1, Ordering::SeqCst);
         let pool_size = std::cmp::max(0, pool_size - 1) as usize;
-        trace!("dec inflight dropped");
         let in_flight = self.in_flight_connections.fetch_sub(1, Ordering::SeqCst);
         let in_flight = std::cmp::max(0, in_flight - 1) as usize;
         if let Some(instrumentation) = self.instrumentation.as_ref() {

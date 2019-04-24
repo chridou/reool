@@ -5,6 +5,7 @@ use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
+use crate::helpers;
 use crate::instrumentation::Instrumentation;
 use crate::pool::{Config as PoolConfig, Pool, PoolStats};
 use crate::{Checkout, RedisPool};
@@ -56,6 +57,35 @@ impl Config {
     pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
         self.reservation_limit = v;
         self
+    }
+
+    /// Updates this configuration from the environment.
+    ///
+    /// If no `prefix` is set all the given env key start with `REOOL_`.
+    /// Otherwise the prefix is used with an automatically appended `_`.
+    ///
+    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
+    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    pub fn update_from_environment<T: Into<String>>(
+        mut self,
+        prefix: Option<T>,
+    ) -> InitializationResult<Self> {
+        let prefix = prefix.map(Into::into);
+
+        helpers::set_desired_pool_size(prefix.clone(), |v| {
+            self.desired_pool_size = v;
+        })?;
+
+        helpers::set_checkout_timeout(prefix.clone(), |v| {
+            self.checkout_timeout = v;
+        })?;
+
+        helpers::set_reservation_limit(prefix, |v| {
+            self.reservation_limit = v;
+        })?;
+
+        Ok(self)
     }
 
     /// Create a `Builder` initialized with the values from this `Config`

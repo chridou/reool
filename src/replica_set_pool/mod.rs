@@ -1,5 +1,4 @@
 //! A connection pool for connecting to the nodes of a replica set
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +9,7 @@ use redis::{r#async::Connection, Client, IntoConnectionInfo};
 use crate::backoff_strategy::BackoffStrategy;
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
+use crate::helpers;
 use crate::instrumentation::Instrumentation;
 use crate::pool::{Config as PoolConfig, Pool, PoolStats};
 use crate::{Checkout, RedisPool};
@@ -68,6 +68,40 @@ impl Config {
     pub fn min_required_nodes(mut self, v: usize) -> Self {
         self.min_required_nodes = v;
         self
+    }
+
+    /// Updates this configuration from the environment.
+    ///
+    /// If no `prefix` is set all the given env key start with `REOOL_`.
+    /// Otherwise the prefix is used with an automatically appended `_`.
+    ///
+    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
+    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    pub fn update_from_environment<T: Into<String>>(
+        mut self,
+        prefix: Option<T>,
+    ) -> InitializationResult<Self> {
+        let prefix = prefix.map(Into::into);
+
+        helpers::set_desired_pool_size(prefix.clone(), |v| {
+            self.desired_pool_size = v;
+        })?;
+
+        helpers::set_checkout_timeout(prefix.clone(), |v| {
+            self.checkout_timeout = v;
+        })?;
+
+        helpers::set_reservation_limit(prefix.clone(), |v| {
+            self.reservation_limit = v;
+        })?;
+
+        helpers::set_min_required_nodes(prefix, |v| {
+            self.min_required_nodes = v;
+        })?;
+
+        Ok(self)
     }
 
     /// Create a `Builder` initialized with the values from this `Config`
@@ -163,6 +197,31 @@ impl<T, I> Builder<T, I> {
         self
     }
 
+    /// Updates this builder's config(not `connect_to) from the environment.
+    ///
+    /// If no `prefix` is set all the given env key start with `REOOL_`.
+    /// Otherwise the prefix is used with an automatically appended `_`.
+    ///
+    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
+    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    pub fn update_config_from_environment<P: Into<String>>(
+        self,
+        prefix: Option<P>,
+    ) -> InitializationResult<Builder<T, I>> {
+        let prefix = prefix.map(Into::into);
+
+        let config = self.config.update_from_environment(prefix.clone())?;
+
+        Ok(Builder {
+            config,
+            executor_flavour: self.executor_flavour,
+            connect_to: self.connect_to,
+            instrumentation: self.instrumentation,
+        })
+    }
+
     /// Adds instrumentation to the pool
     pub fn instrumented<II>(self, instrumentation: II) -> Builder<T, II>
     where
@@ -187,6 +246,41 @@ impl<T, I> Builder<T, I> {
             executor_flavour: self.executor_flavour,
             connect_to: self.connect_to,
             instrumentation: Some(instrumentation),
+        }
+    }
+}
+
+impl<I> Builder<(), I>
+where
+    I: Instrumentation + Send + Sync + 'static,
+{
+    /// Updates this builder from the environment.
+    ///
+    /// If no `prefix` is set all the given env key start with `REOOL_`.
+    /// Otherwise the prefix is used with an automatically appended `_`.
+    ///
+    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
+    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. MANDATORY
+    pub fn update_from_environment<P: Into<String>>(
+        self,
+        prefix: Option<P>,
+    ) -> InitializationResult<Builder<String, I>> {
+        let prefix = prefix.map(Into::into);
+
+        let config = self.config.update_from_environment(prefix.clone())?;
+
+        if let Some(connect_to) = helpers::get_connect_to(prefix)? {
+            Ok(Builder {
+                config,
+                executor_flavour: self.executor_flavour,
+                connect_to,
+                instrumentation: self.instrumentation,
+            })
+        } else {
+            Err(InitializationError::message_only("'CONNECT_TO' was empty"))
         }
     }
 }

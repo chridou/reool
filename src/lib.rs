@@ -36,6 +36,7 @@ mod backoff_strategy;
 mod commands;
 mod error;
 pub(crate) mod executor_flavour;
+pub(crate) mod helpers;
 pub mod instrumentation;
 pub mod node_pool;
 mod pool;
