@@ -31,7 +31,7 @@ fn main() {
         .map(|i| {
             pool.check_out()
                 .from_err()
-                .and_then(|conn| conn.ping())
+                .and_then(Commands::ping)
                 .then(move |res| match res {
                     Err(err) => {
                         error!("PING {} failed: {}", i, err);

@@ -174,6 +174,31 @@ impl<T, I> Builder<T, I> {
         self
     }
 
+    /// Updates this builder's config(not `connect_to`) from the environment.
+    ///
+    /// If no `prefix` is set all the given env key start with `REOOL_`.
+    /// Otherwise the prefix is used with an automatically appended `_`.
+    ///
+    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
+    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    pub fn update_config_from_environment<P: Into<String>>(
+        self,
+        prefix: Option<P>,
+    ) -> InitializationResult<Builder<T, I>> {
+        let prefix = prefix.map(Into::into);
+
+        let config = self.config.update_from_environment(prefix.clone())?;
+
+        Ok(Builder {
+            config,
+            executor_flavour: self.executor_flavour,
+            connect_to: self.connect_to,
+            instrumentation: self.instrumentation,
+        })
+    }
+
     /// Adds instrumentation to the pool
     pub fn instrumented<II>(self, instrumentation: II) -> Builder<T, II>
     where
@@ -198,6 +223,46 @@ impl<T, I> Builder<T, I> {
             executor_flavour: self.executor_flavour,
             connect_to: self.connect_to,
             instrumentation: Some(instrumentation),
+        }
+    }
+}
+
+impl<I> Builder<(), I>
+where
+    I: Instrumentation + Send + Sync + 'static,
+{
+    /// Updates this builder from the environment.
+    ///
+    /// If no `prefix` is set all the given env key start with `REOOL_`.
+    /// Otherwise the prefix is used with an automatically appended `_`.
+    ///
+    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
+    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. MANDATORY. If there is a list, the first
+    /// entry is chosen
+    pub fn update_from_environment<P: Into<String>>(
+        self,
+        prefix: Option<P>,
+    ) -> InitializationResult<Builder<String, I>> {
+        let prefix = prefix.map(Into::into);
+
+        let config = self.config.update_from_environment(prefix.clone())?;
+
+        if let Some(mut connect_to) = helpers::get_connect_to(prefix)? {
+            if connect_to.is_empty() {
+                Err(InitializationError::message_only("'CONNECT_TO' was empty"))
+            } else {
+                Ok(Builder {
+                    config,
+                    executor_flavour: self.executor_flavour,
+                    connect_to: connect_to.remove(0),
+                    instrumentation: self.instrumentation,
+                })
+            }
+        } else {
+            Err(InitializationError::message_only("'CONNECT_TO' was empty"))
         }
     }
 }

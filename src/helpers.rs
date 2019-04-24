@@ -1,5 +1,4 @@
 use std::env;
-use std::fmt::Display;
 use std::time::Duration;
 
 use crate::error::{InitializationError, InitializationResult};

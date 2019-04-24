@@ -30,7 +30,7 @@ fn main() {
     info!("Do one ping");
     let start = Instant::now();
     runtime
-        .block_on(pool.check_out().from_err().and_then(|conn| conn.ping()))
+        .block_on(pool.check_out().from_err().and_then(Commands::ping))
         .unwrap();
     info!("PINGED in {:?}", start.elapsed());
 
@@ -39,7 +39,7 @@ fn main() {
     info!("Do another ping");
     let start = Instant::now();
     runtime
-        .block_on(pool.check_out().from_err().and_then(|conn| conn.ping()))
+        .block_on(pool.check_out().from_err().and_then(Commands::ping))
         .unwrap();
     info!("PINGED in {:?}", start.elapsed());
 
@@ -52,7 +52,7 @@ fn main() {
             pool_ping
                 .check_out()
                 .from_err()
-                .and_then(|conn| conn.ping())
+                .and_then(Commands::ping)
                 .then(|res| match res {
                     Err(err) => {
                         error!("PING failed: {}", err);
@@ -76,7 +76,7 @@ fn main() {
         .map(|i| {
             pool.check_out()
                 .from_err()
-                .and_then(|conn| conn.ping())
+                .and_then(Commands::ping)
                 .then(move |res| match res {
                     Err(err) => {
                         error!("PING {} failed: {}", i, err);

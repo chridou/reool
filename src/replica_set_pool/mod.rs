@@ -197,7 +197,7 @@ impl<T, I> Builder<T, I> {
         self
     }
 
-    /// Updates this builder's config(not `connect_to) from the environment.
+    /// Updates this builder's config(not `connect_to`) from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
     /// Otherwise the prefix is used with an automatically appended `_`.
