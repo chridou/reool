@@ -107,6 +107,7 @@ impl Config {
             .checkout_timeout(self.checkout_timeout)
             .backoff_strategy(self.backoff_strategy)
             .reservation_limit(self.reservation_limit)
+            .min_required_nodes(self.min_required_nodes)
     }
 }
 
@@ -288,6 +289,24 @@ where
         MultiNodePool::create(
             self.config,
             self.connect_to,
+            self.executor_flavour,
+            self.instrumentation,
+        )
+    }
+}
+
+impl<I> Builder<String, I>
+where
+    I: Instrumentation + Send + Sync + 'static,
+{
+    /// Build a new `MultiNodePool`
+    ///
+    /// This is a due to a limitation that
+    /// `IntoConnectionInfo` is not implemented for `String`
+    pub fn finish2(self) -> InitializationResult<MultiNodePool> {
+        MultiNodePool::create(
+            self.config,
+            self.connect_to.iter().map(|s| &**s).collect(),
             self.executor_flavour,
             self.instrumentation,
         )

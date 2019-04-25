@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+* added special method to finish a builder
+with Strings containing the connection info
+
 ## 0.4.0
 
 * renamed `ReplicaSetPool` to MultiNodePool(breaking)

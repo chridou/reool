@@ -275,6 +275,24 @@ where
     }
 }
 
+impl<I> Builder<String, I>
+where
+    I: Instrumentation + Send + Sync + 'static,
+{
+    /// Build a new `SingleNodePool`
+    ///
+    /// This is a due to a limitation that
+    /// `IntoConnectionInfo` is not implemented for `String`
+    pub fn finish2(self) -> InitializationResult<SingleNodePool> {
+        SingleNodePool::create(
+            self.config,
+            &*self.connect_to,
+            self.executor_flavour,
+            self.instrumentation,
+        )
+    }
+}
+
 /// A connection pool that maintains multiple connections
 /// to a single Redis instance.
 ///
