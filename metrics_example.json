@@ -1,0 +1,204 @@
+{
+    "metrix_example": {
+        "checked_out_connections": {
+            "per_second": {
+                "count": 100000,
+                "one_minute": {
+                    "rate": 222.94702661579343
+                }
+            }
+        },
+        "checked_in_returned_connections": {
+            "per_second": {
+                "count": 99983,
+                "one_minute": {
+                    "rate": 222.87781985619567
+                }
+            },
+            "flight_time_us": {
+                "count": 99983,
+                "max": 2096318,
+                "min": 7140,
+                "mean": 81430.55499852653,
+                "stddev": 175450.78873451826,
+                "quantiles": {
+                    "p50": 14294,
+                    "p75": 22917,
+                    "p95": 519423,
+                    "p98": 668942,
+                    "p99": 781136,
+                    "p999": 1073274
+                }
+            }
+        },
+        "checked_in_new_connections": {
+            "per_second": {
+                "count": 60,
+                "one_minute": {
+                    "rate": 0.10382034243744792
+                }
+            }
+        },
+        "connections_dropped": {
+            "per_second": {
+                "count": 0,
+                "one_minute": {
+                    "rate": 0
+                }
+            },
+            "flight_time_us": {
+                "count": 0
+            }
+        },
+        "connections_killed": {
+            "per_second": {
+                "count": 0,
+                "one_minute": {
+                    "rate": 0
+                }
+            }
+        },
+        "idle_connections_min": {
+            "count": 3,
+            "count_peak": 3
+        },
+        "idle_connections_max": {
+            "count": 20,
+            "count_peak": 20
+        },
+        "connections_created": {
+            "per_second": {
+                "count": 60,
+                "one_minute": {
+                    "rate": 0.10382034243744792
+                }
+            },
+            "connect_time_us": {
+                "count": 60,
+                "max": 9337,
+                "min": 134,
+                "mean": 407.7833333333333,
+                "stddev": 1176.6037437141795,
+                "quantiles": {
+                    "p50": 175,
+                    "p75": 269,
+                    "p95": 917,
+                    "p98": 9337,
+                    "p99": 9337,
+                    "p999": 9337
+                }
+            }
+        },
+        "connections_created_total": {
+            "time_ms": {
+                "count": 60,
+                "max": 9,
+                "min": 0,
+                "mean": 0.16666666666666667,
+                "stddev": 1.1571036638473189,
+                "quantiles": {
+                    "p50": 0,
+                    "p75": 0,
+                    "p95": 0,
+                    "p98": 9,
+                    "p99": 9,
+                    "p999": 9
+                }
+            }
+        },
+        "reservations_min": {
+            "count": 0,
+            "count_peak": 0
+        },
+        "reservations_max": {
+            "count": 0,
+            "count_peak": 0
+        },
+        "reservations_limit": {},
+        "reservations_added": {
+            "per_second": {
+                "count": 100000,
+                "one_minute": {
+                    "rate": 173.03390406241318
+                }
+            }
+        },
+        "reservations_fulfilled": {
+            "per_second": {
+                "count": 100000,
+                "one_minute": {
+                    "rate": 222.94702661579343
+                }
+            },
+            "fulfilled_after_us": {
+                "count": 100000,
+                "max": 291575779,
+                "min": 1002826,
+                "mean": 265180085.66842766,
+                "stddev": 34083240.96946905,
+                "quantiles": {
+                    "p50": 275784949,
+                    "p75": 286195286,
+                    "p95": 290830339,
+                    "p98": 291330721,
+                    "p99": 291457815,
+                    "p999": 291575779
+                }
+            }
+        },
+        "reservations_not_fulfilled": {
+            "per_second": {
+                "count": 0,
+                "one_minute": {
+                    "rate": 0
+                }
+            },
+            "not_fulfilled_after_us": {
+                "count": 0
+            }
+        },
+        "reservation_limit_reached": {
+            "per_second": {
+                "count": 0,
+                "one_minute": {
+                    "rate": 0
+                }
+            }
+        },
+        "connection_factory_failed": {
+            "per_second": {
+                "count": 0,
+                "one_minute": {
+                    "rate": 0
+                }
+            }
+        },
+        "life_times": {
+            "lifes_ended_per_second": {
+                "count": 0,
+                "one_minute": {
+                    "rate": 0
+                }
+            },
+            "life_time_ms": {
+                "count": 0
+            }
+        },
+        "usable_connections_min": {
+            "count": 20,
+            "count_peak": 20
+        },
+        "usable_connections_max": {
+            "count": 20,
+            "count_peak": 20
+        },
+        "in_flight_connections_min": {
+            "count": 0,
+            "count_peak": 0
+        },
+        "in_flight_connections_max": {
+            "count": 0,
+            "count_peak": 0
+        }
+    }
+}

@@ -110,12 +110,7 @@ where
         Err(err) => return Err(InitializationError::new(key, Some(err))),
     };
 
-    let parts: Vec<String> = s
-        .split(';')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.trim())
-        .map(ToOwned::to_owned)
-        .collect();
+    let parts = parse_connect_to(&s);
 
     if !parts.is_empty() {
         Ok(Some(parts))
@@ -125,6 +120,14 @@ where
             key
         )))
     }
+}
+
+fn parse_connect_to(what: &str) -> Vec<String> {
+    what.split(';')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 #[test]
@@ -138,4 +141,22 @@ fn prefix_can_be_customized() {
     let prefix = make_prefix(Some("TEST"));
 
     assert_eq!(prefix, "TEST");
+}
+
+#[test]
+fn parse_connect_to_empty() {
+    let res = parse_connect_to("");
+    assert_eq!(res, Vec::<String>::new());
+}
+
+#[test]
+fn parse_connect_to_one() {
+    let res = parse_connect_to("redis://127.0.0.1:6379");
+    assert_eq!(res, vec!["redis://127.0.0.1:6379".to_string()]);
+}
+
+#[test]
+fn parse_connect_to_two() {
+    let res = parse_connect_to("redis://127.0.0.1:6379;redis://127.0.0.1:6380");
+    assert_eq!(res, vec!["redis://127.0.0.1:6379".to_string(), "redis://127.0.0.1:6380".to_string()]);
 }
