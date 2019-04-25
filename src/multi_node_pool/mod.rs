@@ -1,7 +1,7 @@
 //! A connection pool for connecting to the nodes of a replica set
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::debug;
 use parking_lot::Mutex;
@@ -15,9 +15,9 @@ use crate::instrumentation::Instrumentation;
 use crate::pool::{Config as PoolConfig, Pool, PoolStats};
 use crate::{Checkout, RedisPool};
 
-/// A configuration for creating a `ReplicaSetPool`.
+/// A configuration for creating a `MultiNodePool`.
 ///
-/// You should prefer using the `ReplicaSetPool::builder()` function.
+/// You should prefer using the `MultiNodePool::builder()` function.
 pub struct Config {
     /// The number of connections the pool should initially have
     /// and try to maintain
@@ -122,7 +122,7 @@ impl Default for Config {
     }
 }
 
-/// A builder for a `ReplicaSetPool`
+/// A builder for a `MultiNodePool`
 pub struct Builder<T, I> {
     config: Config,
     executor_flavour: ExecutorFlavour,
@@ -233,8 +233,9 @@ impl<T, I> Builder<T, I> {
     pub fn instrumented_with_metrix<A: metrix::processor::AggregatesProcessors>(
         self,
         aggregates_processors: &mut A,
+        config: crate::instrumentation::MetrixConfig,
     ) -> Builder<T, crate::instrumentation::metrix::MetrixInstrumentation> {
-        let instrumentation = crate::instrumentation::metrix::create(aggregates_processors);
+        let instrumentation = crate::instrumentation::metrix::create(aggregates_processors, config);
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
@@ -282,9 +283,9 @@ where
     T: IntoConnectionInfo,
     I: Instrumentation + Send + Sync + 'static,
 {
-    /// Build a new `ReplicaSetPool`
-    pub fn finish(self) -> InitializationResult<ReplicaSetPool> {
-        ReplicaSetPool::create(
+    /// Build a new `MultiNodePool`
+    pub fn finish(self) -> InitializationResult<MultiNodePool> {
+        MultiNodePool::create(
             self.config,
             self.connect_to,
             self.executor_flavour,
@@ -303,18 +304,18 @@ where
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
 #[derive(Clone)]
-pub struct ReplicaSetPool {
+pub struct MultiNodePool {
     inner: Arc<Inner>,
     checkout_timeout: Option<Duration>,
 }
 
-impl ReplicaSetPool {
-    /// Creates a builder for a `ReplicaSetPool`
+impl MultiNodePool {
+    /// Creates a builder for a `MultiNodePool`
     pub fn builder() -> Builder<(), ()> {
         Builder::default()
     }
 
-    /// Creates a new instance of a `ReplicaSetPool`.
+    /// Creates a new instance of a `MultiNodePool`.
     ///
     /// This function must be
     /// called on a thread of the tokio runtime.
@@ -400,7 +401,7 @@ impl ReplicaSetPool {
     }
 }
 
-impl RedisPool for ReplicaSetPool {
+impl RedisPool for MultiNodePool {
     fn check_out(&self) -> Checkout {
         self.inner.check_out(self.checkout_timeout)
     }
@@ -427,10 +428,10 @@ impl Inner {
 
 struct InstrumentationAggregator<I> {
     outbound: I,
-    usable_connections: Mutex<Vec<usize>>,
-    idle_connections: Mutex<Vec<usize>>,
-    in_flight_connections: Mutex<Vec<usize>>,
-    reservations: Mutex<Vec<usize>>,
+    usable_connections: Mutex<ValueTracker<usize>>,
+    idle_connections: Mutex<ValueTracker<usize>>,
+    in_flight_connections: Mutex<ValueTracker<usize>>,
+    reservations: Mutex<ValueTracker<usize>>,
 }
 
 impl<I> InstrumentationAggregator<I>
@@ -440,18 +441,18 @@ where
     pub fn new(instrumentation: I) -> Self {
         InstrumentationAggregator {
             outbound: instrumentation,
-            usable_connections: Mutex::new(Vec::default()),
-            idle_connections: Mutex::new(Vec::default()),
-            in_flight_connections: Mutex::new(Vec::default()),
-            reservations: Mutex::new(Vec::default()),
+            usable_connections: Mutex::new(ValueTracker::default()),
+            idle_connections: Mutex::new(ValueTracker::default()),
+            in_flight_connections: Mutex::new(ValueTracker::default()),
+            reservations: Mutex::new(ValueTracker::default()),
         }
     }
 
     pub fn increase_pool_values(&self) {
-        self.usable_connections.lock().push(0);
-        self.idle_connections.lock().push(0);
-        self.in_flight_connections.lock().push(0);
-        self.reservations.lock().push(0);
+        self.usable_connections.lock().add_pool();
+        self.idle_connections.lock().add_pool();
+        self.in_flight_connections.lock().add_pool();
+        self.reservations.lock().add_pool();
     }
 }
 
@@ -472,11 +473,9 @@ where
         self.outbound.connection_dropped(flight_time, lifetime)
     }
     fn idle_connections_changed(&self, v: usize, pool_idx: usize) {
-        let mut idle_connections = self.idle_connections.lock();
-        idle_connections[pool_idx] = v;
-        let min = idle_connections.iter().cloned().min().unwrap_or(0);
-        let max = idle_connections.iter().cloned().max().unwrap_or(0);
-        self.outbound.idle_connections_changed(min, max);
+        if let Some((min, max)) = { self.idle_connections.lock().new_value(pool_idx, v) } {
+            self.outbound.idle_connections_changed(min, max);
+        }
     }
     fn connection_created(
         &self,
@@ -491,11 +490,9 @@ where
         self.outbound.killed_connection(lifetime)
     }
     fn reservations_changed(&self, v: usize, limit: Option<usize>, pool_idx: usize) {
-        let mut reservations = self.reservations.lock();
-        reservations[pool_idx] = v;
-        let min = reservations.iter().cloned().min().unwrap_or(0);
-        let max = reservations.iter().cloned().max().unwrap_or(0);
-        self.outbound.reservations_changed(min, max, limit);
+        if let Some((min, max)) = { self.reservations.lock().new_value(pool_idx, v) } {
+            self.outbound.reservations_changed(min, max, limit);
+        }
     }
     fn reservation_added(&self, _pool_idx: usize) {
         self.outbound.reservation_added()
@@ -513,18 +510,65 @@ where
         self.outbound.connection_factory_failed()
     }
     fn usable_connections_changed(&self, v: usize, pool_idx: usize) {
-        let mut usable_connections = self.usable_connections.lock();
-        usable_connections[pool_idx] = v;
-        let min = usable_connections.iter().cloned().min().unwrap_or(0);
-        let max = usable_connections.iter().cloned().max().unwrap_or(0);
-        self.outbound.usable_connections_changed(min, max);
+        if let Some((min, max)) = { self.usable_connections.lock().new_value(pool_idx, v) } {
+            self.outbound.usable_connections_changed(min, max);
+        }
     }
     fn in_flight_connections_changed(&self, v: usize, pool_idx: usize) {
-        let mut in_flight_connections = self.in_flight_connections.lock();
-        in_flight_connections[pool_idx] = v;
-        let min = in_flight_connections.iter().cloned().min().unwrap_or(0);
-        let max = in_flight_connections.iter().cloned().max().unwrap_or(0);
-        self.outbound.in_flight_connections_changed(min, max);
+        if let Some((min, max)) = { self.in_flight_connections.lock().new_value(pool_idx, v) } {
+            self.outbound.in_flight_connections_changed(min, max);
+        }
+    }
+}
+
+pub struct ValueTracker<T> {
+    pool_values: Vec<T>,
+    last_max: Option<T>,
+    last_min: Option<T>,
+    last_publish: Instant,
+}
+
+const FORCE_PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
+
+impl<T> ValueTracker<T>
+where
+    T: Eq + Ord + Default + Copy,
+{
+    pub fn add_pool(&mut self) {
+        self.pool_values.push(T::default())
+    }
+
+    pub fn new_value(&mut self, idx: usize, v: T) -> Option<(T, T)> {
+        self.pool_values[idx] = v;
+        let min = self.pool_values.iter().cloned().min();
+        let max = self.pool_values.iter().cloned().max();
+
+        if (min != self.last_min) || (min != self.last_min) {
+            self.last_min = min;
+            self.last_max = max;
+            self.last_publish = Instant::now();
+            min.and_then(|min| max.map(|max| (min, max)))
+        } else {
+            let now = Instant::now();
+            if self.last_publish < now - FORCE_PUBLISH_INTERVAL {
+                self.last_publish = now;
+                self.last_min
+                    .and_then(|min| self.last_min.map(|max| (min, max)))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+impl<T> Default for ValueTracker<T> {
+    fn default() -> Self {
+        Self {
+            pool_values: Vec::new(),
+            last_max: None,
+            last_min: None,
+            last_publish: Instant::now() - Duration::from_secs(999_999),
+        }
     }
 }
 

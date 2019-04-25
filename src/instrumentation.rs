@@ -1,6 +1,9 @@
 //! Pluggable instrumentation
 use std::time::Duration;
 
+#[cfg(feature = "metrix")]
+pub use self::metrix::MetrixConfig;
+
 /// A trait with methods that get called by the pool on certain events.
 pub trait Instrumentation {
     /// A connection was checked out
@@ -97,6 +100,81 @@ pub(crate) mod metrix {
 
     use super::Instrumentation;
 
+    /// A configuration for instrumenting with `metrix`
+    pub struct MetrixConfig {
+        /// When a `Duration` is set histograms will not report
+        /// any values once nothing was changed for the given
+        /// duration.
+        ///
+        /// Default is `None`
+        pub histograms_inactivity_timeout: Option<Duration>,
+        /// When `histograms_inactivity_timeout` was enabled and
+        /// reset is enabled the histogram will reset once it becomes
+        /// active again
+        ///
+        /// Default is `false`
+        pub reset_histograms_after_inactivity: bool,
+        /// If a `Duration` is set the peak values within the given
+        /// duration will be reported.
+        ///
+        /// Default is enabled with 30 seconds
+        pub track_peaks_in_gauges: Option<Duration>,
+    }
+
+    impl MetrixConfig {
+        /// When a `Duration` is set histograms will not report
+        /// any values once nothing was changed for the given
+        /// duration.
+        ///
+        /// Default is `None`
+        pub fn histograms_inactivity_timeout(mut self, v: Duration) -> Self {
+            self.histograms_inactivity_timeout = Some(v);
+            self
+        }
+
+        /// When `histograms_inactivity_timeout` was enabled and
+        /// reset is enabled the histogram will reset once it becomes
+        /// active again
+        ///
+        /// Default is `false`
+        pub fn reset_histograms_after_inactivity(mut self, v: bool) -> Self {
+            self.reset_histograms_after_inactivity = v;
+            self
+        }
+
+        /// If a `Duration` is set the peak values within the given
+        /// duration will be reported.
+        ///
+        /// Default is enabled with 30 seconds
+        pub fn track_peaks_in_gauges(mut self, v: Duration) -> Self {
+            self.track_peaks_in_gauges = Some(v);
+            self
+        }
+
+        fn configure_gauge(&self, gauge: &mut Gauge) {
+            if let Some(peak_dur) = self.track_peaks_in_gauges {
+                gauge.set_peak_keep_alive(peak_dur);
+            }
+        }
+
+        fn configure_histogram(&self, histogram: &mut Histogram) {
+            if let Some(inactivity_dur) = self.histograms_inactivity_timeout {
+                histogram.set_inactivity_limit(inactivity_dur);
+                histogram.reset_after_inactivity(self.reset_histograms_after_inactivity);
+            }
+        }
+    }
+
+    impl Default for MetrixConfig {
+        fn default() -> Self {
+            Self {
+                histograms_inactivity_timeout: None,
+                reset_histograms_after_inactivity: false,
+                track_peaks_in_gauges: Some(Duration::from_secs(30)),
+            }
+        }
+    }
+
     #[derive(Clone, Copy, Eq, PartialEq)]
     pub enum Metric {
         CheckOutConnection,
@@ -123,7 +201,10 @@ pub(crate) mod metrix {
         LifeTime,
     }
 
-    pub fn create<A: AggregatesProcessors>(aggregates_processors: &mut A) -> MetrixInstrumentation {
+    pub fn create<A: AggregatesProcessors>(
+        aggregates_processors: &mut A,
+        config: MetrixConfig,
+    ) -> MetrixInstrumentation {
         let mut cockpit = Cockpit::without_name(None);
 
         let mut panel = Panel::with_name(Metric::CheckOutConnection, "checked_out_connections");
@@ -136,7 +217,9 @@ pub(crate) mod metrix {
         );
         panel.set_value_scaling(ValueScaling::NanosToMicros);
         panel.set_meter(Meter::new_with_defaults("per_second"));
-        panel.set_histogram(Histogram::new_with_defaults("flight_time_us"));
+        let mut histogram = Histogram::new_with_defaults("flight_time_us");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
         cockpit.add_panel(panel);
 
         let mut panel =
@@ -147,7 +230,9 @@ pub(crate) mod metrix {
         let mut panel = Panel::with_name(Metric::ConnectionDropped, "connections_dropped");
         panel.set_value_scaling(ValueScaling::NanosToMicros);
         panel.set_meter(Meter::new_with_defaults("per_second"));
-        panel.set_histogram(Histogram::new_with_defaults("flight_time_us"));
+        let mut histogram = Histogram::new_with_defaults("flight_time_us");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::ConnectionKilled, "connections_killed");
@@ -155,17 +240,23 @@ pub(crate) mod metrix {
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::IdleConnectionsChangedMin, "idle_connections_min");
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::IdleConnectionsChangedMax, "idle_connections_max");
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::ConnectionCreated, "connections_created");
         panel.set_value_scaling(ValueScaling::NanosToMicros);
         panel.set_meter(Meter::new_with_defaults("per_second"));
-        panel.set_histogram(Histogram::new_with_defaults("connect_time_us"));
+        let mut histogram = Histogram::new_with_defaults("connect_time_us");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(
@@ -173,19 +264,27 @@ pub(crate) mod metrix {
             "connections_created_total",
         );
         panel.set_value_scaling(ValueScaling::NanosToMillis);
-        panel.set_histogram(Histogram::new_with_defaults("time_ms"));
+        let mut histogram = Histogram::new_with_defaults("time_ms");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::ReservationsChangedMin, "reservations_min");
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::ReservationsChangedMin, "reservations_max");
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::ReservationsChangedLimit, "reservations_limit");
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::ReservationAdded, "reservations_added");
@@ -195,7 +294,9 @@ pub(crate) mod metrix {
         let mut panel = Panel::with_name(Metric::ReservationFulfilled, "reservations_fulfilled");
         panel.set_value_scaling(ValueScaling::NanosToMicros);
         panel.set_meter(Meter::new_with_defaults("per_second"));
-        panel.set_histogram(Histogram::new_with_defaults("fulfilled_after_us"));
+        let mut histogram = Histogram::new_with_defaults("fulfilled_after_us");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(
@@ -204,7 +305,9 @@ pub(crate) mod metrix {
         );
         panel.set_value_scaling(ValueScaling::NanosToMicros);
         panel.set_meter(Meter::new_with_defaults("per_second"));
-        panel.set_histogram(Histogram::new_with_defaults("not_fulfilled_after_us"));
+        let mut histogram = Histogram::new_with_defaults("not_fulfilled_after_us");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
         cockpit.add_panel(panel);
 
         let mut panel =
@@ -227,28 +330,36 @@ pub(crate) mod metrix {
             Metric::UsableConnectionsChangedMin,
             "usable_connections_min",
         );
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(
             Metric::UsableConnectionsChangedMax,
             "usable_connections_max",
         );
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(
             Metric::InFlightConnectionsChangedMin,
             "in_flight_connections_min",
         );
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(
             Metric::InFlightConnectionsChangedMax,
             "in_flight_connections_max",
         );
-        panel.set_gauge(Gauge::new_with_defaults("count"));
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
         let (tx, mut rx) = TelemetryProcessor::new_pair_without_name();

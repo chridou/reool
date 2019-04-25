@@ -38,10 +38,10 @@ mod error;
 pub(crate) mod executor_flavour;
 pub(crate) mod helpers;
 pub mod instrumentation;
+pub mod multi_node_pool;
 pub mod node_pool;
 mod pool;
 mod pooled_connection;
-pub mod replica_set_pool;
 
 pub use commands::*;
 pub use pooled_connection::PooledConnection;

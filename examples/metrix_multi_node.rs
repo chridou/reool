@@ -7,13 +7,13 @@ use metrix::driver::DriverBuilder;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::replica_set_pool::ReplicaSetPool;
+use reool::multi_node_pool::MultiNodePool;
 use reool::{Commands, RedisPool};
 
 /// Do many ping commands where many will faile because either
 /// the checkout ties out or the checkout queue is full
 fn main() {
-    env::set_var("RUST_LOG", "reool=debug,metrix_replica_set=info");
+    env::set_var("RUST_LOG", "reool=debug,metrix_multi_node=info");
     let _ = pretty_env_logger::try_init();
 
     let mut driver = DriverBuilder::default()
@@ -23,7 +23,7 @@ fn main() {
 
     let mut runtime = Runtime::new().unwrap();
 
-    let pool = ReplicaSetPool::builder()
+    let pool = MultiNodePool::builder()
         .connect_to(vec![
             "redis://127.0.0.1:6379",
             "redis://127.0.0.1:6379",
@@ -33,12 +33,12 @@ fn main() {
         .reservation_limit(None) // No limit
         .checkout_timeout(None) // No timeout
         .task_executor(runtime.executor())
-        .instrumented_with_metrix(&mut driver)
+        .instrumented_with_metrix(&mut driver, Default::default())
         .finish()
         .unwrap();
 
     info!("Do 1000 pings concurrently");
-    let futs: Vec<_> = (0..1_000)
+    let futs: Vec<_> = (0..100_000)
         .map(|i| {
             pool.check_out()
                 .from_err()

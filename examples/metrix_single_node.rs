@@ -29,7 +29,7 @@ fn main() {
         .reservation_limit(Some(500))
         .checkout_timeout(Some(Duration::from_millis(100)))
         .task_executor(runtime.executor())
-        .instrumented_with_metrix(&mut driver)
+        .instrumented_with_metrix(&mut driver, Default::default())
         .finish()
         .unwrap();
 

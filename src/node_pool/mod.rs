@@ -209,8 +209,9 @@ impl<T, I> Builder<T, I> {
     pub fn instrumented_with_metrix<A: metrix::processor::AggregatesProcessors>(
         self,
         aggregates_processors: &mut A,
+        config: crate::instrumentation::MetrixConfig,
     ) -> Builder<T, crate::instrumentation::metrix::MetrixInstrumentation> {
-        let instrumentation = crate::instrumentation::metrix::create(aggregates_processors);
+        let instrumentation = crate::instrumentation::metrix::create(aggregates_processors, config);
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,

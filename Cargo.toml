@@ -1,6 +1,6 @@
 [package]
 name = "reool"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Christian Douven <chridou@users.noreply.github.com>"]
 readme = "README.md"
 license = "Apache-2.0/MIT"
@@ -32,5 +32,5 @@ name = "metrix_single_node"
 required-features = ["metrix"]
 
 [[example]]
-name = "metrix_replica_set"
+name = "metrix_multi_node"
 required-features = ["metrix"]
