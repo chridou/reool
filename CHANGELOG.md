@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2
+
+* Struct `ValueTracker` should be private and now is
+* Fixed bug in `ValueTracker` only checking for new min values
+
 ## 0.4.1
 
 * added special method to finish a builder

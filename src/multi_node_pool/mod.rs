@@ -540,7 +540,7 @@ where
     }
 }
 
-pub struct ValueTracker<T> {
+struct ValueTracker<T> {
     pool_values: Vec<T>,
     last_max: Option<T>,
     last_min: Option<T>,
@@ -562,7 +562,7 @@ where
         let min = self.pool_values.iter().cloned().min();
         let max = self.pool_values.iter().cloned().max();
 
-        if (min != self.last_min) || (min != self.last_min) {
+        if (min != self.last_min) || (max != self.last_max) {
             self.last_min = min;
             self.last_max = max;
             self.last_publish = Instant::now();
