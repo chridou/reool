@@ -1,5 +1,10 @@
 # Changelog
 
+
+## 0.4.3
+
+* Changed error message for `CONNECT_TO` environment variable check
+
 ## 0.4.2
 
 * Struct `ValueTracker` should be private and now is

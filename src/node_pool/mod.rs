@@ -244,7 +244,9 @@ where
 
         if let Some(mut connect_to) = helpers::get_connect_to(prefix)? {
             if connect_to.is_empty() {
-                Err(InitializationError::message_only("'CONNECT_TO' was empty"))
+                Err(InitializationError::message_only(
+                    "'CONNECT_TO' was found but empty",
+                ))
             } else {
                 Ok(Builder {
                     config,

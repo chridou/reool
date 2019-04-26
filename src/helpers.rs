@@ -125,7 +125,7 @@ where
 fn parse_connect_to(what: &str) -> Vec<String> {
     what.split(';')
         .filter(|s| !s.is_empty())
-        .map(|s| s.trim())
+        .map(str::trim)
         .map(ToOwned::to_owned)
         .collect()
 }
@@ -158,5 +158,11 @@ fn parse_connect_to_one() {
 #[test]
 fn parse_connect_to_two() {
     let res = parse_connect_to("redis://127.0.0.1:6379;redis://127.0.0.1:6380");
-    assert_eq!(res, vec!["redis://127.0.0.1:6379".to_string(), "redis://127.0.0.1:6380".to_string()]);
+    assert_eq!(
+        res,
+        vec![
+            "redis://127.0.0.1:6379".to_string(),
+            "redis://127.0.0.1:6380".to_string()
+        ]
+    );
 }
