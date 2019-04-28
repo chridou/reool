@@ -202,7 +202,7 @@ impl<T, I> Builder<T, I> {
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    /// * `STATS_INTERVAL`: `u64`. Omit if you do not want to update the value
     pub fn update_config_from_environment(
         self,
         prefix: Option<&str>,
