@@ -17,7 +17,7 @@ use crate::error::ReoolError;
 use crate::executor_flavour::*;
 use crate::instrumentation::Instrumentation;
 
-use inner_pool::InnerPool;
+use inner_pool::{CheckInParcel, InnerPool};
 
 mod inner_pool;
 
@@ -26,6 +26,7 @@ pub(crate) struct Config {
     pub desired_pool_size: usize,
     pub backoff_strategy: BackoffStrategy,
     pub reservation_limit: Option<usize>,
+    pub stats_interval: Duration,
 }
 
 #[cfg(test)]
@@ -39,11 +40,6 @@ impl Config {
         self.backoff_strategy = v;
         self
     }
-
-    /*pub fn wait_queue_limit(mut self, v: Option<usize>) -> Self {
-        self.wait_queue_limit = v;
-        self
-    }*/
 }
 
 impl Default for Config {
@@ -52,16 +48,42 @@ impl Default for Config {
             desired_pool_size: 20,
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(50),
+            stats_interval: Duration::from_millis(100),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MinMax<T = usize>(pub T, pub T);
+
+impl<T> MinMax<T>
+where
+    T: Copy,
+{
+    pub fn min(&self) -> T {
+        self.0
+    }
+    pub fn max(&self) -> T {
+        self.1
+    }
+}
+
+impl<T> Default for MinMax<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self(T::default(), T::default())
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct PoolStats {
-    pub pool_size: usize,
-    pub in_flight: usize,
-    pub reservations: usize,
-    pub idle: usize,
+    pub pool_size: MinMax,
+    pub in_flight: MinMax,
+    pub reservations: MinMax,
+    pub idle: MinMax,
+    pub node_count: usize,
 }
 
 pub(crate) struct Pool<T: Poolable> {
@@ -319,29 +341,22 @@ impl<T: Poolable> Drop for Managed<T> {
         if let Some(inner_pool) = self.inner_pool.upgrade() {
             if self.marked_for_kill {
                 debug!("connection killed");
-                inner_pool.notify_killed_connection(self.created_at.elapsed());
+                inner_pool.check_in(CheckInParcel::Killed(self.created_at.elapsed()))
             } else if let Some(value) = self.value.take() {
-                inner_pool.check_in(Managed {
+                inner_pool.check_in(CheckInParcel::Alive(Managed {
                     inner_pool: Arc::downgrade(&inner_pool),
                     value: Some(value),
                     marked_for_kill: false,
                     created_at: self.created_at,
                     checked_out_at: self.checked_out_at,
-                });
+                }));
             } else {
                 debug!("no value - drop connection and request new one");
                 // No connection. Create a new one.
-                if let Some(checked_out_at) = self.checked_out_at {
-                    inner_pool.notify_connection_dropped(
-                        checked_out_at.elapsed(),
-                        self.created_at.elapsed(),
-                    );
-                } else {
-                    warn!(
-                        "Returning connection without takeoff time. \
-                         In flight counter will be wrong. This is a BUG."
-                    );
-                }
+                inner_pool.check_in(CheckInParcel::Dropped(
+                    self.checked_out_at.as_ref().map(Instant::elapsed),
+                    self.created_at.elapsed(),
+                ));
                 inner_pool.request_new_conn();
             }
         } else {

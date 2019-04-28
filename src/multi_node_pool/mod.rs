@@ -1,19 +1,21 @@
 //! A connection pool for connecting to the nodes of a replica set
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use log::debug;
 use parking_lot::Mutex;
 use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
-use crate::backoff_strategy::BackoffStrategy;
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
-use crate::instrumentation::Instrumentation;
-use crate::pool::{Config as PoolConfig, Pool, PoolStats};
+use crate::instrumentation::{Instrumentation, NoInstrumentation};
+use crate::pool::{Config as PoolConfig, MinMax, Pool};
 use crate::{Checkout, RedisPool};
+
+pub use crate::backoff_strategy::BackoffStrategy;
+pub use crate::pool::PoolStats;
 
 /// A configuration for creating a `MultiNodePool`.
 ///
@@ -31,6 +33,9 @@ pub struct Config {
     /// The maximum length of the queue for waiting checkouts
     /// when no idle connections are available
     pub reservation_limit: Option<usize>,
+    /// The interval in which the pool will send statistics to
+    /// the instrumentation
+    pub stats_interval: Duration,
     /// The minimum required nodes to start
     pub min_required_nodes: usize,
 }
@@ -64,6 +69,13 @@ impl Config {
         self
     }
 
+    /// The interval in which the pool will send statistics to
+    /// the instrumentation
+    pub fn stats_interval(mut self, v: Duration) -> Self {
+        self.stats_interval = v;
+        self
+    }
+
     /// Sets the maximum length of the queue for waiting checkouts
     /// when no idle connections are available
     pub fn min_required_nodes(mut self, v: usize) -> Self {
@@ -80,6 +92,7 @@ impl Config {
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    /// * `STATS_INTERVAL`: `u64`. Omit if you do not want to update the value
     pub fn update_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -93,6 +106,10 @@ impl Config {
             self.reservation_limit = v;
         })?;
 
+        helpers::set_stats_interval(prefix, |v| {
+            self.stats_interval = v;
+        })?;
+
         helpers::set_min_required_nodes(prefix, |v| {
             self.min_required_nodes = v;
         })?;
@@ -101,12 +118,13 @@ impl Config {
     }
 
     /// Create a `Builder` initialized with the values from this `Config`
-    pub fn builder(&self) -> Builder<(), ()> {
+    pub fn builder(&self) -> Builder<(), NoInstrumentation> {
         Builder::default()
             .desired_pool_size(self.desired_pool_size)
             .checkout_timeout(self.checkout_timeout)
             .backoff_strategy(self.backoff_strategy)
             .reservation_limit(self.reservation_limit)
+            .stats_interval(self.stats_interval)
             .min_required_nodes(self.min_required_nodes)
     }
 }
@@ -118,6 +136,7 @@ impl Default for Config {
             checkout_timeout: Some(Duration::from_millis(20)),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
+            stats_interval: Duration::from_millis(100),
             min_required_nodes: 1,
         }
     }
@@ -131,7 +150,7 @@ pub struct Builder<T, I> {
     instrumentation: Option<I>,
 }
 
-impl Default for Builder<(), ()> {
+impl Default for Builder<(), NoInstrumentation> {
     fn default() -> Self {
         Self {
             config: Config::default(),
@@ -168,6 +187,13 @@ impl<T, I> Builder<T, I> {
     /// when no idle connections are available
     pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
         self.config.reservation_limit = v;
+        self
+    }
+
+    /// The interval in which the pool will send statistics to
+    /// the instrumentation
+    pub fn stats_interval(mut self, v: Duration) -> Self {
+        self.config.stats_interval = v;
         self
     }
 
@@ -375,6 +401,7 @@ impl MultiNodePool {
                 desired_pool_size: config.desired_pool_size,
                 backoff_strategy: config.backoff_strategy,
                 reservation_limit: config.reservation_limit,
+                stats_interval: config.stats_interval,
             };
 
             let indexed_instrumentation = instrumentation_aggregator.as_ref().map(|agg| {
@@ -415,6 +442,8 @@ impl MultiNodePool {
     }
 
     /// Get some statistics from each the pools.
+    ///
+    /// This locks the underlying pool.
     pub fn stats(&self) -> Vec<PoolStats> {
         self.inner.pools.iter().map(Pool::stats).collect()
     }
@@ -447,10 +476,14 @@ impl Inner {
 
 struct InstrumentationAggregator<I> {
     outbound: I,
-    usable_connections: Mutex<ValueTracker<usize>>,
-    idle_connections: Mutex<ValueTracker<usize>>,
-    in_flight_connections: Mutex<ValueTracker<usize>>,
-    reservations: Mutex<ValueTracker<usize>>,
+    tracking: Mutex<Tracking>,
+}
+
+struct Tracking {
+    pool_size: ValueTracker,
+    idle: ValueTracker,
+    in_flight: ValueTracker,
+    reservations: ValueTracker,
 }
 
 impl<I> InstrumentationAggregator<I>
@@ -460,18 +493,21 @@ where
     pub fn new(instrumentation: I) -> Self {
         InstrumentationAggregator {
             outbound: instrumentation,
-            usable_connections: Mutex::new(ValueTracker::default()),
-            idle_connections: Mutex::new(ValueTracker::default()),
-            in_flight_connections: Mutex::new(ValueTracker::default()),
-            reservations: Mutex::new(ValueTracker::default()),
+            tracking: Mutex::new(Tracking {
+                pool_size: ValueTracker::default(),
+                idle: ValueTracker::default(),
+                in_flight: ValueTracker::default(),
+                reservations: ValueTracker::default(),
+            }),
         }
     }
 
     pub fn increase_pool_values(&self) {
-        self.usable_connections.lock().add_pool();
-        self.idle_connections.lock().add_pool();
-        self.in_flight_connections.lock().add_pool();
-        self.reservations.lock().add_pool();
+        let mut tracking = self.tracking.lock();
+        tracking.pool_size.add_pool();
+        tracking.idle.add_pool();
+        tracking.in_flight.add_pool();
+        tracking.reservations.add_pool();
     }
 }
 
@@ -491,11 +527,6 @@ where
     fn connection_dropped(&self, flight_time: Duration, lifetime: Duration, _pool_idx: usize) {
         self.outbound.connection_dropped(flight_time, lifetime)
     }
-    fn idle_connections_changed(&self, v: usize, pool_idx: usize) {
-        if let Some((min, max)) = { self.idle_connections.lock().new_value(pool_idx, v) } {
-            self.outbound.idle_connections_changed(min, max);
-        }
-    }
     fn connection_created(
         &self,
         connected_after: Duration,
@@ -505,13 +536,8 @@ where
         self.outbound
             .connection_created(connected_after, total_time)
     }
-    fn killed_connection(&self, lifetime: Duration, _pool_idx: usize) {
-        self.outbound.killed_connection(lifetime)
-    }
-    fn reservations_changed(&self, v: usize, limit: Option<usize>, pool_idx: usize) {
-        if let Some((min, max)) = { self.reservations.lock().new_value(pool_idx, v) } {
-            self.outbound.reservations_changed(min, max, limit);
-        }
+    fn connection_killed(&self, lifetime: Duration, _pool_idx: usize) {
+        self.outbound.connection_killed(lifetime)
     }
     fn reservation_added(&self, _pool_idx: usize) {
         self.outbound.reservation_added()
@@ -528,65 +554,51 @@ where
     fn connection_factory_failed(&self, _pool_idx: usize) {
         self.outbound.connection_factory_failed()
     }
-    fn usable_connections_changed(&self, v: usize, pool_idx: usize) {
-        if let Some((min, max)) = { self.usable_connections.lock().new_value(pool_idx, v) } {
-            self.outbound.usable_connections_changed(min, max);
-        }
-    }
-    fn in_flight_connections_changed(&self, v: usize, pool_idx: usize) {
-        if let Some((min, max)) = { self.in_flight_connections.lock().new_value(pool_idx, v) } {
-            self.outbound.in_flight_connections_changed(min, max);
-        }
+
+    fn stats(&self, stats: PoolStats, pool_idx: usize) {
+        let mut tracking = self.tracking.lock();
+        let pool_size = tracking.pool_size.update(pool_idx, stats.pool_size);
+        let idle = tracking.idle.update(pool_idx, stats.idle);
+        let reservations = tracking.idle.update(pool_idx, stats.reservations);
+        let in_flight = tracking.idle.update(pool_idx, stats.in_flight);
+
+        let stats = PoolStats {
+            pool_size,
+            reservations,
+            idle,
+            in_flight,
+            node_count: tracking.pool_size.node_count(),
+        };
+
+        self.outbound.stats(stats)
     }
 }
 
-struct ValueTracker<T> {
-    pool_values: Vec<T>,
-    last_max: Option<T>,
-    last_min: Option<T>,
-    last_publish: Instant,
+struct ValueTracker {
+    pool_values: Vec<MinMax>,
 }
 
-const FORCE_PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
-
-impl<T> ValueTracker<T>
-where
-    T: Eq + Ord + Default + Copy,
-{
+impl ValueTracker {
     pub fn add_pool(&mut self) {
-        self.pool_values.push(T::default())
+        self.pool_values.push(MinMax::default())
     }
 
-    pub fn new_value(&mut self, idx: usize, v: T) -> Option<(T, T)> {
+    pub fn update(&mut self, idx: usize, v: MinMax) -> MinMax {
         self.pool_values[idx] = v;
-        let min = self.pool_values.iter().cloned().min();
-        let max = self.pool_values.iter().cloned().max();
+        let curr_min = self.pool_values.iter().map(|v| v.min()).min().unwrap_or(0);
+        let curr_max = self.pool_values.iter().map(|v| v.max()).max().unwrap_or(0);
+        MinMax(curr_min, curr_max)
+    }
 
-        if (min != self.last_min) || (max != self.last_max) {
-            self.last_min = min;
-            self.last_max = max;
-            self.last_publish = Instant::now();
-            min.and_then(|min| max.map(|max| (min, max)))
-        } else {
-            let now = Instant::now();
-            if self.last_publish < now - FORCE_PUBLISH_INTERVAL {
-                self.last_publish = now;
-                self.last_min
-                    .and_then(|min| self.last_min.map(|max| (min, max)))
-            } else {
-                None
-            }
-        }
+    pub fn node_count(&self) -> usize {
+        self.pool_values.len()
     }
 }
 
-impl<T> Default for ValueTracker<T> {
+impl Default for ValueTracker {
     fn default() -> Self {
         Self {
             pool_values: Vec::new(),
-            last_max: None,
-            last_min: None,
-            last_publish: Instant::now() - Duration::from_secs(999_999),
         }
     }
 }
@@ -623,18 +635,12 @@ where
         self.aggregator
             .connection_dropped(flight_time, lifetime, self.index)
     }
-    fn idle_connections_changed(&self, _min: usize, max: usize) {
-        self.aggregator.idle_connections_changed(max, self.index)
-    }
     fn connection_created(&self, connected_after: Duration, total_time: Duration) {
         self.aggregator
             .connection_created(connected_after, total_time, self.index)
     }
-    fn killed_connection(&self, lifetime: Duration) {
-        self.aggregator.killed_connection(lifetime, self.index)
-    }
-    fn reservations_changed(&self, _min: usize, max: usize, limit: Option<usize>) {
-        self.aggregator.reservations_changed(max, limit, self.index)
+    fn connection_killed(&self, lifetime: Duration) {
+        self.aggregator.connection_killed(lifetime, self.index)
     }
     fn reservation_added(&self) {
         self.aggregator.reservation_added(self.index)
@@ -651,11 +657,7 @@ where
     fn connection_factory_failed(&self) {
         self.aggregator.connection_factory_failed(self.index)
     }
-    fn usable_connections_changed(&self, _min: usize, max: usize) {
-        self.aggregator.usable_connections_changed(max, self.index)
-    }
-    fn in_flight_connections_changed(&self, _min: usize, max: usize) {
-        self.aggregator
-            .in_flight_connections_changed(max, self.index)
+    fn stats(&self, stats: PoolStats) {
+        self.aggregator.stats(stats, self.index)
     }
 }

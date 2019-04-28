@@ -1,5 +1,5 @@
 use std::env;
-use std::time::{Instant};
+use std::time::Instant;
 
 use futures::future::{join_all, Future};
 use log::{debug, error, info};
@@ -37,8 +37,8 @@ fn main() {
         .finish()
         .unwrap();
 
-    info!("Do 1000 pings concurrently");
-    let futs: Vec<_> = (0..100_000)
+    info!("Do 20000 pings concurrently");
+    let futs: Vec<_> = (0..20_000)
         .map(|i| {
             pool.check_out()
                 .from_err()
@@ -62,7 +62,7 @@ fn main() {
 
     let start = Instant::now();
     runtime.block_on(fut).unwrap();
-    info!("PINGED 1000 times concurrently in {:?}", start.elapsed());
+    info!("PINGED 20000 times concurrently in {:?}", start.elapsed());
 
     let metrics_snapshot = driver.snapshot(false).unwrap();
 

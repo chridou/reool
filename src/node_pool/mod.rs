@@ -6,11 +6,12 @@ use redis::{r#async::Connection, Client, IntoConnectionInfo};
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
-use crate::instrumentation::Instrumentation;
-use crate::pool::{Config as PoolConfig, Pool, PoolStats};
+use crate::instrumentation::{Instrumentation, NoInstrumentation};
+use crate::pool::{Config as PoolConfig, Pool};
 use crate::{Checkout, RedisPool};
 
 pub use crate::backoff_strategy::BackoffStrategy;
+pub use crate::pool::PoolStats;
 
 /// A configuration for creating a `SingleNodePool`.
 ///
@@ -28,6 +29,9 @@ pub struct Config {
     /// The maximum length of the queue for waiting checkouts
     /// when no idle connections are available
     pub reservation_limit: Option<usize>,
+    /// The interval in which the pool will send statistics to
+    /// the instrumentation
+    pub stats_interval: Duration,
 }
 
 impl Config {
@@ -59,6 +63,13 @@ impl Config {
         self
     }
 
+    /// The interval in which the pool will send statistics to
+    /// the instrumentation
+    pub fn stats_interval(mut self, v: Duration) -> Self {
+        self.stats_interval = v;
+        self
+    }
+
     /// Updates this configuration from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
@@ -67,6 +78,7 @@ impl Config {
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `STATS_INTERVAL`: `u64`. Omit if you do not want to update the value
     pub fn update_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -80,16 +92,21 @@ impl Config {
             self.reservation_limit = v;
         })?;
 
+        helpers::set_stats_interval(prefix, |v| {
+            self.stats_interval = v;
+        })?;
+
         Ok(self)
     }
 
     /// Create a `Builder` initialized with the values from this `Config`
-    pub fn builder(&self) -> Builder<(), ()> {
+    pub fn builder(&self) -> Builder<(), NoInstrumentation> {
         Builder::default()
             .desired_pool_size(self.desired_pool_size)
             .checkout_timeout(self.checkout_timeout)
             .backoff_strategy(self.backoff_strategy)
             .reservation_limit(self.reservation_limit)
+            .stats_interval(self.stats_interval)
     }
 }
 
@@ -100,6 +117,7 @@ impl Default for Config {
             checkout_timeout: Some(Duration::from_millis(20)),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
+            stats_interval: Duration::from_millis(100),
         }
     }
 }
@@ -149,6 +167,13 @@ impl<T, I> Builder<T, I> {
     /// when no idle connections are available
     pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
         self.config.reservation_limit = v;
+        self
+    }
+
+    /// The interval in which the pool will send statistics to
+    /// the instrumentation
+    pub fn stats_interval(mut self, v: Duration) -> Self {
+        self.config.stats_interval = v;
         self
     }
 
@@ -320,7 +345,7 @@ impl SingleNodePool {
     where
         T: IntoConnectionInfo,
     {
-        Self::create::<T, ()>(config, connect_to, ExecutorFlavour::Runtime, None)
+        Self::create::<T, NoInstrumentation>(config, connect_to, ExecutorFlavour::Runtime, None)
     }
 
     pub(crate) fn create<T, I>(
@@ -346,6 +371,7 @@ impl SingleNodePool {
             desired_pool_size: config.desired_pool_size,
             backoff_strategy: config.backoff_strategy,
             reservation_limit: config.reservation_limit,
+            stats_interval: config.stats_interval,
         };
 
         let pool = Pool::new(pool_conf, client, executor_flavour, instrumentation);
@@ -377,6 +403,8 @@ impl SingleNodePool {
     }
 
     /// Get some statistics from the pool.
+    ///
+    /// This locks the underlying pool.
     pub fn stats(&self) -> PoolStats {
         self.pool.stats()
     }

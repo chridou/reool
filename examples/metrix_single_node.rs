@@ -13,7 +13,7 @@ use reool::{Commands, RedisPool};
 /// Do many ping commands where many will faile because either
 /// the checkout ties out or the checkout queue is full
 fn main() {
-    env::set_var("RUST_LOG", "reool=debug,metrix_single_node=debug");
+    env::set_var("RUST_LOG", "reool=debug,metrix_single_node=info");
     let _ = pretty_env_logger::try_init();
 
     let mut driver = DriverBuilder::default()
@@ -26,15 +26,15 @@ fn main() {
     let pool = SingleNodePool::builder()
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(20)
-        .reservation_limit(Some(500))
-        .checkout_timeout(Some(Duration::from_millis(100)))
+        .reservation_limit(None)
+        .checkout_timeout(None)
         .task_executor(runtime.executor())
         .instrumented_with_metrix(&mut driver, Default::default())
         .finish()
         .unwrap();
 
-    info!("Do 1000 pings concurrently");
-    let futs: Vec<_> = (0..1_000)
+    info!("Do 20000 pings concurrently");
+    let futs: Vec<_> = (0..20_000)
         .map(|i| {
             pool.check_out()
                 .from_err()
@@ -58,7 +58,7 @@ fn main() {
 
     let start = Instant::now();
     runtime.block_on(fut).unwrap();
-    info!("PINGED 1000 times concurrently in {:?}", start.elapsed());
+    info!("PINGED 20000 times concurrently in {:?}", start.elapsed());
 
     let metrics_snapshot = driver.snapshot(false).unwrap();
 

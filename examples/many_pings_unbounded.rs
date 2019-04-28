@@ -53,6 +53,9 @@ fn main() {
     runtime.block_on(fut).unwrap();
     info!("PINGED 1000 times concurrently in {:?}", start.elapsed());
 
+    let stats = pool.stats();
+    info!("{:#?}", stats);
+
     drop(pool);
     info!("pool dropped");
     runtime.shutdown_on_idle().wait().unwrap();
