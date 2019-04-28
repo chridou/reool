@@ -2,33 +2,21 @@
     "metrix_example": {
         "checked_out_connections": {
             "per_second": {
-                "count": 20000,
+                "count": 681,
                 "one_minute": {
-                    "rate": 1166.7203803001258
+                    "rate": 0
                 }
             }
         },
         "checked_in_returned_connections": {
             "per_second": {
-                "count": 5,
+                "count": 0,
                 "one_minute": {
                     "rate": 0
                 }
             },
             "flight_time_us": {
-                "count": 5,
-                "max": 3254,
-                "min": 3182,
-                "mean": 3204.8000000000008,
-                "stddev": 25.576551761330145,
-                "quantiles": {
-                    "p50": 3203,
-                    "p75": 3254,
-                    "p95": 3254,
-                    "p98": 3254,
-                    "p99": 3254,
-                    "p999": 3254
-                }
+                "count": 0
             }
         },
         "checked_in_new_connections": {
@@ -62,87 +50,99 @@
             "per_second": {
                 "count": 20,
                 "one_minute": {
-                    "rate": 3.6801776585172938
+                    "rate": 0
                 }
             },
             "connect_time_us": {
                 "count": 20,
-                "max": 3254,
-                "min": 191,
-                "mean": 474.55000000000009,
-                "stddev": 653.7371394528537,
+                "max": 716,
+                "min": 153,
+                "mean": 243.20000000000005,
+                "stddev": 155.43474515049719,
                 "quantiles": {
-                    "p50": 292,
-                    "p75": 406,
-                    "p95": 3254,
-                    "p98": 3254,
-                    "p99": 3254,
-                    "p999": 3254
+                    "p50": 187,
+                    "p75": 201,
+                    "p95": 716,
+                    "p98": 716,
+                    "p99": 716,
+                    "p999": 716
                 }
             }
         },
         "connections_created_total": {
             "time_ms": {
                 "count": 20,
-                "max": 3,
+                "max": 0,
                 "min": 0,
-                "mean": 0.15000000000000003,
-                "stddev": 0.6538348415311012,
+                "mean": 0,
+                "stddev": 0,
                 "quantiles": {
                     "p50": 0,
                     "p75": 0,
-                    "p95": 3,
-                    "p98": 3,
-                    "p99": 3,
-                    "p999": 3
+                    "p95": 0,
+                    "p98": 0,
+                    "p99": 0,
+                    "p999": 0
                 }
             }
         },
         "reservations_added": {
             "per_second": {
-                "count": 20000,
+                "count": 10021,
                 "one_minute": {
-                    "rate": 3680.1776585172935
+                    "rate": 0
                 }
             }
         },
         "reservations_fulfilled": {
             "per_second": {
-                "count": 20000,
+                "count": 681,
                 "one_minute": {
-                    "rate": 1166.7203803001258
+                    "rate": 0
                 }
             },
             "fulfilled_after_us": {
-                "count": 20000,
-                "max": 11725502,
-                "min": 9478,
-                "mean": 7515347.085616053,
-                "stddev": 3365994.1693052544,
+                "count": 681,
+                "max": 1413699,
+                "min": 1713,
+                "mean": 942606.400818627,
+                "stddev": 278227.22012005277,
                 "quantiles": {
-                    "p50": 8408158,
-                    "p75": 10470539,
-                    "p95": 11500606,
-                    "p98": 11648838,
-                    "p99": 11691818,
-                    "p999": 11725502
+                    "p50": 969803,
+                    "p75": 1156180,
+                    "p95": 1315597,
+                    "p98": 1413278,
+                    "p99": 1413529,
+                    "p999": 1413699
                 }
             }
         },
         "reservations_not_fulfilled": {
             "per_second": {
-                "count": 0,
+                "count": 3000,
                 "one_minute": {
                     "rate": 0
                 }
             },
             "not_fulfilled_after_us": {
-                "count": 0
+                "count": 3000,
+                "max": 2140780,
+                "min": 2131987,
+                "mean": 2136052.275291842,
+                "stddev": 3094.0312994532816,
+                "quantiles": {
+                    "p50": 2134152,
+                    "p75": 2139285,
+                    "p95": 2140424,
+                    "p98": 2140637,
+                    "p99": 2140722,
+                    "p999": 2140780
+                }
             }
         },
         "reservation_limit_reached": {
             "per_second": {
-                "count": 0,
+                "count": 9979,
                 "one_minute": {
                     "rate": 0
                 }
@@ -198,14 +198,14 @@
             "count_bottom": 20
         },
         "reservations_min": {
-            "count": 478,
-            "count_peak": 478,
-            "count_bottom": 478
+            "count": 9359,
+            "count_peak": 9359,
+            "count_bottom": 9359
         },
         "reservations_max": {
-            "count": 997,
-            "count_peak": 997,
-            "count_bottom": 997
+            "count": 9418,
+            "count_peak": 9418,
+            "count_bottom": 9418
         }
     }
 }
