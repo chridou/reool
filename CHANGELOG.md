@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.1
+
+* MultiPool will fail on creation when not enough clients could be created
 
 ## 0.5.0
 

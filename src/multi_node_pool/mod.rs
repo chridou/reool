@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::debug;
+use log::{debug, warn};
 use parking_lot::Mutex;
 use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
@@ -396,7 +396,13 @@ impl MultiNodePool {
 
         let mut pool_idx = 0;
         for connect_to in connect_to {
-            let client = Client::open(connect_to).map_err(InitializationError::cause_only)?;
+            let client = match Client::open(connect_to).map_err(InitializationError::cause_only) {
+                Ok(client) => client,
+                Err(err) => {
+                    warn!("Failed to create a client: {}", err);
+                    break;
+                }
+            };
 
             let pool_conf = PoolConfig {
                 desired_pool_size: config.desired_pool_size,
