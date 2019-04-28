@@ -78,7 +78,7 @@ impl Config {
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL`: `u64`. Omit if you do not want to update the value
+    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     pub fn update_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -202,7 +202,7 @@ impl<T, I> Builder<T, I> {
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL`: `u64`. Omit if you do not want to update the value
+    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     pub fn update_config_from_environment(
         self,
         prefix: Option<&str>,
@@ -259,6 +259,7 @@ where
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Seperated by `;`. MANDATORY. If there is a list, the first
     /// entry is chosen
     pub fn update_from_environment(
