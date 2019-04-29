@@ -29,7 +29,7 @@ fn main() {
             "redis://127.0.0.1:6379",
             "redis://127.0.0.1:6379",
         ])
-        .desired_pool_size(20)
+        .desired_pool_size(10)
         .reservation_limit(None) // No limit
         .checkout_timeout(None) // No timeout
         .task_executor(runtime.executor())
@@ -37,8 +37,8 @@ fn main() {
         .finish()
         .unwrap();
 
-    info!("Do 20000 pings concurrently");
-    let futs: Vec<_> = (0..20_000)
+    info!("Do 10000 pings concurrently");
+    let futs: Vec<_> = (0..10_000)
         .map(|i| {
             pool.check_out()
                 .from_err()
@@ -62,7 +62,7 @@ fn main() {
 
     let start = Instant::now();
     runtime.block_on(fut).unwrap();
-    info!("PINGED 20000 times concurrently in {:?}", start.elapsed());
+    info!("PINGED 10000 times concurrently in {:?}", start.elapsed());
 
     let metrics_snapshot = driver.snapshot(false).unwrap();
 

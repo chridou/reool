@@ -593,8 +593,8 @@ impl ValueTracker {
 
     pub fn update(&mut self, idx: usize, v: MinMax) -> MinMax {
         self.pool_values[idx] = v;
-        let curr_min = self.pool_values.iter().map(|v| v.min()).min().unwrap_or(0);
-        let curr_max = self.pool_values.iter().map(|v| v.max()).max().unwrap_or(0);
+        let curr_min = self.pool_values.iter().map(MinMax::min).min().unwrap_or(0);
+        let curr_max = self.pool_values.iter().map(MinMax::max).max().unwrap_or(0);
         MinMax(curr_min, curr_max)
     }
 

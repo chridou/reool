@@ -2,7 +2,7 @@
     "metrix_example": {
         "checked_out_connections": {
             "per_second": {
-                "count": 681,
+                "count": 320,
                 "one_minute": {
                     "rate": 0
                 }
@@ -10,18 +10,30 @@
         },
         "checked_in_returned_connections": {
             "per_second": {
-                "count": 0,
+                "count": 301,
                 "one_minute": {
                     "rate": 0
                 }
             },
             "flight_time_us": {
-                "count": 0
+                "count": 301,
+                "max": 494436,
+                "min": 31074,
+                "mean": 72992.19575708518,
+                "stddev": 90532.83229943009,
+                "quantiles": {
+                    "p50": 56011,
+                    "p75": 63958,
+                    "p95": 393993,
+                    "p98": 395447,
+                    "p99": 396014,
+                    "p999": 494436
+                }
             }
         },
         "checked_in_new_connections": {
             "per_second": {
-                "count": 0,
+                "count": 20,
                 "one_minute": {
                     "rate": 0
                 }
@@ -35,7 +47,19 @@
                 }
             },
             "flight_time_us": {
-                "count": 0
+                "count": 301,
+                "max": 494436,
+                "min": 31074,
+                "mean": 72992.19575708518,
+                "stddev": 90532.83229943009,
+                "quantiles": {
+                    "p50": 56011,
+                    "p75": 63958,
+                    "p95": 393993,
+                    "p98": 395447,
+                    "p99": 396014,
+                    "p999": 494436
+                }
             }
         },
         "connections_killed": {
@@ -55,17 +79,17 @@
             },
             "connect_time_us": {
                 "count": 20,
-                "max": 716,
-                "min": 153,
-                "mean": 243.20000000000005,
-                "stddev": 155.43474515049719,
+                "max": 427,
+                "min": 137,
+                "mean": 221.7,
+                "stddev": 89.98783251084559,
                 "quantiles": {
-                    "p50": 187,
-                    "p75": 201,
-                    "p95": 716,
-                    "p98": 716,
-                    "p99": 716,
-                    "p999": 716
+                    "p50": 182,
+                    "p75": 315,
+                    "p95": 427,
+                    "p98": 427,
+                    "p99": 427,
+                    "p999": 427
                 }
             }
         },
@@ -96,47 +120,47 @@
         },
         "reservations_fulfilled": {
             "per_second": {
-                "count": 681,
+                "count": 320,
                 "one_minute": {
                     "rate": 0
                 }
             },
             "fulfilled_after_us": {
-                "count": 681,
-                "max": 1413699,
-                "min": 1713,
-                "mean": 942606.400818627,
-                "stddev": 278227.22012005277,
+                "count": 320,
+                "max": 1072725,
+                "min": 1698,
+                "mean": 682613.6310974149,
+                "stddev": 261205.03041556583,
                 "quantiles": {
-                    "p50": 969803,
-                    "p75": 1156180,
-                    "p95": 1315597,
-                    "p98": 1413278,
-                    "p99": 1413529,
-                    "p999": 1413699
+                    "p50": 731572,
+                    "p75": 909562,
+                    "p95": 1072248,
+                    "p98": 1072542,
+                    "p99": 1072652,
+                    "p999": 1072725
                 }
             }
         },
         "reservations_not_fulfilled": {
             "per_second": {
-                "count": 3000,
+                "count": 3601,
                 "one_minute": {
                     "rate": 0
                 }
             },
             "not_fulfilled_after_us": {
-                "count": 3000,
-                "max": 2140780,
-                "min": 2131987,
-                "mean": 2136052.275291842,
-                "stddev": 3094.0312994532816,
+                "count": 3601,
+                "max": 1566315,
+                "min": 1072396,
+                "mean": 1482186.1050583288,
+                "stddev": 183356.5444223937,
                 "quantiles": {
-                    "p50": 2134152,
-                    "p75": 2139285,
-                    "p95": 2140424,
-                    "p98": 2140637,
-                    "p99": 2140722,
-                    "p999": 2140780
+                    "p50": 1564114,
+                    "p75": 1564462,
+                    "p95": 1565487,
+                    "p98": 1566001,
+                    "p99": 1566161,
+                    "p999": 1566315
                 }
             }
         },
@@ -164,7 +188,19 @@
                 }
             },
             "life_time_ms": {
-                "count": 0
+                "count": 301,
+                "max": 494436,
+                "min": 31074,
+                "mean": 72992.19575708518,
+                "stddev": 90532.83229943009,
+                "quantiles": {
+                    "p50": 56011,
+                    "p75": 63958,
+                    "p95": 393993,
+                    "p98": 395447,
+                    "p99": 396014,
+                    "p999": 494436
+                }
             }
         },
         "pool_size_min": {
@@ -198,14 +234,14 @@
             "count_bottom": 20
         },
         "reservations_min": {
-            "count": 9359,
-            "count_peak": 9359,
-            "count_bottom": 9359
+            "count": 9118,
+            "count_peak": 9118,
+            "count_bottom": 9118
         },
         "reservations_max": {
-            "count": 9418,
-            "count_peak": 9418,
-            "count_bottom": 9418
+            "count": 9759,
+            "count_peak": 9759,
+            "count_bottom": 9759
         }
     }
 }

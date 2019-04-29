@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.5.3
+
+* Fixed metrix checked out per second.
+
 ## 0.5.2
 
-* Fixed name in documentation for environment variable for `STATS_INTERVAL`. 
+* Fixed name in documentation for environment variable for `STATS_INTERVAL`.
 
 ## 0.5.1
 
@@ -13,7 +17,7 @@
 * Changed error message for `CONNECT_TO` environment variable check
 * Pool has a configurable interval to trigger the instruments
 * Metrix feature tracks peak and bottom values
-* Metrix feature can be disabled completely on inactivity 
+* Metrix feature can be disabled completely on inactivity
 
 ## 0.4.2
 

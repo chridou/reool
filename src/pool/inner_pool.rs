@@ -80,6 +80,14 @@ where
     fn check_in_alive(&self, managed: Managed<T>) {
         let checked_out_at = managed.checked_out_at;
 
+        if let Some(instrumentation) = self.instrumentation.as_ref() {
+            if let Some(checked_out_at) = checked_out_at {
+                instrumentation.checked_in_returned_connection(checked_out_at.elapsed());
+            } else {
+                instrumentation.checked_in_new_connection();
+            }
+        }
+
         let mut core = self.core.lock();
 
         if checked_out_at.is_none() {
@@ -162,28 +170,22 @@ where
         }
 
         unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
-        if let Some(instrumentation) = self.instrumentation.as_ref() {
-            if let Some(checked_out_at) = checked_out_at {
-                instrumentation.checked_in_returned_connection(checked_out_at.elapsed());
-            } else {
-                instrumentation.checked_in_new_connection();
-            }
-        }
     }
 
     pub(super) fn check_out(&self, timeout: Option<Duration>) -> Checkout<T> {
         let mut core = self.core.lock();
 
-        if let Some(mut managed) = {
-            let taken = core.idle.pop();
-            taken
-        } {
+        if let Some(mut managed) = { core.idle.pop() } {
             trace!("check out - fulfilling with idle connection");
             managed.checked_out_at = Some(Instant::now());
             core.idle_tracker.dec();
             core.in_flight_tracker.inc();
 
             unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
+
+            if let Some(instrumentation) = self.instrumentation.as_ref() {
+                instrumentation.checked_out_connection();
+            }
 
             Checkout::new(future::ok(managed))
         } else {
