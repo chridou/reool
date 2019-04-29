@@ -9,6 +9,9 @@
 //! Currently `reool` is a fixed size connection pool.
 //! `Reool` provides an interface for instrumentation.
 //!
+//!
+//! You should also consider multiplexing instead of a pool based on your needs.
+//!
 //! The `PooledConnection` of `reool` implements the `ConnectionLike`
 //! interface of [redis-rs](https://crates.io/crates/redis) for easier integration.
 //!

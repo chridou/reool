@@ -12,7 +12,9 @@ Currently in early development.
 
 Reool is a connection pool for Redis based on [redis-rs](https://crates.io/crates/redis).
 
-Currently `reool` is a fixed size connection pool. `Reool` provides an interface for instrumentation. 
+Currently `reool` is a fixed size connection pool. `Reool` provides an interface for instrumentation.
+
+You should also consider multiplexing instead of a pool based on your needs.
 
 The `PooledConnection` of `reool` implements the `ConnectionLike` 
 interface of [redis-rs](https://crates.io/crates/redis) for easier integration.

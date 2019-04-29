@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4
+
+* Give hint on multiplexing in documentation
+
 ## 0.5.3
 
 * Fixed metrix checked out per second.
