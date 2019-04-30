@@ -473,8 +473,7 @@ fn unlock_then_publish_stats<T: Poolable>(
 ) {
     let snapshot = core_guard.try_flush();
     drop(core_guard);
-    match (instrumentation, snapshot) {
-        (Some(instr), Some(snapshot)) => instr.stats(snapshot),
-        _ => (),
+    if let (Some(instr), Some(snapshot)) = (instrumentation, snapshot) {
+        instr.stats(snapshot)
     }
 }

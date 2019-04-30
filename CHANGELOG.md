@@ -2,6 +2,10 @@
 
 ## 0.5.4
 
+* Add and report node count
+
+## 0.5.4
+
 * Give hint on multiplexing in documentation
 
 ## 0.5.3

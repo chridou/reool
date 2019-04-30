@@ -192,6 +192,7 @@ pub(crate) mod metrix {
         IdleConnectionsChangedMax,
         ReservationsChangedMin,
         ReservationsChangedMax,
+        NodeCount,
     }
 
     pub fn create<A: AggregatesProcessors>(
@@ -337,6 +338,12 @@ pub(crate) mod metrix {
         panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
+        let mut panel = Panel::with_name(Metric::NodeCount, "nodes");
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
+        cockpit.add_panel(panel);
+
         let (tx, mut rx) = TelemetryProcessor::new_pair_without_name();
         rx.add_cockpit(cockpit);
 
@@ -411,8 +418,8 @@ pub(crate) mod metrix {
         fn stats(&self, stats: PoolStats) {
             self.transmitter
                 .observed_one_value_now(Metric::PoolSizeChangedMin, stats.pool_size.min() as u64)
-                .observed_one_value_now(Metric::PoolSizeChangedMax, stats.pool_size.max() as u64);
-            self.transmitter
+                .observed_one_value_now(Metric::PoolSizeChangedMax, stats.pool_size.max() as u64)
+                .observed_one_value_now(Metric::NodeCount, stats.node_count as u64)
                 .observed_one_value_now(
                     Metric::InFlightConnectionsChangedMin,
                     stats.in_flight.min() as u64,
@@ -420,11 +427,9 @@ pub(crate) mod metrix {
                 .observed_one_value_now(
                     Metric::InFlightConnectionsChangedMax,
                     stats.in_flight.max() as u64,
-                );
-            self.transmitter
+                )
                 .observed_one_value_now(Metric::IdleConnectionsChangedMin, stats.idle.min() as u64)
-                .observed_one_value_now(Metric::IdleConnectionsChangedMax, stats.idle.max() as u64);
-            self.transmitter
+                .observed_one_value_now(Metric::IdleConnectionsChangedMax, stats.idle.max() as u64)
                 .observed_one_value_now(
                     Metric::ReservationsChangedMin,
                     stats.reservations.min() as u64,
