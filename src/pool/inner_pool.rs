@@ -39,15 +39,13 @@ where
             config.stats_interval,
         ));
 
-        let me = Self {
+        Self {
             core,
             request_new_conn,
             config,
             instrumentation: instrumentation
                 .map(|i| Box::new(i) as Box<dyn Instrumentation + Send + Sync>),
-        };
-
-        me
+        }
     }
 
     pub(super) fn check_in(&self, parcel: CheckInParcel<T>) {

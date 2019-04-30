@@ -388,7 +388,7 @@ impl SingleNodePool {
     /// This might not happen immediately.
     pub fn add_connections(&self, n: usize) {
         (0..n).for_each(|_| {
-            let _ = self.pool.add_new_connection();
+            self.pool.add_new_connection();
         });
     }
 
