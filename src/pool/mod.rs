@@ -233,7 +233,7 @@ where
     C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
 {
     let fut = future::loop_fn((weak_inner_pool, 1), move |(weak_inner, attempt)| {
-        let fut = if let Some(inner_pool) = weak_inner.upgrade() {
+        if let Some(inner_pool) = weak_inner.upgrade() {
             let start_connect = Instant::now();
             let fut = connection_factory
                 .create_connection()
@@ -284,8 +284,7 @@ where
             Box::new(future::err(NewConnectionError::new(Box::new(
                 PoolIsGoneError,
             ))))
-        };
-        fut
+        }
     });
     NewConnFuture::new(fut)
 }

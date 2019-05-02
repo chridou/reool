@@ -88,9 +88,6 @@ impl ConnectionFactory for Client {
     type Connection = Connection;
 
     fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
-        Box::new(
-            self.get_async_connection()
-                .map_err(|err| NewConnectionError::new(err)),
-        )
+        Box::new(self.get_async_connection().map_err(NewConnectionError::new))
     }
 }

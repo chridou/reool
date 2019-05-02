@@ -401,7 +401,7 @@ impl MultiNodePool {
                 Ok(client) => client,
                 Err(err) => {
                     warn!("Failed to create a client: {}", err);
-                    break;
+                    continue;
                 }
             };
 
@@ -414,7 +414,7 @@ impl MultiNodePool {
 
             let indexed_instrumentation = instrumentation_aggregator.as_ref().map(|agg| {
                 let instr = IndexedInstrumentation::new(agg.clone(), pool_idx);
-                agg.increase_pool_values();
+                agg.add_new_pool();
                 instr
             });
 
@@ -510,7 +510,7 @@ where
         }
     }
 
-    pub fn increase_pool_values(&self) {
+    pub fn add_new_pool(&self) {
         let mut tracking = self.tracking.lock();
         tracking.pool_size.add_pool();
         tracking.idle.add_pool();

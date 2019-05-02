@@ -158,9 +158,10 @@ where
             }
 
             core.idle.push(to_fulfill);
-            core.idle_tracker.inc();
-            let reservations = core.reservations.len();
-            core.reservations_tracker.set(reservations);
+            let idle_count = core.idle.len();
+            let reservations_count = core.reservations.len();
+            core.idle_tracker.set(idle_count);
+            core.reservations_tracker.set(reservations_count);
             trace!(
                 "check in - none fulfilled - added to idle {}",
                 core.idle_tracker.current()
@@ -307,10 +308,10 @@ impl<T: Poolable> SyncCore<T> {
         Self {
             idle: Vec::with_capacity(desired_pool_size),
             reservations: VecDeque::default(),
-            idle_tracker: ValueTracker::default(),
-            in_flight_tracker: ValueTracker::default(),
-            reservations_tracker: ValueTracker::default(),
-            pool_size_tracker: ValueTracker::default(),
+            idle_tracker: ValueTracker::new(stats_interval),
+            in_flight_tracker: ValueTracker::new(stats_interval),
+            reservations_tracker: ValueTracker::new(stats_interval),
+            pool_size_tracker: ValueTracker::new(stats_interval),
             stats_interval,
             last_flushed: Instant::now() - stats_interval,
         }
@@ -334,12 +335,14 @@ impl<T: Poolable> SyncCore<T> {
             None
         } else {
             self.last_flushed = now;
+            let current = self.stats();
 
             self.pool_size_tracker.apply_flush();
             self.in_flight_tracker.apply_flush();
             self.reservations_tracker.apply_flush();
             self.idle_tracker.apply_flush();
-            Some(self.stats())
+
+            Some(current)
         }
     }
 }
@@ -409,14 +412,18 @@ struct ValueTracker {
     current: usize,
     min: usize,
     max: usize,
+    last_flushed: Instant,
+    flush_every: Duration,
 }
 
-impl Default for ValueTracker {
-    fn default() -> Self {
+impl ValueTracker {
+    fn new(flush_every: Duration) -> Self {
         Self {
             current: 0,
             min: 0,
             max: 0,
+            last_flushed: Instant::now() - flush_every,
+            flush_every,
         }
     }
 }
