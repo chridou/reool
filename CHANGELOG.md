@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.5.4
+## 0.5.5
 
 * Add and report node count
+* Improve accuracy of stats
 
 ## 0.5.4
 

@@ -335,10 +335,10 @@ impl<T: Poolable> SyncCore<T> {
         } else {
             self.last_flushed = now;
 
-            self.pool_size_tracker.mark_flushed();
-            self.in_flight_tracker.mark_flushed();
-            self.reservations_tracker.mark_flushed();
-            self.idle_tracker.mark_flushed();
+            self.pool_size_tracker.apply_flush();
+            self.in_flight_tracker.apply_flush();
+            self.reservations_tracker.apply_flush();
+            self.idle_tracker.apply_flush();
             Some(self.stats())
         }
     }
@@ -409,7 +409,6 @@ struct ValueTracker {
     current: usize,
     min: usize,
     max: usize,
-    flushed: bool,
 }
 
 impl Default for ValueTracker {
@@ -418,7 +417,6 @@ impl Default for ValueTracker {
             current: 0,
             min: 0,
             max: 0,
-            flushed: true,
         }
     }
 }
@@ -426,19 +424,12 @@ impl Default for ValueTracker {
 impl ValueTracker {
     #[inline]
     fn set(&mut self, v: usize) {
-        if self.flushed {
-            self.current = v;
+        self.current = v;
+        if v < self.min {
             self.min = v;
+        }
+        if v > self.max {
             self.max = v;
-            self.flushed = false;
-        } else {
-            self.current = v;
-            if v < self.min {
-                self.min = v;
-            }
-            if v > self.max {
-                self.max = v;
-            }
         }
     }
 
@@ -460,8 +451,10 @@ impl ValueTracker {
         self.current
     }
 
-    fn mark_flushed(&mut self) {
-        self.flushed = true;
+    fn apply_flush(&mut self) {
+        let last = self.current;
+        self.min = last;
+        self.max = last;
     }
 }
 
