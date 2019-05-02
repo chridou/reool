@@ -86,6 +86,18 @@ pub struct PoolStats {
     pub node_count: usize,
 }
 
+impl Default for PoolStats {
+    fn default() -> Self {
+        Self {
+            pool_size: MinMax::default(),
+            in_flight: MinMax::default(),
+            reservations: MinMax::default(),
+            idle: MinMax::default(),
+            node_count: 0,
+        }
+    }
+}
+
 pub(crate) struct Pool<T: Poolable> {
     inner_pool: Arc<InnerPool<T>>,
 }

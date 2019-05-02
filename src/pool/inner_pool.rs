@@ -289,7 +289,29 @@ where
     }
 }
 
-// ===== SYNC COR =====
+impl<T: Poolable> Drop for InnerPool<T> {
+    fn drop(&mut self) {
+        let _ = self
+            .request_new_conn
+            .unbounded_send(NewConnMessage::Shutdown);
+
+        if let Some(instr) = self.instrumentation.as_ref() {
+            instr.stats(PoolStats::default())
+        }
+
+        debug!("inner pool dropped - all connections will be terminated on return");
+    }
+}
+
+// ===== CHECK IN PARCEL =====
+
+pub(super) enum CheckInParcel<T: Poolable> {
+    Alive(Managed<T>),
+    Dropped(Option<Duration>, Duration),
+    Killed(Duration),
+}
+
+// ===== SYNC CORE =====
 
 /// Used to ensure there is no race between choeckouts and puts
 struct SyncCore<T: Poolable> {
@@ -308,10 +330,10 @@ impl<T: Poolable> SyncCore<T> {
         Self {
             idle: Vec::with_capacity(desired_pool_size),
             reservations: VecDeque::default(),
-            idle_tracker: ValueTracker::new(stats_interval),
-            in_flight_tracker: ValueTracker::new(stats_interval),
-            reservations_tracker: ValueTracker::new(stats_interval),
-            pool_size_tracker: ValueTracker::new(stats_interval),
+            idle_tracker: ValueTracker::default(),
+            in_flight_tracker: ValueTracker::default(),
+            reservations_tracker: ValueTracker::default(),
+            pool_size_tracker: ValueTracker::default(),
             stats_interval,
             last_flushed: Instant::now() - stats_interval,
         }
@@ -347,14 +369,7 @@ impl<T: Poolable> SyncCore<T> {
     }
 }
 
-impl<T: Poolable> Drop for InnerPool<T> {
-    fn drop(&mut self) {
-        let _ = self
-            .request_new_conn
-            .unbounded_send(NewConnMessage::Shutdown);
-        debug!("inner pool dropped - all connections will be closed");
-    }
-}
+// ===== RESERVATION =====
 
 enum Reservation<T: Poolable> {
     Checkout(oneshot::Sender<Managed<T>>, Instant),
@@ -402,28 +417,18 @@ impl<T: Poolable> Reservation<T> {
     }
 }
 
-pub(super) enum CheckInParcel<T: Poolable> {
-    Alive(Managed<T>),
-    Dropped(Option<Duration>, Duration),
-    Killed(Duration),
-}
+// ===== VALUE TRACKER ======
 
 struct ValueTracker {
-    current: usize,
-    min: usize,
-    max: usize,
-    last_flushed: Instant,
-    flush_every: Duration,
+    last: usize,
+    min_max: Option<MinMax>,
 }
 
-impl ValueTracker {
-    fn new(flush_every: Duration) -> Self {
+impl Default for ValueTracker {
+    fn default() -> Self {
         Self {
-            current: 0,
-            min: 0,
-            max: 0,
-            last_flushed: Instant::now() - flush_every,
-            flush_every,
+            last: 0,
+            min_max: None,
         }
     }
 }
@@ -431,37 +436,45 @@ impl ValueTracker {
 impl ValueTracker {
     #[inline]
     fn set(&mut self, v: usize) {
-        self.current = v;
-        if v < self.min {
-            self.min = v;
-        }
-        if v > self.max {
-            self.max = v;
-        }
+        self.last = v;
+        let new_min_max = if let Some(mut min_max) = self.min_max.take() {
+            if v < min_max.0 {
+                min_max.0 = v;
+            }
+            if v > min_max.1 {
+                min_max.1 = v;
+            }
+            min_max
+        } else {
+            MinMax(v, v)
+        };
+        self.min_max = Some(new_min_max)
     }
 
     pub fn inc(&mut self) {
-        self.set(self.current + 1);
+        self.set(self.last + 1);
     }
 
     pub fn dec(&mut self) {
-        self.set(self.current - 1);
+        self.set(self.last - 1);
     }
 
     #[inline]
     fn get(&self) -> MinMax {
-        MinMax(self.min, self.max)
+        if let Some(min_max) = self.min_max.as_ref() {
+            *min_max
+        } else {
+            MinMax(self.last, self.last)
+        }
     }
 
     #[inline]
     fn current(&self) -> usize {
-        self.current
+        self.last
     }
 
     fn apply_flush(&mut self) {
-        let last = self.current;
-        self.min = last;
-        self.max = last;
+        self.min_max = None;
     }
 }
 
