@@ -3,15 +3,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future;
 use log::{debug, warn};
 use parking_lot::Mutex;
 use redis::{r#async::Connection, Client, IntoConnectionInfo};
 
+use crate::error::{ErrorKind, ReoolError};
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
-use crate::pool::{Config as PoolConfig, MinMax, Pool};
+use crate::pool::{Checkout as PoolCheckout, Config as PoolConfig, MinMax, Pool};
 use crate::{Checkout, RedisPool};
 
 pub use crate::backoff_strategy::BackoffStrategy;
@@ -383,11 +385,7 @@ impl MultiNodePool {
         T: IntoConnectionInfo,
         I: Instrumentation + Send + Sync + 'static,
     {
-        if connect_to.is_empty() {
-            return Err(InitializationError::message_only(
-                "There must be at least on node to connect to.",
-            ));
-        }
+        warn!("There should be at least on node to connect to.");
 
         let mut pools = Vec::new();
 
@@ -436,6 +434,8 @@ impl MultiNodePool {
                 config.min_required_nodes,
                 pools.len()
             )));
+        } else if pools.is_empty() {
+            warn!("Zoer nodes is allowed and there are no nodes.");
         }
 
         debug!("replica set has {} nodes", pools.len());
@@ -474,11 +474,17 @@ struct Inner {
 
 impl Inner {
     fn check_out(&self, checkout_timeout: Option<Duration>) -> Checkout {
-        let count = self.count.fetch_add(1, Ordering::SeqCst);
+        if self.pools.is_empty() {
+            Checkout(PoolCheckout::new(future::err(ReoolError::new(
+                ErrorKind::NoConnection,
+            ))))
+        } else {
+            let count = self.count.fetch_add(1, Ordering::SeqCst);
 
-        let idx = count % self.pools.len();
+            let idx = count % self.pools.len();
 
-        Checkout(self.pools[idx].check_out(checkout_timeout))
+            Checkout(self.pools[idx].check_out(checkout_timeout))
+        }
     }
 }
 

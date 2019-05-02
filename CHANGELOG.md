@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.6
+
+* Allow MultiNode pool to have 0 nodes (but emit a warning)
+
 ## 0.5.5
 
 * Add and report node count
