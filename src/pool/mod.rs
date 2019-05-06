@@ -200,10 +200,10 @@ fn start_new_conn_stream<T, C>(
             trace!("new connection requested on finished stream");
             Box::new(future::err(()))
         } else {
-            trace!("creating new connection");
             match msg {
                 NewConnMessage::RequestNewConn => {
                     if let Some(existing_inner_pool) = inner_pool.upgrade() {
+                        trace!("creating new connection");
                         let fut = create_new_poolable_conn(
                             Instant::now(),
                             connection_factory.clone(),
@@ -215,6 +215,7 @@ fn start_new_conn_stream<T, C>(
                         drop(existing_inner_pool);
                         Box::new(fut)
                     } else {
+                        warn!("attempt to create new connection even though the pool is gone");
                         Box::new(future::err(())) as Box<Future<Item = _, Error = _> + Send>
                     }
                 }
