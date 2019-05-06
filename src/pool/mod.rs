@@ -171,6 +171,10 @@ where
         self.inner_pool.stats()
     }
 
+    pub fn trigger_stats(&self) {
+        self.inner_pool.trigger_stats()
+    }
+
     #[cfg(test)]
     #[allow(unused)]
     fn inner_pool(&self) -> &Arc<InnerPool<T>> {
@@ -351,7 +355,6 @@ impl<T: Poolable> Drop for Managed<T> {
     fn drop(&mut self) {
         if let Some(inner_pool) = self.inner_pool.upgrade() {
             if self.marked_for_kill {
-                debug!("connection killed");
                 inner_pool.check_in(CheckInParcel::Killed(self.created_at.elapsed()))
             } else if let Some(value) = self.value.take() {
                 inner_pool.check_in(CheckInParcel::Alive(Managed {

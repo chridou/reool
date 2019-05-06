@@ -8,70 +8,46 @@ use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
+use reool::instrumentation::StatsLogger;
 use reool::node_pool::SingleNodePool;
 use reool::{Commands, RedisPool};
 
 /// Do some ping commands and measure the time elapsed
 fn main() {
-    env::set_var("RUST_LOG", "reool=debug,ping=info");
+    env::set_var("RUST_LOG", "reool=trace,stats=info");
     let _ = pretty_env_logger::try_init();
 
     let mut runtime = Runtime::new().unwrap();
 
     let pool = SingleNodePool::builder()
         .connect_to("redis://127.0.0.1:6379")
-        .desired_pool_size(5)
+        .desired_pool_size(2)
         .reservation_limit(None)
         .checkout_timeout(Some(Duration::from_millis(50)))
+        .instrumented(StatsLogger)
+        .stats_interval(Duration::from_millis(100))
         .task_executor(runtime.executor())
         .finish()
         .unwrap();
 
-    info!("Do one ping");
-    let start = Instant::now();
+    info!("WAIT");
+    thread::sleep(Duration::from_secs(1));
+
+    info!("PING 1");
     runtime
         .block_on(pool.check_out().from_err().and_then(Commands::ping))
         .unwrap();
-    info!("PINGED in {:?}", start.elapsed());
 
+    info!("WAIT");
     thread::sleep(Duration::from_secs(1));
 
-    info!("Do another ping");
-    let start = Instant::now();
-    runtime
-        .block_on(pool.check_out().from_err().and_then(Commands::ping))
-        .unwrap();
-    info!("PINGED in {:?}", start.elapsed());
+    info!("TRIGGER STATS 1");
+    pool.trigger_stats();
 
+    info!("WAIT");
     thread::sleep(Duration::from_secs(1));
 
-    info!("Do one hundred pings in a row");
-    let pool_ping = pool.clone();
-    let fut = iter_ok(0..100)
-        .for_each(move |_| {
-            pool_ping
-                .check_out()
-                .from_err()
-                .and_then(Commands::ping)
-                .then(|res| match res {
-                    Err(err) => {
-                        error!("PING failed: {}", err);
-                        Ok(())
-                    }
-                    Ok(_) => Ok::<_, ()>(()),
-                })
-        })
-        .map(|_| {
-            info!("finished pinging");
-        });
-
-    let start = Instant::now();
-    runtime.block_on(fut).unwrap();
-    info!("PINGED 100 times in a row in {:?}", start.elapsed());
-
-    thread::sleep(Duration::from_secs(1));
-
-    info!("Do one hundred pings in concurrently");
+    info!("PING 2");
     let futs: Vec<_> = (0..100)
         .map(|i| {
             pool.check_out()
@@ -92,10 +68,20 @@ fn main() {
     let fut = join_all(futs).map(|_| {
         info!("finished pinging");
     });
-
-    let start = Instant::now();
     runtime.block_on(fut).unwrap();
-    info!("PINGED 100 times concurrently in {:?}", start.elapsed());
+
+    thread::sleep(Duration::from_secs(1));
+    info!("TRIGGER STATS 2");
+    pool.trigger_stats();
+
+    info!("WAIT");
+    thread::sleep(Duration::from_secs(1));
+
+    info!("TRIGGER STATS 3");
+    pool.trigger_stats();
+
+    info!("WAIT");
+    thread::sleep(Duration::from_secs(1));
 
     drop(pool);
     info!("pool dropped");

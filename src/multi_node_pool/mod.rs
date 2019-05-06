@@ -455,6 +455,13 @@ impl MultiNodePool {
     pub fn stats(&self) -> Vec<PoolStats> {
         self.inner.pools.iter().map(Pool::stats).collect()
     }
+
+    /// Triggers the pool to emit statistics if `stats_interval` has elapsed.
+    ///
+    /// This locks the underlying pool.
+    pub fn trigger_stats(&self) {
+        self.inner.pools.iter().for_each(Pool::trigger_stats)
+    }
 }
 
 impl RedisPool for MultiNodePool {

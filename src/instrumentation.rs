@@ -1,6 +1,8 @@
 //! Pluggable instrumentation
 use std::time::Duration;
 
+use log::info;
+
 pub use crate::pool::PoolStats;
 
 #[cfg(feature = "metrix")]
@@ -63,6 +65,26 @@ impl Instrumentation for NoInstrumentation {
     fn reservation_limit_reached(&self) {}
     fn connection_factory_failed(&self) {}
     fn stats(&self, _stats: PoolStats) {}
+}
+
+/// Simply logs every `PoolStats` sent by the pool
+pub struct StatsLogger;
+
+impl Instrumentation for StatsLogger {
+    fn checked_out_connection(&self) {}
+    fn checked_in_returned_connection(&self, _flight_time: Duration) {}
+    fn checked_in_new_connection(&self) {}
+    fn connection_dropped(&self, _flight_time: Duration, _lifetime: Duration) {}
+    fn connection_created(&self, _connected_after: Duration, _total_time: Duration) {}
+    fn connection_killed(&self, _lifetime: Duration) {}
+    fn reservation_added(&self) {}
+    fn reservation_fulfilled(&self, _after: Duration) {}
+    fn reservation_not_fulfilled(&self, _after: Duration) {}
+    fn reservation_limit_reached(&self) {}
+    fn connection_factory_failed(&self) {}
+    fn stats(&self, stats: PoolStats) {
+        info!("{:#?}", stats);
+    }
 }
 
 #[cfg(feature = "metrix")]

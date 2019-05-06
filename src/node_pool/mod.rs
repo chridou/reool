@@ -365,8 +365,7 @@ impl SingleNodePool {
             ));
         }
 
-        let client =
-            Client::open(connect_to).map_err(|err| InitializationError::cause_only(err))?;
+        let client = Client::open(connect_to).map_err(InitializationError::cause_only)?;
 
         let pool_conf = PoolConfig {
             desired_pool_size: config.desired_pool_size,
@@ -408,6 +407,13 @@ impl SingleNodePool {
     /// This locks the underlying pool.
     pub fn stats(&self) -> PoolStats {
         self.pool.stats()
+    }
+
+    /// Triggers the pool to emit statistics if `stats_interval` has elapsed.
+    ///
+    /// This locks the underlying pool.
+    pub fn trigger_stats(&self) {
+        self.pool.trigger_stats()
     }
 }
 

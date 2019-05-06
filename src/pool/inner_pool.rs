@@ -67,6 +67,10 @@ where
             CheckInParcel::Killed(life_time) => {
                 let mut core = self.core.lock();
                 core.pool_size_tracker.dec();
+                debug!(
+                    "connection killed - pool size {}",
+                    core.pool_size_tracker.current()
+                );
                 unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
                 if let Some(instrumentation) = self.instrumentation.as_ref() {
                     instrumentation.connection_killed(life_time);
@@ -257,10 +261,14 @@ where
     pub(super) fn remove_conn(&self) {
         let mut core = self.core.lock();
         if let Some(mut managed) = { core.idle.pop() } {
+            core.idle_tracker.dec();
+            drop(core);
             managed.marked_for_kill = true;
         } else {
             trace!("no idle connection to kill - enqueue for kill");
             core.reservations.push_back(Reservation::reduce_pool_size());
+            core.reservations_tracker.inc();
+            unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
         }
     }
 
@@ -286,6 +294,13 @@ where
 
     pub fn stats(&self) -> PoolStats {
         self.core.lock().stats()
+    }
+
+    pub fn trigger_stats(&self) {
+        unlock_then_publish_stats(
+            self.core.lock(),
+            self.instrumentation.as_ref().map(|i| &**i),
+        );
     }
 }
 
