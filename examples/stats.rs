@@ -8,19 +8,19 @@ use pretty_env_logger;
 use tokio::runtime::Runtime;
 
 use reool::instrumentation::StatsLogger;
-use reool::node_pool::SingleNodePool;
+use reool::multi_node_pool::MultiNodePool;
 use reool::{Commands, RedisPool};
 
 /// Do some ping commands and measure the time elapsed
 fn main() {
-    env::set_var("RUST_LOG", "reool=trace,stats=info");
+    env::set_var("RUST_LOG", "reool=debug,stats=info");
     let _ = pretty_env_logger::try_init();
 
     let mut runtime = Runtime::new().unwrap();
 
-    let pool = SingleNodePool::builder()
-        .connect_to("redis://127.0.0.1:6379")
-        .desired_pool_size(2)
+    let pool = MultiNodePool::builder()
+        .connect_to(vec!["redis://127.0.0.1:6379", "redis://127.0.0.1:6379"])
+        .desired_pool_size(3)
         .reservation_limit(None)
         .checkout_timeout(Some(Duration::from_millis(50)))
         .instrumented(StatsLogger)
@@ -47,27 +47,29 @@ fn main() {
     thread::sleep(Duration::from_secs(1));
 
     info!("PING 2");
-    let futs: Vec<_> = (0..100)
-        .map(|i| {
-            pool.check_out()
-                .from_err()
-                .and_then(Commands::ping)
-                .then(move |res| match res {
-                    Err(err) => {
-                        error!("PING {} failed: {}", i, err);
-                        Ok(())
-                    }
-                    Ok(_) => {
-                        debug!("PING {} OK", i);
-                        Ok::<_, ()>(())
-                    }
-                })
-        })
-        .collect();
-    let fut = join_all(futs).map(|_| {
-        info!("finished pinging");
-    });
-    runtime.block_on(fut).unwrap();
+    for _ in 0..10_000 {
+        let futs: Vec<_> = (0..7)
+            .map(|i| {
+                pool.check_out()
+                    .from_err()
+                    .and_then(Commands::ping)
+                    .then(move |res| match res {
+                        Err(err) => {
+                            error!("PING {} failed: {}", i, err);
+                            Ok(())
+                        }
+                        Ok(_) => {
+                            debug!("PING {} OK", i);
+                            Ok::<_, ()>(())
+                        }
+                    })
+            })
+            .collect();
+        let fut = join_all(futs).map(|_| {
+            debug!("finished pinging");
+        });
+        runtime.block_on(fut).unwrap();
+    }
 
     thread::sleep(Duration::from_secs(1));
     info!("TRIGGER STATS 2");

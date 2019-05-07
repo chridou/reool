@@ -580,15 +580,17 @@ where
         let mut tracking = self.tracking.lock();
         let pool_size = tracking.pool_size.update(pool_idx, stats.pool_size);
         let idle = tracking.idle.update(pool_idx, stats.idle);
-        let reservations = tracking.idle.update(pool_idx, stats.reservations);
-        let in_flight = tracking.idle.update(pool_idx, stats.in_flight);
+        let reservations = tracking.reservations.update(pool_idx, stats.reservations);
+        let in_flight = tracking.in_flight.update(pool_idx, stats.in_flight);
+        let node_count = tracking.pool_size.node_count();
+        drop(tracking);
 
         let stats = PoolStats {
             pool_size,
             reservations,
             idle,
             in_flight,
-            node_count: tracking.pool_size.node_count(),
+            node_count,
         };
 
         self.outbound.stats(stats)

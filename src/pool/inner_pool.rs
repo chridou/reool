@@ -269,6 +269,9 @@ where
             core.reservations.push_back(Reservation::reduce_pool_size());
             core.reservations_tracker.inc();
             unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
+            if let Some(instrumentation) = self.instrumentation.as_ref() {
+                instrumentation.reservation_added()
+            }
         }
     }
 

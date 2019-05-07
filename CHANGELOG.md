@@ -1,8 +1,13 @@
 # Changelog
 
+## 0.5.7
+
+* Fixed multi node instrumentation to show the correct values
+
 ## 0.5.6
 
 * Allow MultiNode pool to have 0 nodes (but emit a warning)
+* Instrumentation can be triggered externally
 
 ## 0.5.5
 
