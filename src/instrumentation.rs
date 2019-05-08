@@ -92,6 +92,7 @@ pub(crate) mod metrix {
     use std::time::Duration;
 
     use metrix::cockpit::Cockpit;
+    use metrix::instruments::switches::StaircaseTimer;
     use metrix::instruments::*;
     use metrix::processor::{AggregatesProcessors, TelemetryProcessor};
     use metrix::{TelemetryTransmitter, TransmitsTelemetryData};
@@ -106,14 +107,8 @@ pub(crate) mod metrix {
         /// duration.
         ///
         /// Default is `None`
-        pub global_inactivity_timeout: Option<Duration>,
-        /// When a `Duration` is set histograms will not report
-        /// any values once nothing changed for the given
-        /// duration.
-        ///
-        /// Default is `None`
-        pub histograms_inactivity_timeout: Option<Duration>,
-        /// When `histograms_inactivity_timeout` was enabled and
+        pub inactivity_limit: Option<Duration>,
+        /// When `inactivity_limit` was enabled and
         /// reset is enabled the histogram will reset once it becomes
         /// active again
         ///
@@ -124,6 +119,10 @@ pub(crate) mod metrix {
         ///
         /// Default is enabled with 30 seconds
         pub track_extrema_in_gauges: Option<Duration>,
+        /// Sets the `Duration` for how long a triggered alert stays `on`
+        ///
+        /// Default is 60 seconds
+        pub alert_duration: Duration,
     }
 
     impl MetrixConfig {
@@ -132,22 +131,12 @@ pub(crate) mod metrix {
         /// duration.
         ///
         /// Default is `None`
-        pub fn global_inactivity_timeout(mut self, v: Duration) -> Self {
-            self.global_inactivity_timeout = Some(v);
+        pub fn inactivity_limit(mut self, v: Duration) -> Self {
+            self.inactivity_limit = Some(v);
             self
         }
 
-        /// When a `Duration` is set histograms will not report
-        /// any values once nothing changed for the given
-        /// duration.
-        ///
-        /// Default is `None`
-        pub fn histograms_inactivity_timeout(mut self, v: Duration) -> Self {
-            self.histograms_inactivity_timeout = Some(v);
-            self
-        }
-
-        /// When `histograms_inactivity_timeout` was enabled and
+        /// When `inactivity_limit` was enabled and
         /// reset is enabled the histogram will reset once it becomes
         /// active again
         ///
@@ -166,6 +155,14 @@ pub(crate) mod metrix {
             self
         }
 
+        /// Sets the `Duration` for how long a triggered alert stays `on`
+        ///
+        /// Default is 60 seconds
+        pub fn alert_duration(mut self, v: Duration) -> Self {
+            self.alert_duration = v;
+            self
+        }
+
         fn configure_gauge(&self, gauge: &mut Gauge) {
             if let Some(ext_dur) = self.track_extrema_in_gauges {
                 gauge.set_memorize_extrema(ext_dur);
@@ -173,20 +170,26 @@ pub(crate) mod metrix {
         }
 
         fn configure_histogram(&self, histogram: &mut Histogram) {
-            if let Some(inactivity_dur) = self.histograms_inactivity_timeout {
-                histogram.set_inactivity_limit(inactivity_dur);
+            if let Some(inactivity_limit) = self.inactivity_limit {
+                histogram.set_inactivity_limit(inactivity_limit);
                 histogram.reset_after_inactivity(self.reset_histograms_after_inactivity);
             }
+        }
+
+        fn add_alert<L>(&self, panel: &mut Panel<L>) {
+            let mut alert = StaircaseTimer::new_with_defaults("alert");
+            alert.set_switch_off_after(self.alert_duration);
+            panel.add_instrument(alert);
         }
     }
 
     impl Default for MetrixConfig {
         fn default() -> Self {
             Self {
-                global_inactivity_timeout: None,
-                histograms_inactivity_timeout: None,
+                inactivity_limit: None,
                 reset_histograms_after_inactivity: false,
                 track_extrema_in_gauges: Some(Duration::from_secs(30)),
+                alert_duration: Duration::from_secs(60),
             }
         }
     }
@@ -249,6 +252,7 @@ pub(crate) mod metrix {
         let mut histogram = Histogram::new_with_defaults("flight_time_us");
         config.configure_histogram(&mut histogram);
         panel.set_histogram(histogram);
+        config.add_alert(&mut panel);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::ConnectionKilled, "connections_killed");
@@ -299,11 +303,13 @@ pub(crate) mod metrix {
         let mut panel =
             Panel::with_name(Metric::ReservationLimitReached, "reservation_limit_reached");
         panel.set_meter(Meter::new_with_defaults("per_second"));
+        config.add_alert(&mut panel);
         cockpit.add_panel(panel);
 
         let mut panel =
             Panel::with_name(Metric::ConnectionFactoryFailed, "connection_factory_failed");
         panel.set_meter(Meter::new_with_defaults("per_second"));
+        config.add_alert(&mut panel);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::LifeTime, "life_times");
@@ -369,8 +375,8 @@ pub(crate) mod metrix {
         let (tx, mut rx) = TelemetryProcessor::new_pair_without_name();
         rx.add_cockpit(cockpit);
 
-        if let Some(inactivity_timeout) = config.global_inactivity_timeout {
-            rx.set_inactivity_limit(inactivity_timeout)
+        if let Some(inactivity_limit) = config.inactivity_limit {
+            rx.set_inactivity_limit(inactivity_limit)
         }
 
         aggregates_processors.add_processor(rx);

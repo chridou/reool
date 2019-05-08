@@ -361,7 +361,7 @@ impl ConnectionFactory for U32DelayFactory {
         let next = self.counter.fetch_add(1, Ordering::SeqCst);
         Box::new(
             delay
-                .map_err(|err| NewConnectionError::new(err))
+                .map_err(NewConnectionError::new)
                 .and_then(move |()| future::ok(next)),
         )
     }

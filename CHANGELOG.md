@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+
+* Metrix supports inactivity tracking for complete panels(requires metrix feature)
+* Added alerts to some instrumentation of metrix
+
 ## 0.5.7
 
 * Fixed multi node instrumentation to show the correct values
