@@ -6,15 +6,15 @@ use std::time::Duration;
 use futures::future;
 use log::{debug, warn};
 use parking_lot::Mutex;
-use redis::{r#async::Connection, Client, IntoConnectionInfo};
+use redis::{r#async::Connection, Client};
 
 use crate::error::{ErrorKind, ReoolError};
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
-use crate::pool::{Checkout as PoolCheckout, Config as PoolConfig, MinMax, Pool};
-use crate::{Checkout, ConnectionPool};
+use crate::pool::{Config as PoolConfig, MinMax, Pool};
+use crate::{Checkout, RedisPool};
 
 pub use crate::backoff_strategy::BackoffStrategy;
 pub use crate::pool::PoolStats;
@@ -145,10 +145,10 @@ impl Default for Config {
 }
 
 /// A builder for a `MultiNodePool`
-pub struct Builder<T, I> {
+pub struct Builder<C, I> {
     config: Config,
     executor_flavour: ExecutorFlavour,
-    connect_to: Vec<T>,
+    connect_to: Vec<C>,
     instrumentation: Option<I>,
 }
 
@@ -163,7 +163,7 @@ impl Default for Builder<(), NoInstrumentation> {
     }
 }
 
-impl<T, I> Builder<T, I> {
+impl<C, I> Builder<C, I> {
     /// The number of connections the pool should initially have
     /// and try to maintain
     pub fn desired_pool_size(mut self, v: usize) -> Self {
@@ -206,7 +206,7 @@ impl<T, I> Builder<T, I> {
     }
 
     /// The Redis nodes to connect to
-    pub fn connect_to<C: IntoConnectionInfo>(self, connect_to: Vec<C>) -> Builder<C, I> {
+    pub fn connect_to(self, connect_to: Vec<String>) -> Builder<String, I> {
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
@@ -235,7 +235,7 @@ impl<T, I> Builder<T, I> {
     pub fn update_config_from_environment(
         self,
         prefix: Option<&str>,
-    ) -> InitializationResult<Builder<T, I>> {
+    ) -> InitializationResult<Builder<C, I>> {
         let config = self.config.update_from_environment(prefix)?;
 
         Ok(Builder {
@@ -247,7 +247,7 @@ impl<T, I> Builder<T, I> {
     }
 
     /// Adds instrumentation to the pool
-    pub fn instrumented<II>(self, instrumentation: II) -> Builder<T, II>
+    pub fn instrumented<II>(self, instrumentation: II) -> Builder<C, II>
     where
         II: Instrumentation + Send + Sync + 'static,
     {
@@ -309,9 +309,8 @@ where
     }
 }
 
-impl<T, I> Builder<T, I>
+impl<I> Builder<String, I>
 where
-    T: IntoConnectionInfo,
     I: Instrumentation + Send + Sync + 'static,
 {
     /// Build a new `MultiNodePool`
@@ -319,24 +318,6 @@ where
         MultiNodePool::create(
             self.config,
             self.connect_to,
-            self.executor_flavour,
-            self.instrumentation,
-        )
-    }
-}
-
-impl<I> Builder<String, I>
-where
-    I: Instrumentation + Send + Sync + 'static,
-{
-    /// Build a new `MultiNodePool`
-    ///
-    /// This is a due to a limitation that
-    /// `IntoConnectionInfo` is not implemented for `String`
-    pub fn finish2(self) -> InitializationResult<MultiNodePool> {
-        MultiNodePool::create(
-            self.config,
-            self.connect_to.iter().map(|s| &**s).collect(),
             self.executor_flavour,
             self.instrumentation,
         )
@@ -368,21 +349,17 @@ impl MultiNodePool {
     ///
     /// This function must be
     /// called on a thread of the tokio runtime.
-    pub fn new<T>(config: Config, connect_to: Vec<T>) -> InitializationResult<Self>
-    where
-        T: IntoConnectionInfo,
-    {
-        Self::create::<T, ()>(config, connect_to, ExecutorFlavour::Runtime, None)
+    pub fn new(config: Config, connect_to: Vec<String>) -> InitializationResult<Self> {
+        Self::create::<()>(config, connect_to, ExecutorFlavour::Runtime, None)
     }
 
-    pub(crate) fn create<T, I>(
+    pub(crate) fn create<I>(
         config: Config,
-        connect_to: Vec<T>,
+        connect_to: Vec<String>,
         executor_flavour: ExecutorFlavour,
         instrumentation: Option<I>,
     ) -> InitializationResult<Self>
     where
-        T: IntoConnectionInfo,
         I: Instrumentation + Send + Sync + 'static,
     {
         warn!("There should be at least on node to connect to.");
@@ -395,7 +372,7 @@ impl MultiNodePool {
 
         let mut pool_idx = 0;
         for connect_to in connect_to {
-            let client = match Client::open(connect_to).map_err(InitializationError::cause_only) {
+            let client = match Client::open(&*connect_to).map_err(InitializationError::cause_only) {
                 Ok(client) => client,
                 Err(err) => {
                     warn!("Failed to create a client: {}", err);
@@ -464,7 +441,7 @@ impl MultiNodePool {
     }
 }
 
-impl ConnectionPool for MultiNodePool {
+impl RedisPool for MultiNodePool {
     fn check_out(&self) -> Checkout {
         self.inner.check_out(self.checkout_timeout)
     }

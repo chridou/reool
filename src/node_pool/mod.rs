@@ -1,14 +1,14 @@
 //! A connection pool for conencting to a single node
 use std::time::Duration;
 
-use redis::{r#async::Connection, Client, IntoConnectionInfo};
+use redis::{r#async::Connection, Client};
 
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
 use crate::pool::{Config as PoolConfig, Pool};
-use crate::{Checkout, ConnectionPool};
+use crate::{Checkout, RedisPool};
 
 pub use crate::backoff_strategy::BackoffStrategy;
 pub use crate::pool::PoolStats;
@@ -123,10 +123,10 @@ impl Default for Config {
 }
 
 /// A builder for a `SingleNodePool`
-pub struct Builder<T, I> {
+pub struct Builder<C, I> {
     config: Config,
     executor_flavour: ExecutorFlavour,
-    connect_to: T,
+    connect_to: C,
     instrumentation: Option<I>,
 }
 
@@ -178,11 +178,11 @@ impl<T, I> Builder<T, I> {
     }
 
     /// The Redis node to connect to
-    pub fn connect_to<C: IntoConnectionInfo>(self, connect_to: C) -> Builder<C, I> {
+    pub fn connect_to<T: Into<String>>(self, connect_to: T) -> Builder<String, I> {
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
-            connect_to,
+            connect_to: connect_to.into(),
             instrumentation: self.instrumentation,
         }
     }
@@ -287,9 +287,8 @@ where
     }
 }
 
-impl<T, I> Builder<T, I>
+impl<I> Builder<String, I>
 where
-    T: IntoConnectionInfo,
     I: Instrumentation + Send + Sync + 'static,
 {
     /// Build a new `SingleNodePool`
@@ -297,24 +296,6 @@ where
         SingleNodePool::create(
             self.config,
             self.connect_to,
-            self.executor_flavour,
-            self.instrumentation,
-        )
-    }
-}
-
-impl<I> Builder<String, I>
-where
-    I: Instrumentation + Send + Sync + 'static,
-{
-    /// Build a new `SingleNodePool`
-    ///
-    /// This is a due to a limitation that
-    /// `IntoConnectionInfo` is not implemented for `String`
-    pub fn finish2(self) -> InitializationResult<SingleNodePool> {
-        SingleNodePool::create(
-            self.config,
-            &*self.connect_to,
             self.executor_flavour,
             self.instrumentation,
         )
@@ -342,21 +323,20 @@ impl SingleNodePool {
     ///
     /// This function must be
     /// called on a thread of the tokio runtime.
-    pub fn new<T>(config: Config, connect_to: T) -> InitializationResult<Self>
+    pub fn new<C>(config: Config, connect_to: C) -> InitializationResult<Self>
     where
-        T: IntoConnectionInfo,
+        C: Into<String>,
     {
-        Self::create::<T, NoInstrumentation>(config, connect_to, ExecutorFlavour::Runtime, None)
+        Self::create::<NoInstrumentation>(config, connect_to.into(), ExecutorFlavour::Runtime, None)
     }
 
-    pub(crate) fn create<T, I>(
+    pub(crate) fn create<I>(
         config: Config,
-        connect_to: T,
+        connect_to: String,
         executor_flavour: ExecutorFlavour,
         instrumentation: Option<I>,
     ) -> InitializationResult<Self>
     where
-        T: IntoConnectionInfo,
         I: Instrumentation + Send + Sync + 'static,
     {
         if config.desired_pool_size == 0 {
@@ -365,7 +345,7 @@ impl SingleNodePool {
             ));
         }
 
-        let client = Client::open(connect_to).map_err(InitializationError::cause_only)?;
+        let client = Client::open(&*connect_to).map_err(InitializationError::cause_only)?;
 
         let pool_conf = PoolConfig {
             desired_pool_size: config.desired_pool_size,
@@ -417,7 +397,7 @@ impl SingleNodePool {
     }
 }
 
-impl ConnectionPool for SingleNodePool {
+impl RedisPool for SingleNodePool {
     fn check_out(&self) -> Checkout {
         Checkout(self.pool.check_out(self.checkout_timeout))
     }

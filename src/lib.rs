@@ -72,7 +72,7 @@ impl<T: Poolable> Future for Checkout<T> {
 }
 
 /// A trait that can be used as an interface for a connection pool.
-pub trait ConnectionPool {
+pub trait RedisPool {
     type Connection: Poolable;
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the implementor.

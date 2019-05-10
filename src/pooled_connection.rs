@@ -26,6 +26,14 @@ impl<T> Drop for PooledConnection<T> {
     }
 }
 
+impl<T> std::ops::Deref for PooledConnection<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.managed.value.as_ref().unwrap()
+    }
+}
+
 impl ConnectionLike for PooledConnection<Connection> {
     fn req_packed_command(mut self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
         if let Some(conn) = self.managed.value.take() {
