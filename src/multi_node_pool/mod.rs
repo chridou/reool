@@ -14,7 +14,7 @@ use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
 use crate::pool::{Checkout as PoolCheckout, Config as PoolConfig, MinMax, Pool};
-use crate::{Checkout, RedisPool};
+use crate::{Checkout, ConnectionPool};
 
 pub use crate::backoff_strategy::BackoffStrategy;
 pub use crate::pool::PoolStats;
@@ -464,7 +464,7 @@ impl MultiNodePool {
     }
 }
 
-impl RedisPool for MultiNodePool {
+impl ConnectionPool for MultiNodePool {
     fn check_out(&self) -> Checkout {
         self.inner.check_out(self.checkout_timeout)
     }

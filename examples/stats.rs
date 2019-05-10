@@ -9,7 +9,7 @@ use tokio::runtime::Runtime;
 
 use reool::instrumentation::StatsLogger;
 use reool::multi_node_pool::MultiNodePool;
-use reool::{Commands, RedisPool};
+use reool::{Commands, ConnectionPool};
 
 /// Do some ping commands and measure the time elapsed
 fn main() {

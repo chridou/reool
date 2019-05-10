@@ -6,7 +6,7 @@ use pretty_env_logger;
 use tokio::runtime::Runtime;
 
 use reool::node_pool::SingleNodePool;
-use reool::{Commands, PooledConnection, RedisPool};
+use reool::{Commands, ConnectionPool, PooledConnection};
 
 const MY_KEY: &str = "my_key";
 

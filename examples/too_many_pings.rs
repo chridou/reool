@@ -7,7 +7,7 @@ use pretty_env_logger;
 use tokio::runtime::Runtime;
 
 use reool::node_pool::SingleNodePool;
-use reool::{Commands, RedisPool};
+use reool::{Commands, ConnectionPool};
 
 /// Do many ping commands where many will faile because either
 /// the checkout ties out or the checkout queue is full

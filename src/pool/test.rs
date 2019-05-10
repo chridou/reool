@@ -11,11 +11,10 @@ use tokio::runtime::Runtime;
 use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
+use crate::connection_factory::{NewConnection, NewConnectionError};
 use crate::error::ErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
-use crate::pool::{
-    Config, ConnectionFactory, ConnectionFactoryFuture, NewConnectionError, Pool, Poolable,
-};
+use crate::pool::{Config, ConnectionFactory, Pool, Poolable};
 
 #[test]
 #[should_panic]
@@ -245,17 +244,21 @@ fn put_and_checkout_do_not_race() {
 }
 */
 
-impl Poolable for () {}
+impl Poolable for () {
+    type Error = ();
+}
 
 struct UnitFactory;
 impl ConnectionFactory for UnitFactory {
     type Connection = ();
-    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
-        Box::new(future::ok(()))
+    fn create_connection(&self) -> NewConnection<Self::Connection> {
+        NewConnection::new(future::ok(()))
     }
 }
 
-impl Poolable for u32 {}
+impl Poolable for u32 {
+    type Error = ();
+}
 
 struct U32Factory {
     counter: AtomicU32,
@@ -271,15 +274,15 @@ impl Default for U32Factory {
 
 impl ConnectionFactory for U32Factory {
     type Connection = u32;
-    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
-        Box::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
+    fn create_connection(&self) -> NewConnection<Self::Connection> {
+        NewConnection::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
     }
 }
 
 struct U32FactoryFailsThreeTimesInARow(AtomicU32);
 impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
     type Connection = u32;
-    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
+    fn create_connection(&self) -> NewConnection<Self::Connection> {
         #[derive(Debug)]
         struct MyError;
 
@@ -301,9 +304,9 @@ impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
 
         let current_count = self.0.fetch_add(1, Ordering::SeqCst);
         if current_count % 4 == 0 {
-            Box::new(future::ok(current_count))
+            NewConnection::new(future::ok(current_count))
         } else {
-            Box::new(future::err(NewConnectionError::new(MyError)))
+            NewConnection::new(future::err(NewConnectionError::new(MyError)))
         }
     }
 }
@@ -316,7 +319,7 @@ impl Default for U32FactoryFailsThreeTimesInARow {
 struct UnitFactoryAlwaysFails;
 impl ConnectionFactory for UnitFactoryAlwaysFails {
     type Connection = u32;
-    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
+    fn create_connection(&self) -> NewConnection<Self::Connection> {
         #[derive(Debug)]
         struct MyError;
 
@@ -336,7 +339,7 @@ impl ConnectionFactory for UnitFactoryAlwaysFails {
             }
         }
 
-        Box::new(future::err(NewConnectionError::new(MyError)))
+        NewConnection::new(future::err(NewConnectionError::new(MyError)))
     }
 }
 
@@ -356,10 +359,10 @@ impl Default for U32DelayFactory {
 
 impl ConnectionFactory for U32DelayFactory {
     type Connection = u32;
-    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
+    fn create_connection(&self) -> NewConnection<Self::Connection> {
         let delay = Delay::new(Instant::now() + self.delay);
         let next = self.counter.fetch_add(1, Ordering::SeqCst);
-        Box::new(
+        NewConnection::new(
             delay
                 .map_err(NewConnectionError::new)
                 .and_then(move |()| future::ok(next)),
