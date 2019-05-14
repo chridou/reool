@@ -385,8 +385,6 @@ impl MultiNodePool {
         T: IntoConnectionInfo,
         I: Instrumentation + Send + Sync + 'static,
     {
-        warn!("There should be at least on node to connect to.");
-
         let mut pools = Vec::new();
 
         let instrumentation_aggregator = instrumentation
@@ -398,7 +396,7 @@ impl MultiNodePool {
             let client = match Client::open(connect_to).map_err(InitializationError::cause_only) {
                 Ok(client) => client,
                 Err(err) => {
-                    warn!("Failed to create a client: {}", err);
+                    warn!("failed to create a client: {}", err);
                     continue;
                 }
             };
@@ -430,12 +428,12 @@ impl MultiNodePool {
 
         if pools.len() < config.min_required_nodes {
             return Err(InitializationError::message_only(format!(
-                "The minimum required nodes is {} but there are only {}",
+                "the minimum required nodes is {} but there are only {}",
                 config.min_required_nodes,
                 pools.len()
             )));
         } else if pools.is_empty() {
-            warn!("Zoer nodes is allowed and there are no nodes.");
+            warn!("no nodes is allowed and there are no nodes.");
         }
 
         debug!("replica set has {} nodes", pools.len());

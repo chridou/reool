@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+
+* Fixed typos in some log messages
+
 ## 0.6.0
 
 * Metrix supports inactivity tracking for complete panels(requires metrix feature)
