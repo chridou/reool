@@ -8,15 +8,16 @@ use log::{debug, warn};
 use parking_lot::Mutex;
 
 use crate::connection_factory::ConnectionFactory;
+use crate::error::InitializationResult;
 use crate::error::{ErrorKind, ReoolError};
-use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
-use crate::pool::{CheckoutManaged, Config as PoolConfig, MinMax, Pool, Poolable};
-use crate::{Checkout, RedisPool};
+use crate::pool::{CheckoutManaged, Config as PoolConfig, MinMax, Pool};
+use crate::{Checkout, Poolable, RedisPool};
 
 pub use crate::backoff_strategy::BackoffStrategy;
+pub use crate::error::InitializationError;
 pub use crate::pool::PoolStats;
 
 /// A configuration for creating a `MultiNodePool`.

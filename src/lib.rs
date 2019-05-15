@@ -26,12 +26,9 @@
 //! License: Apache-2.0/MIT
 use std::time::Duration;
 
-use futures::{future::Future, try_ready, Async, Poll};
-use redis::{r#async::Connection, Client, RedisError};
+use crate::pool::CheckoutManaged;
 
-use crate::connection_factory::{ConnectionFactory, NewConnection, NewConnectionError};
-use crate::error::ReoolError;
-use crate::pool::{CheckoutManaged, Poolable};
+use futures::{future::Future, try_ready, Async, Poll};
 
 mod backoff_strategy;
 mod commands;
@@ -45,8 +42,15 @@ pub mod node_pool;
 mod pool;
 mod pooled_connection;
 
+pub use crate::error::{ErrorKind, ReoolError};
 pub use commands::*;
 pub use pooled_connection::PooledConnection;
+
+mod redis_rs;
+
+pub trait Poolable: Send + Sized + 'static {
+    type Error: Send + Sized + 'static;
+}
 
 /// A `Future` that represents a checkout.
 ///
@@ -80,16 +84,4 @@ pub trait RedisPool {
     /// Checkout a new connection and if the request has to be enqueued
     /// use the given timeout or wait indefinetly.
     fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<Self::Connection>;
-}
-
-impl Poolable for Connection {
-    type Error = RedisError;
-}
-
-impl ConnectionFactory for Client {
-    type Connection = Connection;
-
-    fn create_connection(&self) -> NewConnection<Self::Connection> {
-        NewConnection::new(self.get_async_connection().map_err(NewConnectionError::new))
-    }
 }

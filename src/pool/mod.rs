@@ -18,14 +18,11 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::error::ReoolError;
 use crate::executor_flavour::*;
 use crate::instrumentation::Instrumentation;
+use crate::Poolable;
 
 use inner_pool::{CheckInParcel, InnerPool};
 
 mod inner_pool;
-
-pub trait Poolable: Send + Sized + 'static {
-    type Error: Send + Sized + 'static;
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {

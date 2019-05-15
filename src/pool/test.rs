@@ -14,7 +14,8 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{NewConnection, NewConnectionError};
 use crate::error::ErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
-use crate::pool::{Config, ConnectionFactory, Pool, Poolable};
+use crate::pool::{Config, ConnectionFactory, Pool};
+use crate::Poolable;
 
 #[test]
 #[should_panic]

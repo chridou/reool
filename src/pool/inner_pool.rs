@@ -13,7 +13,8 @@ use crate::error::{ErrorKind, ReoolError};
 use crate::instrumentation::Instrumentation;
 
 use super::MinMax;
-use super::{CheckoutManaged, Config, Managed, NewConnMessage, PoolStats, Poolable};
+use super::{CheckoutManaged, Config, Managed, NewConnMessage, PoolStats};
+use crate::Poolable;
 
 pub(crate) struct InnerPool<T: Poolable> {
     core: Mutex<SyncCore<T>>,

@@ -3,7 +3,7 @@ use std::fmt;
 
 use futures::{future::Future, Poll};
 
-use crate::pool::Poolable;
+use crate::Poolable;
 
 pub struct NewConnectionError {
     cause: Box<StdError + Send + 'static>,
