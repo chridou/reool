@@ -3,10 +3,11 @@ use std::env;
 use futures::future::{self, Future};
 use log::info;
 use pretty_env_logger;
+use redis::r#async::Connection;
 use tokio::runtime::Runtime;
 
-use reool::node_pool::SingleNodePool;
-use reool::{Commands, ConnectionPool, PooledConnection};
+use reool::node_pool::Builder;
+use reool::{Commands, PooledConnection, RedisPool};
 
 const MY_KEY: &str = "my_key";
 
@@ -17,11 +18,11 @@ fn main() {
 
     let mut runtime = Runtime::new().unwrap();
 
-    let pool = SingleNodePool::builder()
+    let pool = Builder::default()
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(1)
         .task_executor(runtime.executor())
-        .finish()
+        .redis_rs()
         .unwrap();
 
     let fut = pool.check_out().from_err().and_then(|conn| {
@@ -31,12 +32,13 @@ fn main() {
                 Box::new(conn.del::<_, ()>(MY_KEY).map(|(conn, _)| {
                     info!("key deleted");
                     conn
-                })) as Box<dyn Future<Item = _, Error = _> + Send>
+                }))
+                    as Box<dyn Future<Item = PooledConnection<Connection>, Error = _> + Send>
             } else {
                 info!("Key does not exist");
                 Box::new(future::ok(conn)) as Box<dyn Future<Item = _, Error = _> + Send>
             }
-            .and_then(|conn: PooledConnection| {
+            .and_then(|conn| {
                 conn.set::<_, _, ()>(MY_KEY, "some data")
                     .and_then(|(conn, _)| {
                         info!("data written");

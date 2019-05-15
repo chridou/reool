@@ -7,7 +7,7 @@ use log::info;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::node_pool::SingleNodePool;
+use reool::node_pool::Builder;
 
 /// Simply connect to redis and establish some connections
 fn main() {
@@ -16,12 +16,14 @@ fn main() {
 
     let runtime = Runtime::new().unwrap();
 
-    let pool = SingleNodePool::builder()
+    let pool = Builder::default()
         .connect_to("redis://127.0.0.1:6379")
         .desired_pool_size(5)
         .task_executor(runtime.executor())
-        .finish()
+        .redis_rs()
         .unwrap();
+
+    let _cloned_pool = pool.clone();
 
     info!("{:#?}", pool.stats());
 

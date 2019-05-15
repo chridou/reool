@@ -8,8 +8,8 @@ use pretty_env_logger;
 use tokio::runtime::Runtime;
 
 use reool::instrumentation::StatsLogger;
-use reool::multi_node_pool::MultiNodePool;
-use reool::{Commands, ConnectionPool};
+use reool::multi_node_pool::Builder;
+use reool::{Commands, RedisPool};
 
 /// Do some ping commands and measure the time elapsed
 fn main() {
@@ -18,15 +18,18 @@ fn main() {
 
     let mut runtime = Runtime::new().unwrap();
 
-    let pool = MultiNodePool::builder()
-        .connect_to(vec!["redis://127.0.0.1:6379", "redis://127.0.0.1:6379"])
+    let pool = Builder::default()
+        .connect_to(vec![
+            "redis://127.0.0.1:6379".to_string(),
+            "redis://127.0.0.1:6379".to_string(),
+        ])
         .desired_pool_size(3)
         .reservation_limit(None)
         .checkout_timeout(Some(Duration::from_millis(50)))
         .instrumented(StatsLogger)
         .stats_interval(Duration::from_millis(100))
         .task_executor(runtime.executor())
-        .finish()
+        .redis_rs()
         .unwrap();
 
     info!("WAIT");

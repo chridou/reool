@@ -56,7 +56,7 @@ pub use pooled_connection::PooledConnection;
 /// * There was a timeout on the checkout and it timed out
 /// * The queue size was limited and the limit was reached
 /// * There are simply no connections available
-pub struct Checkout<T>(CheckoutManaged<T>);
+pub struct Checkout<T: Poolable>(CheckoutManaged<T>);
 
 impl<T: Poolable> Future for Checkout<T> {
     type Item = PooledConnection<T>;
@@ -76,10 +76,10 @@ pub trait RedisPool {
     type Connection: Poolable;
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the implementor.
-    fn check_out(&self) -> Checkout<Connection>;
+    fn check_out(&self) -> Checkout<Self::Connection>;
     /// Checkout a new connection and if the request has to be enqueued
     /// use the given timeout or wait indefinetly.
-    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<Connection>;
+    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<Self::Connection>;
 }
 
 impl Poolable for Connection {

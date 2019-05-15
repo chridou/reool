@@ -117,7 +117,7 @@ where
         connection_factory: C,
         executor: ExecutorFlavour,
         instrumentation: Option<I>,
-    ) -> Self
+    ) -> Pool<<C as ConnectionFactory>::Connection>
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
         I: Instrumentation + Send + Sync + 'static,
