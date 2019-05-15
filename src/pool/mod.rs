@@ -80,12 +80,25 @@ where
     }
 }
 
+/// Simple statistics on the internals of the pool.
+///
+/// The values are not very accurate since they
+/// are only the minimum and maximum values
+/// observed during a configurable interval.
 #[derive(Debug, Clone)]
 pub struct PoolStats {
+    /// The amount of connections
     pub pool_size: MinMax,
+    /// The number of connections that are currently checked out
     pub in_flight: MinMax,
+    /// The number of pending requests for connections
     pub reservations: MinMax,
+    /// The number of idle connections which are available for
+    /// immediate checkout
     pub idle: MinMax,
+    /// The number of accessible nodes.
+    ///
+    /// Unless connected to multiple nodes this value will be 1.
     pub node_count: usize,
 }
 

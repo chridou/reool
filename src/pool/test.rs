@@ -172,11 +172,11 @@ fn with_empty_pool_checkout_returns_timeout() {
 
     let checked_out = pool.check_out(Some(Duration::from_millis(10)));
     let err = checked_out.wait().err().unwrap();
-    assert_eq!(err.kind(), ErrorKind::Timeout);
+    assert_eq!(err.kind(), ErrorKind::CheckoutTimeout);
 
     let checked_out = pool.check_out(Some(Duration::from_millis(10)));
     let err = checked_out.wait().err().unwrap();
-    assert_eq!(err.kind(), ErrorKind::Timeout);
+    assert_eq!(err.kind(), ErrorKind::CheckoutTimeout);
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();

@@ -210,11 +210,11 @@ where
                         ErrorKind::QueueLimitReached,
                     )));
                 }
-                trace!(
-                    "check out - no idle connection - \
-                     enqueue reservation"
-                );
             }
+            trace!(
+                "check out - no idle connection - \
+                 enqueue reservation"
+            );
             Self::create_reservation(timeout, core, self.instrumentation.as_ref().map(|i| &**i))
         }
     }
@@ -234,7 +234,7 @@ where
             .map_err(|err| ReoolError::with_cause(ErrorKind::NoConnection, err));
         let fut = if let Some(timeout) = timeout {
             let timeout_fut = Timeout::new(fut, timeout)
-                .map_err(|err| ReoolError::with_cause(ErrorKind::Timeout, err));
+                .map_err(|err| ReoolError::with_cause(ErrorKind::CheckoutTimeout, err));
             CheckoutManaged::new(timeout_fut)
         } else {
             CheckoutManaged::new(fut)
