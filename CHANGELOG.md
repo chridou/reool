@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+* BREAKING CHANGES
+    * The pool is generic and modules have been reorganized
+
 ## 0.6.1
 
 * Fixed typos in some log messages

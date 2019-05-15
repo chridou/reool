@@ -1,3 +1,5 @@
+use crate::connection_factory::ConnectionFactory;
+use crate::connection_factory::NewConnectionError;
 use std::error::Error as StdError;
 use std::fmt;
 use std::sync::{Arc, Weak};
@@ -16,6 +18,7 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::error::ReoolError;
 use crate::executor_flavour::*;
 use crate::instrumentation::Instrumentation;
+use crate::Poolable;
 
 use inner_pool::{CheckInParcel, InnerPool};
 
@@ -77,12 +80,25 @@ where
     }
 }
 
+/// Simple statistics on the internals of the pool.
+///
+/// The values are not very accurate since they
+/// are only the minimum and maximum values
+/// observed during a configurable interval.
 #[derive(Debug, Clone)]
 pub struct PoolStats {
+    /// The amount of connections
     pub pool_size: MinMax,
+    /// The number of connections that are currently checked out
     pub in_flight: MinMax,
+    /// The number of pending requests for connections
     pub reservations: MinMax,
+    /// The number of idle connections which are available for
+    /// immediate checkout
     pub idle: MinMax,
+    /// The number of accessible nodes.
+    ///
+    /// Unless connected to multiple nodes this value will be 1.
     pub node_count: usize,
 }
 
@@ -111,7 +127,7 @@ where
         connection_factory: C,
         executor: ExecutorFlavour,
         instrumentation: Option<I>,
-    ) -> Self
+    ) -> Pool<<C as ConnectionFactory>::Connection>
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
         I: Instrumentation + Send + Sync + 'static,
@@ -154,7 +170,7 @@ where
         Self::new::<_, ()>(config, connection_factory, executor, None)
     }
 
-    pub fn check_out(&self, timeout: Option<Duration>) -> Checkout<T> {
+    pub fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
         self.inner_pool.check_out(timeout)
     }
 
@@ -204,7 +220,7 @@ fn start_new_conn_stream<T, C>(
                 NewConnMessage::RequestNewConn => {
                     if let Some(existing_inner_pool) = inner_pool.upgrade() {
                         trace!("creating new connection");
-                        let fut = create_new_poolable_conn(
+                        let fut = create_new_managed(
                             Instant::now(),
                             connection_factory.clone(),
                             Arc::downgrade(&existing_inner_pool),
@@ -239,12 +255,12 @@ impl<T: Poolable> Clone for Pool<T> {
     }
 }
 
-fn create_new_poolable_conn<T: Poolable, C>(
+fn create_new_managed<T: Poolable, C>(
     initiated_at: Instant,
     connection_factory: Arc<C>,
     weak_inner_pool: Weak<InnerPool<T>>,
     back_off_strategy: BackoffStrategy,
-) -> NewConnFuture<T>
+) -> NewManaged<T>
 where
     T: Poolable,
     C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
@@ -303,14 +319,14 @@ where
             ))))
         }
     });
-    NewConnFuture::new(fut)
+    NewManaged::new(fut)
 }
 
-pub(crate) struct Checkout<T: Poolable> {
+pub(crate) struct CheckoutManaged<T: Poolable> {
     inner: Box<Future<Item = Managed<T>, Error = ReoolError> + Send + 'static>,
 }
 
-impl<T: Poolable> Checkout<T> {
+impl<T: Poolable> CheckoutManaged<T> {
     pub fn new<F>(fut: F) -> Self
     where
         F: Future<Item = Managed<T>, Error = ReoolError> + Send + 'static,
@@ -321,7 +337,7 @@ impl<T: Poolable> Checkout<T> {
     }
 }
 
-impl<T: Poolable> Future for Checkout<T> {
+impl<T: Poolable> Future for CheckoutManaged<T> {
     type Item = Managed<T>;
     type Error = ReoolError;
 
@@ -329,8 +345,6 @@ impl<T: Poolable> Future for Checkout<T> {
         self.inner.poll()
     }
 }
-
-pub trait Poolable: Send + Sized + 'static {}
 
 pub(crate) struct Managed<T: Poolable> {
     created_at: Instant,
@@ -385,11 +399,11 @@ pub(crate) enum NewConnMessage {
     Shutdown,
 }
 
-pub(crate) struct NewConnFuture<T: Poolable> {
+pub(crate) struct NewManaged<T: Poolable> {
     inner: Box<Future<Item = Managed<T>, Error = NewConnectionError> + Send + 'static>,
 }
 
-impl<T: Poolable> NewConnFuture<T> {
+impl<T: Poolable> NewManaged<T> {
     pub fn new<F>(f: F) -> Self
     where
         F: Future<Item = Managed<T>, Error = NewConnectionError> + Send + 'static,
@@ -398,33 +412,12 @@ impl<T: Poolable> NewConnFuture<T> {
     }
 }
 
-impl<T: Poolable> Future for NewConnFuture<T> {
+impl<T: Poolable> Future for NewManaged<T> {
     type Item = Managed<T>;
     type Error = NewConnectionError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.inner.poll()
-    }
-}
-
-pub(crate) struct NewConnectionError {
-    cause: Box<StdError + Send + 'static>,
-}
-
-impl NewConnectionError {
-    pub fn new<E>(cause: E) -> Self
-    where
-        E: StdError + Send + 'static,
-    {
-        Self {
-            cause: Box::new(cause),
-        }
-    }
-}
-
-impl fmt::Display for NewConnectionError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "could not create a new connection: {}", self.cause)
     }
 }
 
@@ -445,14 +438,6 @@ impl StdError for PoolIsGoneError {
     fn cause(&self) -> Option<&StdError> {
         None
     }
-}
-
-pub(crate) type ConnectionFactoryFuture<T> =
-    Box<Future<Item = T, Error = NewConnectionError> + Send>;
-
-pub(crate) trait ConnectionFactory {
-    type Connection: Poolable;
-    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection>;
 }
 
 #[cfg(test)]

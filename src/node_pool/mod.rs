@@ -1,16 +1,16 @@
 //! A connection pool for conencting to a single node
 use std::time::Duration;
 
-use redis::{r#async::Connection, Client, IntoConnectionInfo};
-
-use crate::error::{InitializationError, InitializationResult};
+use crate::connection_factory::ConnectionFactory;
+use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
 use crate::pool::{Config as PoolConfig, Pool};
-use crate::{Checkout, RedisPool};
+use crate::{Checkout, Poolable, RedisPool};
 
 pub use crate::backoff_strategy::BackoffStrategy;
+pub use crate::error::InitializationError;
 pub use crate::pool::PoolStats;
 
 /// A configuration for creating a `SingleNodePool`.
@@ -123,10 +123,10 @@ impl Default for Config {
 }
 
 /// A builder for a `SingleNodePool`
-pub struct Builder<T, I> {
+pub struct Builder<C, I> {
     config: Config,
     executor_flavour: ExecutorFlavour,
-    connect_to: T,
+    connect_to: C,
     instrumentation: Option<I>,
 }
 
@@ -178,11 +178,11 @@ impl<T, I> Builder<T, I> {
     }
 
     /// The Redis node to connect to
-    pub fn connect_to<C: IntoConnectionInfo>(self, connect_to: C) -> Builder<C, I> {
+    pub fn connect_to<C: Into<String>>(self, connect_to: C) -> Builder<String, I> {
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
-            connect_to,
+            connect_to: connect_to.into(),
             instrumentation: self.instrumentation,
         }
     }
@@ -287,34 +287,18 @@ where
     }
 }
 
-impl<T, I> Builder<T, I>
-where
-    T: IntoConnectionInfo,
-    I: Instrumentation + Send + Sync + 'static,
-{
-    /// Build a new `SingleNodePool`
-    pub fn finish(self) -> InitializationResult<SingleNodePool> {
-        SingleNodePool::create(
-            self.config,
-            self.connect_to,
-            self.executor_flavour,
-            self.instrumentation,
-        )
-    }
-}
-
 impl<I> Builder<String, I>
 where
     I: Instrumentation + Send + Sync + 'static,
 {
     /// Build a new `SingleNodePool`
-    ///
-    /// This is a due to a limitation that
-    /// `IntoConnectionInfo` is not implemented for `String`
-    pub fn finish2(self) -> InitializationResult<SingleNodePool> {
-        SingleNodePool::create(
+    pub fn redis_rs(self) -> InitializationResult<SingleNodePool<redis::r#async::Connection>> {
+        let client =
+            redis::Client::open(&*self.connect_to).map_err(InitializationError::cause_only)?;
+
+        SingleNodePool::<redis::r#async::Connection>::create(
             self.config,
-            &*self.connect_to,
+            client,
             self.executor_flavour,
             self.instrumentation,
         )
@@ -326,46 +310,27 @@ where
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
-#[derive(Clone)]
-pub struct SingleNodePool {
-    pool: Pool<Connection>,
+pub struct SingleNodePool<T: Poolable> {
+    pool: Pool<T>,
     checkout_timeout: Option<Duration>,
 }
 
-impl SingleNodePool {
-    /// Creates a builder for a `SingleNodePool`
-    pub fn builder() -> Builder<(), ()> {
-        Builder::default()
-    }
-
-    /// Creates a new instance of a `SingleNodePool`.
-    ///
-    /// This function must be
-    /// called on a thread of the tokio runtime.
-    pub fn new<T>(config: Config, connect_to: T) -> InitializationResult<Self>
-    where
-        T: IntoConnectionInfo,
-    {
-        Self::create::<T, NoInstrumentation>(config, connect_to, ExecutorFlavour::Runtime, None)
-    }
-
-    pub(crate) fn create<T, I>(
+impl<T: Poolable> SingleNodePool<T> {
+    pub(crate) fn create<I, F>(
         config: Config,
-        connect_to: T,
+        connection_factory: F,
         executor_flavour: ExecutorFlavour,
         instrumentation: Option<I>,
-    ) -> InitializationResult<Self>
+    ) -> InitializationResult<SingleNodePool<<F as ConnectionFactory>::Connection>>
     where
-        T: IntoConnectionInfo,
         I: Instrumentation + Send + Sync + 'static,
+        F: ConnectionFactory + Send + Sync + 'static,
     {
         if config.desired_pool_size == 0 {
             return Err(InitializationError::message_only(
                 "'desired_pool_size' must be at least 1",
             ));
         }
-
-        let client = Client::open(connect_to).map_err(InitializationError::cause_only)?;
 
         let pool_conf = PoolConfig {
             desired_pool_size: config.desired_pool_size,
@@ -374,9 +339,14 @@ impl SingleNodePool {
             stats_interval: config.stats_interval,
         };
 
-        let pool = Pool::new(pool_conf, client, executor_flavour, instrumentation);
+        let pool = Pool::new(
+            pool_conf,
+            connection_factory,
+            executor_flavour,
+            instrumentation,
+        );
 
-        Ok(Self {
+        Ok(SingleNodePool::<<F as ConnectionFactory>::Connection> {
             pool,
             checkout_timeout: config.checkout_timeout,
         })
@@ -417,12 +387,22 @@ impl SingleNodePool {
     }
 }
 
-impl RedisPool for SingleNodePool {
-    fn check_out(&self) -> Checkout {
+impl<T: Poolable> Clone for SingleNodePool<T> {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            checkout_timeout: self.checkout_timeout,
+        }
+    }
+}
+
+impl<T: Poolable> RedisPool for SingleNodePool<T> {
+    type Connection = T;
+    fn check_out(&self) -> Checkout<T> {
         Checkout(self.pool.check_out(self.checkout_timeout))
     }
 
-    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<T> {
         Checkout(self.pool.check_out(timeout))
     }
 }

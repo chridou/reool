@@ -39,7 +39,7 @@ pub enum ErrorKind {
     NoConnection,
     /// An enqueued request for a checkout that had a timeout
     /// set timed out
-    Timeout,
+    CheckoutTimeout,
     /// No connection immediately available and no more
     /// requests can be enqueued to wait for a connection
     /// because the queue has reached it`s limit  
@@ -65,7 +65,7 @@ impl StdError for ReoolError {
     fn description(&self) -> &str {
         match self.kind {
             ErrorKind::NoConnection => "there are no connections available",
-            ErrorKind::Timeout => "there was no connection available in time",
+            ErrorKind::CheckoutTimeout => "there was no connection to checkout available in time",
             ErrorKind::QueueLimitReached => "the queue limit has been reached",
             ErrorKind::TaskExecution => "task execution failed",
         }

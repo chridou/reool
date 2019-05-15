@@ -3,30 +3,32 @@ use std::time::Duration;
 use rand::prelude::*;
 
 const NEW_CONN_BACKOFFS_MS: &[Duration] = &[
+    Duration::from_millis(5),
     Duration::from_millis(10),
-    Duration::from_millis(20),
-    Duration::from_millis(20),
+    Duration::from_millis(10),
+    Duration::from_millis(15),
+    Duration::from_millis(30),
+    Duration::from_millis(30), // 100
     Duration::from_millis(50),
-    Duration::from_millis(50),
+    Duration::from_millis(50), // 200
     Duration::from_millis(100),
     Duration::from_millis(100),
-    Duration::from_millis(150), // 500ms
+    Duration::from_millis(100), // 500
     Duration::from_millis(200),
-    Duration::from_millis(300), // 1 second
+    Duration::from_millis(300), // 1000
     Duration::from_millis(500),
-    Duration::from_millis(500),   // 2 seconds
-    Duration::from_millis(1_000), // 3 seconds
+    Duration::from_millis(500), // 2000
     Duration::from_millis(1_000),
     Duration::from_millis(1_000),
+    Duration::from_millis(1_000), // 5000
     Duration::from_millis(2_500),
-    Duration::from_millis(2_500), // 10 seconds
+    Duration::from_millis(2_500), // 10000
     Duration::from_millis(5_000),
-    Duration::from_millis(5_000), // 20 seconds
+    Duration::from_millis(5_000), // 20000
     Duration::from_millis(5_000),
-    Duration::from_millis(7_500), // 32.5 seconds
-    Duration::from_millis(10_000),
-    Duration::from_millis(10_000),
-    Duration::from_millis(10_000), // 1 minute
+    Duration::from_millis(7_500),
+    Duration::from_millis(7_500),  // 50000
+    Duration::from_millis(10_000), // 60000
 ];
 const MAX_NEW_CONN_BACKOFF_MS: Duration = Duration::from_millis(10_000);
 

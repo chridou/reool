@@ -26,17 +26,13 @@
 //! License: Apache-2.0/MIT
 use std::time::Duration;
 
-use futures::{future::Future, try_ready, Async, Poll};
-use redis::{r#async::Connection, Client};
+use crate::pool::CheckoutManaged;
 
-use crate::error::ReoolError;
-use crate::pool::{
-    Checkout as PoolCheckout, ConnectionFactory, ConnectionFactoryFuture, NewConnectionError,
-    Poolable,
-};
+use futures::{future::Future, try_ready, Async, Poll};
 
 mod backoff_strategy;
 mod commands;
+pub mod connection_factory;
 mod error;
 pub(crate) mod executor_flavour;
 pub(crate) mod helpers;
@@ -46,8 +42,15 @@ pub mod node_pool;
 mod pool;
 mod pooled_connection;
 
+pub use crate::error::{ErrorKind, ReoolError};
 pub use commands::*;
 pub use pooled_connection::PooledConnection;
+
+mod redis_rs;
+
+pub trait Poolable: Send + Sized + 'static {
+    type Error: Send + Sized + 'static;
+}
 
 /// A `Future` that represents a checkout.
 ///
@@ -57,10 +60,10 @@ pub use pooled_connection::PooledConnection;
 /// * There was a timeout on the checkout and it timed out
 /// * The queue size was limited and the limit was reached
 /// * There are simply no connections available
-pub struct Checkout(PoolCheckout<Connection>);
+pub struct Checkout<T: Poolable>(CheckoutManaged<T>);
 
-impl Future for Checkout {
-    type Item = PooledConnection;
+impl<T: Poolable> Future for Checkout<T> {
+    type Item = PooledConnection<T>;
     type Error = ReoolError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -72,22 +75,13 @@ impl Future for Checkout {
     }
 }
 
-/// A trait that can be used as an interface for a Redis pool.
+/// A trait that can be used as an interface for a connection pool.
 pub trait RedisPool {
+    type Connection: Poolable;
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the implementor.
-    fn check_out(&self) -> Checkout;
+    fn check_out(&self) -> Checkout<Self::Connection>;
     /// Checkout a new connection and if the request has to be enqueued
     /// use the given timeout or wait indefinetly.
-    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout;
-}
-
-impl Poolable for Connection {}
-
-impl ConnectionFactory for Client {
-    type Connection = Connection;
-
-    fn create_connection(&self) -> ConnectionFactoryFuture<Self::Connection> {
-        Box::new(self.get_async_connection().map_err(NewConnectionError::new))
-    }
+    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<Self::Connection>;
 }

@@ -13,7 +13,8 @@ use crate::error::{ErrorKind, ReoolError};
 use crate::instrumentation::Instrumentation;
 
 use super::MinMax;
-use super::{Checkout, Config, Managed, NewConnMessage, PoolStats, Poolable};
+use super::{CheckoutManaged, Config, Managed, NewConnMessage, PoolStats};
+use crate::Poolable;
 
 pub(crate) struct InnerPool<T: Poolable> {
     core: Mutex<SyncCore<T>>,
@@ -175,7 +176,7 @@ where
         unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
     }
 
-    pub(super) fn check_out(&self, timeout: Option<Duration>) -> Checkout<T> {
+    pub(super) fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
         let mut core = self.core.lock();
 
         if let Some(mut managed) = { core.idle.pop() } {
@@ -190,7 +191,7 @@ where
                 instrumentation.checked_out_connection();
             }
 
-            Checkout::new(future::ok(managed))
+            CheckoutManaged::new(future::ok(managed))
         } else {
             if let Some(reservation_limit) = self.config.reservation_limit {
                 if core.reservations.len() > reservation_limit {
@@ -205,15 +206,15 @@ where
                         instrumentation.reservation_limit_reached()
                     }
 
-                    return Checkout::new(future::err(ReoolError::new(
+                    return CheckoutManaged::new(future::err(ReoolError::new(
                         ErrorKind::QueueLimitReached,
                     )));
                 }
-                trace!(
-                    "check out - no idle connection - \
-                     enqueue reservation"
-                );
             }
+            trace!(
+                "check out - no idle connection - \
+                 enqueue reservation"
+            );
             Self::create_reservation(timeout, core, self.instrumentation.as_ref().map(|i| &**i))
         }
     }
@@ -222,7 +223,7 @@ where
         timeout: Option<Duration>,
         mut core: MutexGuard<SyncCore<T>>,
         instrumentation: Option<&(dyn Instrumentation + Send + Sync)>,
-    ) -> Checkout<T> {
+    ) -> CheckoutManaged<T> {
         let (tx, rx) = oneshot::channel();
         let waiting = Reservation::checkout(tx);
         core.reservations.push_back(waiting);
@@ -233,10 +234,10 @@ where
             .map_err(|err| ReoolError::with_cause(ErrorKind::NoConnection, err));
         let fut = if let Some(timeout) = timeout {
             let timeout_fut = Timeout::new(fut, timeout)
-                .map_err(|err| ReoolError::with_cause(ErrorKind::Timeout, err));
-            Checkout::new(timeout_fut)
+                .map_err(|err| ReoolError::with_cause(ErrorKind::CheckoutTimeout, err));
+            CheckoutManaged::new(timeout_fut)
         } else {
-            Checkout::new(fut)
+            CheckoutManaged::new(fut)
         };
 
         unlock_then_publish_stats(core, instrumentation);
