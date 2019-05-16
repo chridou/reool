@@ -6,12 +6,13 @@ use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
-use crate::pool::{Config as PoolConfig, Pool};
+use crate::pool_internal::{Config as PoolConfig, PoolInternal};
 use crate::{Checkout, Poolable, RedisPool};
 
+pub use crate::activation_order::ActivationOrder;
 pub use crate::backoff_strategy::BackoffStrategy;
 pub use crate::error::InitializationError;
-pub use crate::pool::PoolStats;
+pub use crate::stats::{MinMax, PoolStats};
 
 /// A configuration for creating a `SingleNodePool`.
 ///
@@ -32,6 +33,7 @@ pub struct Config {
     /// The interval in which the pool will send statistics to
     /// the instrumentation
     pub stats_interval: Duration,
+    pub activation_order: ActivationOrder,
 }
 
 impl Config {
@@ -70,6 +72,15 @@ impl Config {
         self
     }
 
+    /// Defines the `ActivationOrder` in which idle connections are
+    /// activated.
+    ///
+    /// Default is `ActivationOrder::FiFo`
+    pub fn activation_order(mut self, v: ActivationOrder) -> Self {
+        self.activation_order = v;
+        self
+    }
+
     /// Updates this configuration from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
@@ -79,6 +90,7 @@ impl Config {
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
+    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     pub fn update_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -94,6 +106,10 @@ impl Config {
 
         helpers::set_stats_interval(prefix, |v| {
             self.stats_interval = v;
+        })?;
+
+        helpers::set_activation_order(prefix, |v| {
+            self.activation_order = v;
         })?;
 
         Ok(self)
@@ -118,6 +134,7 @@ impl Default for Config {
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
             stats_interval: Duration::from_millis(100),
+            activation_order: ActivationOrder::default(),
         }
     }
 }
@@ -177,6 +194,15 @@ impl<T, I> Builder<T, I> {
         self
     }
 
+    /// Defines the `ActivationOrder` in which idle connections are
+    /// activated.
+    ///
+    /// Default is `ActivationOrder::FiFo`
+    pub fn activation_order(mut self, v: ActivationOrder) -> Self {
+        self.config.activation_order = v;
+        self
+    }
+
     /// The Redis node to connect to
     pub fn connect_to<C: Into<String>>(self, connect_to: C) -> Builder<String, I> {
         Builder {
@@ -203,6 +229,7 @@ impl<T, I> Builder<T, I> {
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
+    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     pub fn update_config_from_environment(
         self,
         prefix: Option<&str>,
@@ -311,7 +338,7 @@ where
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
 pub struct SingleNodePool<T: Poolable> {
-    pool: Pool<T>,
+    pool: PoolInternal<T>,
     checkout_timeout: Option<Duration>,
 }
 
@@ -337,9 +364,10 @@ impl<T: Poolable> SingleNodePool<T> {
             backoff_strategy: config.backoff_strategy,
             reservation_limit: config.reservation_limit,
             stats_interval: config.stats_interval,
+            activation_order: config.activation_order,
         };
 
-        let pool = Pool::new(
+        let pool = PoolInternal::new(
             pool_conf,
             connection_factory,
             executor_flavour,

@@ -13,12 +13,13 @@ use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
-use crate::pool::{CheckoutManaged, Config as PoolConfig, MinMax, Pool};
+use crate::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
 use crate::{Checkout, Poolable, RedisPool};
 
+pub use crate::activation_order::ActivationOrder;
 pub use crate::backoff_strategy::BackoffStrategy;
 pub use crate::error::InitializationError;
-pub use crate::pool::PoolStats;
+pub use crate::stats::{MinMax, PoolStats};
 
 /// A configuration for creating a `MultiNodePool`.
 ///
@@ -39,6 +40,11 @@ pub struct Config {
     /// The interval in which the pool will send statistics to
     /// the instrumentation
     pub stats_interval: Duration,
+    /// Defines the `ActivationOrder` in which idle connections are
+    /// activated.
+    ///
+    /// Default is `ActivationOrder::FiFo`
+    pub activation_order: ActivationOrder,
     /// The minimum required nodes to start
     pub min_required_nodes: usize,
 }
@@ -79,6 +85,15 @@ impl Config {
         self
     }
 
+    /// Defines the `ActivationOrder` in which idle connections are
+    /// activated.
+    ///
+    /// Default is `ActivationOrder::FiFo`
+    pub fn activation_order(mut self, v: ActivationOrder) -> Self {
+        self.activation_order = v;
+        self
+    }
+
     /// Sets the maximum length of the queue for waiting checkouts
     /// when no idle connections are available
     pub fn min_required_nodes(mut self, v: usize) -> Self {
@@ -95,6 +110,7 @@ impl Config {
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
+    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     pub fn update_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         helpers::set_desired_pool_size(prefix, |v| {
@@ -111,6 +127,10 @@ impl Config {
 
         helpers::set_stats_interval(prefix, |v| {
             self.stats_interval = v;
+        })?;
+
+        helpers::set_activation_order(prefix, |v| {
+            self.activation_order = v;
         })?;
 
         helpers::set_min_required_nodes(prefix, |v| {
@@ -140,6 +160,7 @@ impl Default for Config {
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
             stats_interval: Duration::from_millis(100),
+            activation_order: ActivationOrder::default(),
             min_required_nodes: 1,
         }
     }
@@ -200,6 +221,11 @@ impl<C, I> Builder<C, I> {
         self
     }
 
+    pub fn activation_order(mut self, v: ActivationOrder) -> Self {
+        self.config.activation_order = v;
+        self
+    }
+
     /// The minimum required nodes to start
     pub fn min_required_nodes(mut self, v: usize) -> Self {
         self.config.min_required_nodes = v;
@@ -232,6 +258,7 @@ impl<C, I> Builder<C, I> {
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
+    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     pub fn update_config_from_environment(
         self,
@@ -340,9 +367,11 @@ where
 }
 
 /// A connection pool that maintains multiple connections
-/// to a multiple Redis instances. All the instances should
-/// be part of the same replica set. You should only perform
-/// read operations on the connections received from this kind of pool.
+/// to a multiple Redis instances containing the same data(replicas).
+///
+/// All the instances should be part of the same replica set.
+/// You should only perform read operations on the
+/// connections received from this kind of pool.
 ///
 /// The replicas are selected in a round robin fashion.
 ///
@@ -377,6 +406,7 @@ impl<T: Poolable> MultiNodePool<T> {
                 backoff_strategy: config.backoff_strategy,
                 reservation_limit: config.reservation_limit,
                 stats_interval: config.stats_interval,
+                activation_order: config.activation_order,
             };
 
             let indexed_instrumentation = instrumentation_aggregator.as_ref().map(|agg| {
@@ -385,7 +415,7 @@ impl<T: Poolable> MultiNodePool<T> {
                 instr
             });
 
-            let pool = Pool::new(
+            let pool = PoolInternal::new(
                 pool_conf,
                 connection_factory,
                 executor_flavour.clone(),
@@ -424,14 +454,17 @@ impl<T: Poolable> MultiNodePool<T> {
     ///
     /// This locks the underlying pool.
     pub fn stats(&self) -> Vec<PoolStats> {
-        self.inner.pools.iter().map(Pool::stats).collect()
+        self.inner.pools.iter().map(PoolInternal::stats).collect()
     }
 
     /// Triggers the pool to emit statistics if `stats_interval` has elapsed.
     ///
     /// This locks the underlying pool.
     pub fn trigger_stats(&self) {
-        self.inner.pools.iter().for_each(Pool::trigger_stats)
+        self.inner
+            .pools
+            .iter()
+            .for_each(PoolInternal::trigger_stats)
     }
 }
 
@@ -458,7 +491,7 @@ impl<T: Poolable + redis::r#async::ConnectionLike> RedisPool for MultiNodePool<T
 
 struct Inner<T: Poolable> {
     count: AtomicUsize,
-    pools: Vec<Pool<T>>,
+    pools: Vec<PoolInternal<T>>,
 }
 
 impl<T: Poolable + redis::r#async::ConnectionLike> Inner<T> {

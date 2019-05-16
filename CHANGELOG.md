@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0
+
+* Support LiFo and FiFo mode for reactivating idle connections
+
 ## 0.8.0
 
 * BREAKING CHANGES

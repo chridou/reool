@@ -9,12 +9,14 @@ use log::{debug, error, trace};
 use parking_lot::{Mutex, MutexGuard};
 use tokio_timer::Timeout;
 
+use super::{CheckoutManaged, Config, Managed, NewConnMessage};
+use crate::activation_order::ActivationOrder;
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::instrumentation::Instrumentation;
-
-use super::MinMax;
-use super::{CheckoutManaged, Config, Managed, NewConnMessage, PoolStats};
-use crate::Poolable;
+use crate::{
+    stats::{MinMax, PoolStats},
+    Poolable,
+};
 
 pub(crate) struct InnerPool<T: Poolable> {
     core: Mutex<SyncCore<T>>,
@@ -38,6 +40,7 @@ where
         let core = Mutex::new(SyncCore::new(
             config.desired_pool_size,
             config.stats_interval,
+            config.activation_order,
         ));
 
         Self {
@@ -108,7 +111,7 @@ where
         }
 
         if core.reservations.is_empty() {
-            core.idle.push(managed);
+            core.idle.put(managed);
             core.idle_tracker.inc();
             trace!(
                 "check in - no reservations - added to idle {}",
@@ -162,7 +165,7 @@ where
                 }
             }
 
-            core.idle.push(to_fulfill);
+            core.idle.put(to_fulfill);
             let idle_count = core.idle.len();
             let reservations_count = core.reservations.len();
             core.idle_tracker.set(idle_count);
@@ -179,7 +182,7 @@ where
     pub(super) fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
         let mut core = self.core.lock();
 
-        if let Some(mut managed) = { core.idle.pop() } {
+        if let Some(mut managed) = { core.idle.get() } {
             trace!("check out - fulfilling with idle connection");
             managed.checked_out_at = Some(Instant::now());
             core.idle_tracker.dec();
@@ -261,7 +264,7 @@ where
 
     pub(super) fn remove_conn(&self) {
         let mut core = self.core.lock();
-        if let Some(mut managed) = { core.idle.pop() } {
+        if let Some(mut managed) = { core.idle.get() } {
             core.idle_tracker.dec();
             drop(core);
             managed.marked_for_kill = true;
@@ -334,7 +337,7 @@ pub(super) enum CheckInParcel<T: Poolable> {
 
 /// Used to ensure there is no race between choeckouts and puts
 struct SyncCore<T: Poolable> {
-    pub idle: Vec<Managed<T>>,
+    pub idle: IdleConnections<Managed<T>>,
     pub reservations: VecDeque<Reservation<T>>,
     pub idle_tracker: ValueTracker,
     pub in_flight_tracker: ValueTracker,
@@ -345,9 +348,13 @@ struct SyncCore<T: Poolable> {
 }
 
 impl<T: Poolable> SyncCore<T> {
-    fn new(desired_pool_size: usize, stats_interval: Duration) -> Self {
+    fn new(
+        desired_pool_size: usize,
+        stats_interval: Duration,
+        activation_order: ActivationOrder,
+    ) -> Self {
         Self {
-            idle: Vec::with_capacity(desired_pool_size),
+            idle: IdleConnections::new(desired_pool_size, activation_order),
             reservations: VecDeque::default(),
             idle_tracker: ValueTracker::default(),
             in_flight_tracker: ValueTracker::default(),
@@ -505,5 +512,40 @@ fn unlock_then_publish_stats<T: Poolable>(
     drop(core_guard);
     if let (Some(instr), Some(snapshot)) = (instrumentation, snapshot) {
         instr.stats(snapshot)
+    }
+}
+
+enum IdleConnections<T> {
+    FiFo(VecDeque<T>),
+    LiFo(Vec<T>),
+}
+
+impl<T> IdleConnections<T> {
+    pub fn new(size: usize, activation_order: ActivationOrder) -> Self {
+        match activation_order {
+            ActivationOrder::FiFo => IdleConnections::FiFo(VecDeque::with_capacity(size)),
+            ActivationOrder::LiFo => IdleConnections::LiFo(Vec::with_capacity(size)),
+        }
+    }
+
+    pub fn put(&mut self, conn: T) {
+        match self {
+            IdleConnections::FiFo(idle) => idle.push_back(conn),
+            IdleConnections::LiFo(idle) => idle.push(conn),
+        }
+    }
+
+    pub fn get(&mut self) -> Option<T> {
+        match self {
+            IdleConnections::FiFo(idle) => idle.pop_front(),
+            IdleConnections::LiFo(idle) => idle.pop(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            IdleConnections::FiFo(idle) => idle.len(),
+            IdleConnections::LiFo(idle) => idle.len(),
+        }
     }
 }

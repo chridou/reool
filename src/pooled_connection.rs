@@ -1,4 +1,4 @@
-use crate::{pool::Managed, Poolable};
+use crate::{pool_internal::Managed, Poolable};
 
 /// A connection that has been taken from the pool.
 ///
@@ -7,14 +7,18 @@ use crate::{pool::Managed, Poolable};
 /// Pooled connection implements `redis::async::ConnectionLike`
 /// to easily integrate with code that already uses `redis-rs`.
 pub struct PooledConnection<T: Poolable + redis::r#async::ConnectionLike> {
-    /// Track that the future has not been cancelled while executing a query
-    pub(crate) last_op_completed: bool,
+    /// Track whether the is still in a valid state.
+    ///
+    /// If a future gets cancelled it is likely that the connection
+    /// is not in a valid state anymore. For stateless connections this
+    /// field is useless.
+    pub(crate) connection_state_ok: bool,
     pub(crate) managed: Managed<T>,
 }
 
 impl<T: Poolable + redis::r#async::ConnectionLike> Drop for PooledConnection<T> {
     fn drop(&mut self) {
-        if !self.last_op_completed {
+        if !self.connection_state_ok {
             self.managed.value.take();
         }
     }

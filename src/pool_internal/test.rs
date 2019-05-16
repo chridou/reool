@@ -14,13 +14,14 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{NewConnection, NewConnectionError};
 use crate::error::CheckoutErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
-use crate::pool::{Config, ConnectionFactory, Pool};
+use crate::pool_internal::{Config, ConnectionFactory, PoolInternal};
 use crate::Poolable;
 
 #[test]
 #[should_panic]
 fn given_no_runtime_the_pool_can_not_be_created() {
-    let _pool = Pool::no_instrumentation(Config::default(), UnitFactory, ExecutorFlavour::Runtime);
+    let _pool =
+        PoolInternal::no_instrumentation(Config::default(), UnitFactory, ExecutorFlavour::Runtime);
 }
 
 #[test]
@@ -29,7 +30,7 @@ fn given_a_runtime_the_pool_can_be_created() {
     let mut runtime = Runtime::new().unwrap();
 
     let fut = future::lazy(|| {
-        Ok::<_, ()>(Pool::no_instrumentation(
+        Ok::<_, ()>(PoolInternal::no_instrumentation(
             Config::default().desired_pool_size(1),
             UnitFactory,
             ExecutorFlavour::Runtime,
@@ -47,7 +48,7 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
 
-    let pool = Pool::no_instrumentation(
+    let pool = PoolInternal::no_instrumentation(
         Config::default().desired_pool_size(1),
         UnitFactory,
         executor,
@@ -70,7 +71,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
 
-    let pool = Pool::no_instrumentation(
+    let pool = PoolInternal::no_instrumentation(
         Config::default()
             .desired_pool_size(5)
             .backoff_strategy(BackoffStrategy::Constant {
@@ -100,7 +101,7 @@ fn checkout_one() {
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = Pool::no_instrumentation(config.clone(), U32Factory::default(), executor);
+    let pool = PoolInternal::no_instrumentation(config.clone(), U32Factory::default(), executor);
 
     let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
     let v = checked_out.wait().unwrap();
@@ -120,7 +121,7 @@ fn checkout_twice_with_one_not_reusable() {
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = Pool::no_instrumentation(config.clone(), U32Factory::default(), executor);
+    let pool = PoolInternal::no_instrumentation(config.clone(), U32Factory::default(), executor);
 
     // We do not return the con with managed
     let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
@@ -144,7 +145,8 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = Pool::no_instrumentation(config.clone(), U32DelayFactory::default(), executor);
+    let pool =
+        PoolInternal::no_instrumentation(config.clone(), U32DelayFactory::default(), executor);
 
     // We do not return the con with managed
     let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
@@ -168,7 +170,7 @@ fn with_empty_pool_checkout_returns_timeout() {
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(0);
 
-    let pool = Pool::no_instrumentation(config.clone(), UnitFactory, executor);
+    let pool = PoolInternal::no_instrumentation(config.clone(), UnitFactory, executor);
 
     let checked_out = pool.check_out(Some(Duration::from_millis(10)));
     let err = checked_out.wait().err().unwrap();
@@ -189,7 +191,7 @@ fn create_connection_fails_some_times() {
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = Pool::no_instrumentation(
+    let pool = PoolInternal::no_instrumentation(
         config.clone(),
         U32FactoryFailsThreeTimesInARow::default(),
         executor,

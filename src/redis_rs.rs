@@ -21,10 +21,10 @@ impl ConnectionFactory for Client {
 impl<T: Poolable + ConnectionLike> ConnectionLike for PooledConnection<T> {
     fn req_packed_command(mut self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
         if let Some(conn) = self.managed.value.take() {
-            self.last_op_completed = false;
+            self.connection_state_ok = false;
             Box::new(conn.req_packed_command(cmd).map(|(conn, value)| {
                 self.managed.value = Some(conn);
-                self.last_op_completed = true;
+                self.connection_state_ok = true;
                 (self, value)
             }))
         } else {
@@ -41,12 +41,12 @@ impl<T: Poolable + ConnectionLike> ConnectionLike for PooledConnection<T> {
         count: usize,
     ) -> RedisFuture<(Self, Vec<Value>)> {
         if let Some(conn) = self.managed.value.take() {
-            self.last_op_completed = false;
+            self.connection_state_ok = false;
             Box::new(
                 conn.req_packed_commands(cmd, offset, count)
                     .map(|(conn, values)| {
                         self.managed.value = Some(conn);
-                        self.last_op_completed = true;
+                        self.connection_state_ok = true;
                         (self, values)
                     }),
             )

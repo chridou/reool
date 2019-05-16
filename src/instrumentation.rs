@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use log::info;
 
-pub use crate::pool::PoolStats;
+pub use crate::stats::PoolStats;
 
 #[cfg(feature = "metrix")]
 pub use self::metrix::MetrixConfig;
@@ -98,7 +98,7 @@ pub(crate) mod metrix {
     use metrix::{TelemetryTransmitter, TransmitsTelemetryData};
 
     use super::Instrumentation;
-    use crate::pool::PoolStats;
+    use crate::stats::PoolStats;
 
     /// A configuration for instrumenting with `metrix`
     pub struct MetrixConfig {

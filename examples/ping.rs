@@ -21,7 +21,7 @@ fn main() {
 
     let pool = Builder::default()
         .connect_to("redis://127.0.0.1:6379")
-        .desired_pool_size(5)
+        .desired_pool_size(3)
         .reservation_limit(None)
         .checkout_timeout(Some(Duration::from_millis(50)))
         .task_executor(runtime.executor())

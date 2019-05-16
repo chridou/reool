@@ -1,5 +1,3 @@
-use crate::connection_factory::ConnectionFactory;
-use crate::connection_factory::NewConnectionError;
 use std::error::Error as StdError;
 use std::fmt;
 use std::sync::{Arc, Weak};
@@ -14,11 +12,13 @@ use futures::{
 use log::{debug, trace, warn};
 use tokio_timer::Delay;
 
+use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
+use crate::connection_factory::{ConnectionFactory, NewConnectionError};
 use crate::error::CheckoutError;
 use crate::executor_flavour::*;
 use crate::instrumentation::Instrumentation;
-use crate::Poolable;
+use crate::{stats::PoolStats, Poolable};
 
 use inner_pool::{CheckInParcel, InnerPool};
 
@@ -30,6 +30,7 @@ pub(crate) struct Config {
     pub backoff_strategy: BackoffStrategy,
     pub reservation_limit: Option<usize>,
     pub stats_interval: Duration,
+    pub activation_order: ActivationOrder,
 }
 
 #[cfg(test)]
@@ -52,73 +53,16 @@ impl Default for Config {
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(50),
             stats_interval: Duration::from_millis(100),
+            activation_order: ActivationOrder::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct MinMax<T = usize>(pub T, pub T);
-
-impl<T> MinMax<T>
-where
-    T: Copy,
-{
-    pub fn min(&self) -> T {
-        self.0
-    }
-    pub fn max(&self) -> T {
-        self.1
-    }
-}
-
-impl<T> Default for MinMax<T>
-where
-    T: Default,
-{
-    fn default() -> Self {
-        Self(T::default(), T::default())
-    }
-}
-
-/// Simple statistics on the internals of the pool.
-///
-/// The values are not very accurate since they
-/// are only the minimum and maximum values
-/// observed during a configurable interval.
-#[derive(Debug, Clone)]
-pub struct PoolStats {
-    /// The amount of connections
-    pub pool_size: MinMax,
-    /// The number of connections that are currently checked out
-    pub in_flight: MinMax,
-    /// The number of pending requests for connections
-    pub reservations: MinMax,
-    /// The number of idle connections which are available for
-    /// immediate checkout
-    pub idle: MinMax,
-    /// The number of accessible nodes.
-    ///
-    /// Unless connected to multiple nodes this value will be 1.
-    pub node_count: usize,
-}
-
-impl Default for PoolStats {
-    fn default() -> Self {
-        Self {
-            pool_size: MinMax::default(),
-            in_flight: MinMax::default(),
-            reservations: MinMax::default(),
-            idle: MinMax::default(),
-            node_count: 0,
-        }
-    }
-}
-
-pub(crate) struct Pool<T: Poolable> {
+pub(crate) struct PoolInternal<T: Poolable> {
     inner_pool: Arc<InnerPool<T>>,
 }
 
-impl<T> Pool<T>
+impl<T> PoolInternal<T>
 where
     T: Poolable,
 {
@@ -247,7 +191,7 @@ fn start_new_conn_stream<T, C>(
     executor.execute(fut).unwrap()
 }
 
-impl<T: Poolable> Clone for Pool<T> {
+impl<T: Poolable> Clone for PoolInternal<T> {
     fn clone(&self) -> Self {
         Self {
             inner_pool: self.inner_pool.clone(),

@@ -26,10 +26,11 @@
 //! License: Apache-2.0/MIT
 use std::time::Duration;
 
-use crate::pool::CheckoutManaged;
+use crate::pool_internal::CheckoutManaged;
 
 use futures::{future::Future, try_ready, Async, Poll};
 
+mod activation_order;
 mod backoff_strategy;
 mod commands;
 pub mod connection_factory;
@@ -39,7 +40,7 @@ pub(crate) mod helpers;
 pub mod instrumentation;
 pub mod multi_node_pool;
 pub mod node_pool;
-mod pool;
+mod pool_internal;
 mod pooled_connection;
 
 pub use crate::error::{CheckoutError, CheckoutErrorKind};
@@ -68,7 +69,7 @@ impl<T: Poolable + redis::r#async::ConnectionLike> Future for Checkout<T> {
         let managed = try_ready!(self.0.poll());
         Ok(Async::Ready(PooledConnection {
             managed,
-            last_op_completed: true,
+            connection_state_ok: true,
         }))
     }
 }
@@ -82,4 +83,64 @@ pub trait RedisPool {
     /// Checkout a new connection and if the request has to be enqueued
     /// use the given timeout or wait indefinetly.
     fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<Self::Connection>;
+}
+
+mod stats {
+    /// Simple statistics on the internals of the pool.
+    ///
+    /// The values are not very accurate since they
+    /// are only the minimum and maximum values
+    /// observed during a configurable interval.
+    #[derive(Debug, Clone)]
+    pub struct PoolStats {
+        /// The amount of connections
+        pub pool_size: MinMax,
+        /// The number of connections that are currently checked out
+        pub in_flight: MinMax,
+        /// The number of pending requests for connections
+        pub reservations: MinMax,
+        /// The number of idle connections which are available for
+        /// immediate checkout
+        pub idle: MinMax,
+        /// The number of accessible nodes.
+        ///
+        /// Unless connected to multiple nodes this value will be 1.
+        pub node_count: usize,
+    }
+
+    impl Default for PoolStats {
+        fn default() -> Self {
+            Self {
+                pool_size: MinMax::default(),
+                in_flight: MinMax::default(),
+                reservations: MinMax::default(),
+                idle: MinMax::default(),
+                node_count: 0,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct MinMax<T = usize>(pub T, pub T);
+
+    impl<T> MinMax<T>
+    where
+        T: Copy,
+    {
+        pub fn min(&self) -> T {
+            self.0
+        }
+        pub fn max(&self) -> T {
+            self.1
+        }
+    }
+
+    impl<T> Default for MinMax<T>
+    where
+        T: Default,
+    {
+        fn default() -> Self {
+            Self(T::default(), T::default())
+        }
+    }
 }
