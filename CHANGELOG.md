@@ -3,6 +3,7 @@
 ## 0.9.0
 
 * Support LiFo and FiFo mode for reactivating idle connections
+* measure connection idle times
 
 ## 0.8.0
 

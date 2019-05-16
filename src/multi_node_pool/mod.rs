@@ -551,8 +551,8 @@ impl<I> InstrumentationAggregator<I>
 where
     I: Instrumentation,
 {
-    fn checked_out_connection(&self, _pool_idx: usize) {
-        self.outbound.checked_out_connection()
+    fn checked_out_connection(&self, idle_for: Duration, _pool_idx: usize) {
+        self.outbound.checked_out_connection(idle_for)
     }
     fn checked_in_returned_connection(&self, flight_time: Duration, _pool_idx: usize) {
         self.outbound.checked_in_returned_connection(flight_time)
@@ -659,8 +659,8 @@ impl<I> Instrumentation for IndexedInstrumentation<I>
 where
     I: Instrumentation,
 {
-    fn checked_out_connection(&self) {
-        self.aggregator.checked_out_connection(self.index)
+    fn checked_out_connection(&self, idle_for: Duration) {
+        self.aggregator.checked_out_connection(idle_for, self.index)
     }
     fn checked_in_returned_connection(&self, flight_time: Duration) {
         self.aggregator

@@ -7,7 +7,7 @@ use metrix::driver::DriverBuilder;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::node_pool::Builder;
+use reool::node_pool::{Builder, ActivationOrder};
 use reool::{Commands, RedisPool};
 
 /// Do many ping commands where many will faile because either
@@ -25,13 +25,17 @@ fn main() {
 
     let pool = Builder::default()
         .connect_to("redis://127.0.0.1:6379")
-        .desired_pool_size(20)
+        .desired_pool_size(200)
         .reservation_limit(Some(10_000))
-        .checkout_timeout(Some(Duration::from_secs(1)))
+        .checkout_timeout(Some(Duration::from_secs(10)))
+        .activation_order(ActivationOrder::LiFo)
         .task_executor(runtime.executor())
         .instrumented_with_metrix(&mut driver, Default::default())
         .redis_rs()
         .unwrap();
+
+    // create idle time
+    std::thread::sleep(Duration::from_secs(1));
 
     info!("Do 20000 pings concurrently");
     let futs: Vec<_> = (0..20_000)

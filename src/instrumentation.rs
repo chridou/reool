@@ -15,7 +15,7 @@ pub type NoInstrumentation = ();
 ///
 pub trait Instrumentation {
     /// A connection was checked out
-    fn checked_out_connection(&self);
+    fn checked_out_connection(&self, idle_for: Duration);
 
     /// A connection that was previously checked out was checked in again
     fn checked_in_returned_connection(&self, flight_time: Duration);
@@ -53,7 +53,7 @@ pub trait Instrumentation {
 }
 
 impl Instrumentation for NoInstrumentation {
-    fn checked_out_connection(&self) {}
+    fn checked_out_connection(&self, _idle_for: Duration) {}
     fn checked_in_returned_connection(&self, _flight_time: Duration) {}
     fn checked_in_new_connection(&self) {}
     fn connection_dropped(&self, _flight_time: Duration, _lifetime: Duration) {}
@@ -71,7 +71,7 @@ impl Instrumentation for NoInstrumentation {
 pub struct StatsLogger;
 
 impl Instrumentation for StatsLogger {
-    fn checked_out_connection(&self) {}
+    fn checked_out_connection(&self, _idle_for: Duration) {}
     fn checked_in_returned_connection(&self, _flight_time: Duration) {}
     fn checked_in_new_connection(&self) {}
     fn connection_dropped(&self, _flight_time: Duration, _lifetime: Duration) {}
@@ -227,7 +227,11 @@ pub(crate) mod metrix {
         let mut cockpit = Cockpit::without_name(None);
 
         let mut panel = Panel::with_name(Metric::CheckOutConnection, "checked_out_connections");
+        panel.set_value_scaling(ValueScaling::NanosToMicros);
         panel.set_meter(Meter::new_with_defaults("per_second"));
+        let mut histogram = Histogram::new_with_defaults("idle_time_us");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(
@@ -396,9 +400,9 @@ pub(crate) mod metrix {
     }
 
     impl Instrumentation for MetrixInstrumentation {
-        fn checked_out_connection(&self) {
+        fn checked_out_connection(&self, idle_for: Duration) {
             self.transmitter
-                .observed_one_now(Metric::CheckOutConnection);
+                .observed_one_duration_now(Metric::CheckOutConnection, idle_for);
         }
         fn checked_in_returned_connection(&self, flight_time: Duration) {
             self.transmitter

@@ -135,7 +135,7 @@ where
                         );
 
                         if let Some(instrumentation) = self.instrumentation.as_ref() {
-                            instrumentation.checked_out_connection();
+                            instrumentation.checked_out_connection(Duration::from_secs(0));
                             instrumentation.reservation_fulfilled(waited_for);
                         }
 
@@ -182,7 +182,7 @@ where
     pub(super) fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
         let mut core = self.core.lock();
 
-        if let Some(mut managed) = { core.idle.get() } {
+        if let Some((mut managed, idle_since)) = { core.idle.get() } {
             trace!("check out - fulfilling with idle connection");
             managed.checked_out_at = Some(Instant::now());
             core.idle_tracker.dec();
@@ -191,7 +191,7 @@ where
             unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
 
             if let Some(instrumentation) = self.instrumentation.as_ref() {
-                instrumentation.checked_out_connection();
+                instrumentation.checked_out_connection(idle_since);
             }
 
             CheckoutManaged::new(future::ok(managed))
@@ -264,7 +264,7 @@ where
 
     pub(super) fn remove_conn(&self) {
         let mut core = self.core.lock();
-        if let Some(mut managed) = { core.idle.get() } {
+        if let Some((mut managed, _)) = { core.idle.get() } {
             core.idle_tracker.dec();
             drop(core);
             managed.marked_for_kill = true;
@@ -515,9 +515,11 @@ fn unlock_then_publish_stats<T: Poolable>(
     }
 }
 
+struct IdleSlot<T>(T, Instant);
+
 enum IdleConnections<T> {
-    FiFo(VecDeque<T>),
-    LiFo(Vec<T>),
+    FiFo(VecDeque<IdleSlot<T>>),
+    LiFo(Vec<IdleSlot<T>>),
 }
 
 impl<T> IdleConnections<T> {
@@ -528,20 +530,24 @@ impl<T> IdleConnections<T> {
         }
     }
 
+    #[inline]
     pub fn put(&mut self, conn: T) {
         match self {
-            IdleConnections::FiFo(idle) => idle.push_back(conn),
-            IdleConnections::LiFo(idle) => idle.push(conn),
+            IdleConnections::FiFo(idle) => idle.push_back(IdleSlot(conn, Instant::now())),
+            IdleConnections::LiFo(idle) => idle.push(IdleSlot(conn, Instant::now())),
         }
     }
 
-    pub fn get(&mut self) -> Option<T> {
+    #[inline]
+    pub fn get(&mut self) -> Option<(T, Duration)> {
         match self {
             IdleConnections::FiFo(idle) => idle.pop_front(),
             IdleConnections::LiFo(idle) => idle.pop(),
         }
+        .map(|IdleSlot(conn, idle_since)| (conn, idle_since.elapsed()))
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         match self {
             IdleConnections::FiFo(idle) => idle.len(),
