@@ -9,7 +9,7 @@ pub enum ActivationOrder {
     /// Connections are taken in the same order they were
     /// added/returned to the pool
     FiFo,
-    /// First In - First Out
+    /// Last In - First Out
     ///
     /// The connections that were added/returned last will
     /// be taken from
