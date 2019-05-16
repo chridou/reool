@@ -3,23 +3,23 @@ use std::fmt;
 
 use redis::{ErrorKind as RedisErrorKind, RedisError};
 
-pub type ReoolResult<T> = Result<T, ReoolError>;
+pub type CheckoutResult<T> = Result<T, CheckoutError>;
 pub type InitializationResult<T> = Result<T, InitializationError>;
 
 #[derive(Debug)]
-pub struct ReoolError {
-    kind: ErrorKind,
+pub struct CheckoutError {
+    kind: CheckoutErrorKind,
     cause: Option<Box<StdError + Send + Sync>>,
 }
 
 /// An error returned from `reool` when a checkout failed
-impl ReoolError {
-    pub(crate) fn new(kind: ErrorKind) -> Self {
+impl CheckoutError {
+    pub(crate) fn new(kind: CheckoutErrorKind) -> Self {
         Self { kind, cause: None }
     }
 
     pub(crate) fn with_cause<E: StdError + Send + Sync + 'static>(
-        kind: ErrorKind,
+        kind: CheckoutErrorKind,
         cause: E,
     ) -> Self {
         Self {
@@ -28,13 +28,13 @@ impl ReoolError {
         }
     }
 
-    pub fn kind(&self) -> ErrorKind {
+    pub fn kind(&self) -> CheckoutErrorKind {
         self.kind
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorKind {
+pub enum CheckoutErrorKind {
     /// Currently there is no connection available
     NoConnection,
     /// An enqueued request for a checkout that had a timeout
@@ -42,7 +42,7 @@ pub enum ErrorKind {
     CheckoutTimeout,
     /// No connection immediately available and no more
     /// requests can be enqueued to wait for a connection
-    /// because the queue has reached it`s limit  
+    /// because the queue has reached it`s limit
     QueueLimitReached,
     /// Something went wrong executing a task. Keep in
     /// mind that it depends on the `Executor` whether
@@ -51,7 +51,7 @@ pub enum ErrorKind {
     TaskExecution,
 }
 
-impl fmt::Display for ReoolError {
+impl fmt::Display for CheckoutError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(ref cause) = self.cause {
             write!(f, "{}: {}", self.description(), cause)
@@ -61,13 +61,15 @@ impl fmt::Display for ReoolError {
     }
 }
 
-impl StdError for ReoolError {
+impl StdError for CheckoutError {
     fn description(&self) -> &str {
         match self.kind {
-            ErrorKind::NoConnection => "there are no connections available",
-            ErrorKind::CheckoutTimeout => "there was no connection to checkout available in time",
-            ErrorKind::QueueLimitReached => "the queue limit has been reached",
-            ErrorKind::TaskExecution => "task execution failed",
+            CheckoutErrorKind::NoConnection => "there are no connections available",
+            CheckoutErrorKind::CheckoutTimeout => {
+                "there was no connection to checkout available in time"
+            }
+            CheckoutErrorKind::QueueLimitReached => "the queue limit has been reached",
+            CheckoutErrorKind::TaskExecution => "task execution failed",
         }
     }
 
@@ -76,9 +78,14 @@ impl StdError for ReoolError {
     }
 }
 
-impl From<ReoolError> for RedisError {
-    fn from(error: ReoolError) -> Self {
-        (RedisErrorKind::IoError, "reool error", error.to_string()).into()
+impl From<CheckoutError> for RedisError {
+    fn from(error: CheckoutError) -> Self {
+        (
+            RedisErrorKind::IoError,
+            "checkout failed",
+            error.to_string(),
+        )
+            .into()
     }
 }
 

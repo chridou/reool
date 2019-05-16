@@ -12,7 +12,7 @@ pub enum ExecutorFlavour {
 }
 
 impl ExecutorFlavour {
-    pub fn execute<F>(&self, task: F) -> ReoolResult<()>
+    pub fn execute<F>(&self, task: F) -> CheckoutResult<()>
     where
         F: Future<Item = (), Error = ()> + Send + 'static,
     {
@@ -22,7 +22,7 @@ impl ExecutorFlavour {
                     .spawn(Box::new(task))
                     .map_err(|err| {
                         warn!("default executor failed to execute a task: {:?}", err);
-                        ReoolError::with_cause(ErrorKind::TaskExecution, err)
+                        CheckoutError::with_cause(CheckoutErrorKind::TaskExecution, err)
                     })
             }
             ExecutorFlavour::TokioTaskExecutor(executor) => {

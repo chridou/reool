@@ -6,10 +6,11 @@ use futures::future::{join_all, Future};
 use futures::stream::{iter_ok, Stream};
 use log::{debug, error, info};
 use pretty_env_logger;
+use redis::RedisError;
 use tokio::runtime::Runtime;
 
 use reool::node_pool::Builder;
-use reool::{Commands, RedisPool};
+use reool::{Commands, PooledConnection, RedisPool};
 
 /// Do some ping commands and measure the time elapsed
 fn main() {
@@ -38,9 +39,7 @@ fn main() {
 
     info!("Do another ping");
     let start = Instant::now();
-    runtime
-        .block_on(pool.check_out().from_err().and_then(Commands::ping))
-        .unwrap();
+    runtime.block_on(ping_on_pool(&pool)).unwrap();
     info!("PINGED in {:?}", start.elapsed());
 
     thread::sleep(Duration::from_secs(1));
@@ -52,7 +51,7 @@ fn main() {
             pool_ping
                 .check_out()
                 .from_err()
-                .and_then(Commands::ping)
+                .and_then(do_a_ping)
                 .then(|res| match res {
                     Err(err) => {
                         error!("PING failed: {}", err);
@@ -100,4 +99,17 @@ fn main() {
     drop(pool);
     info!("pool dropped");
     runtime.shutdown_on_idle().wait().unwrap();
+}
+
+fn ping_on_pool<P: RedisPool>(
+    pool: &P,
+) -> impl Future<Item = (PooledConnection<P::Connection>, ()), Error = RedisError> {
+    pool.check_out().from_err().and_then(do_a_ping)
+}
+
+fn do_a_ping<T>(conn: T) -> impl Future<Item = (T, ()), Error = RedisError>
+where
+    T: Commands,
+{
+    conn.ping()
 }

@@ -6,7 +6,7 @@
 [![license-mit](http://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/chridou/reool/blob/master/LICENSE-MIT)
 [![license-apache](http://img.shields.io/badge/license-APACHE-blue.svg)](https://github.com/chridou/reool/blob/master/LICENSE-APACHE)
 
-Currently in early development. 
+Currently in early development. API will change rapidly.
 
 ## About
 
@@ -16,7 +16,7 @@ Currently `reool` is a fixed size connection pool. `Reool` provides an interface
 
 You should also consider multiplexing instead of a pool based on your needs.
 
-The `PooledConnection` of `reool` implements the `ConnectionLike` 
+The `PooledConnection` of `reool` implements the `ConnectionLike`
 interface of [redis-rs](https://crates.io/crates/redis) for easier integration.
 
 For documentation visit [crates.io](https://crates.io/crates/reool).

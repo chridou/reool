@@ -1,16 +1,14 @@
 use futures::future::{self, Future};
 use redis::{
     r#async::{Connection, ConnectionLike},
-    Client, ErrorKind, RedisError, RedisFuture, Value,
+    Client, ErrorKind, RedisFuture, Value,
 };
 
 use crate::connection_factory::{ConnectionFactory, NewConnection, NewConnectionError};
 use crate::pooled_connection::PooledConnection;
 use crate::Poolable;
 
-impl Poolable for Connection {
-    type Error = RedisError;
-}
+impl Poolable for Connection {}
 
 impl ConnectionFactory for Client {
     type Connection = Connection;
@@ -20,7 +18,7 @@ impl ConnectionFactory for Client {
     }
 }
 
-impl ConnectionLike for PooledConnection<Connection> {
+impl<T: Poolable + ConnectionLike> ConnectionLike for PooledConnection<T> {
     fn req_packed_command(mut self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
         if let Some(conn) = self.managed.value.take() {
             self.last_op_completed = false;

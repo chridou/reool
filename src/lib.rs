@@ -42,15 +42,13 @@ pub mod node_pool;
 mod pool;
 mod pooled_connection;
 
-pub use crate::error::{ErrorKind, ReoolError};
+pub use crate::error::{CheckoutError, CheckoutErrorKind};
 pub use commands::*;
 pub use pooled_connection::PooledConnection;
 
 mod redis_rs;
 
-pub trait Poolable: Send + Sized + 'static {
-    type Error: Send + Sized + 'static;
-}
+pub trait Poolable: Send + Sized + 'static {}
 
 /// A `Future` that represents a checkout.
 ///
@@ -60,11 +58,11 @@ pub trait Poolable: Send + Sized + 'static {
 /// * There was a timeout on the checkout and it timed out
 /// * The queue size was limited and the limit was reached
 /// * There are simply no connections available
-pub struct Checkout<T: Poolable>(CheckoutManaged<T>);
+pub struct Checkout<T: Poolable + redis::r#async::ConnectionLike>(CheckoutManaged<T>);
 
-impl<T: Poolable> Future for Checkout<T> {
+impl<T: Poolable + redis::r#async::ConnectionLike> Future for Checkout<T> {
     type Item = PooledConnection<T>;
-    type Error = ReoolError;
+    type Error = CheckoutError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let managed = try_ready!(self.0.poll());
@@ -77,7 +75,7 @@ impl<T: Poolable> Future for Checkout<T> {
 
 /// A trait that can be used as an interface for a connection pool.
 pub trait RedisPool {
-    type Connection: Poolable;
+    type Connection: Poolable + redis::r#async::ConnectionLike;
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the implementor.
     fn check_out(&self) -> Checkout<Self::Connection>;

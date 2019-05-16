@@ -6,13 +6,13 @@ use crate::{pool::Managed, Poolable};
 ///
 /// Pooled connection implements `redis::async::ConnectionLike`
 /// to easily integrate with code that already uses `redis-rs`.
-pub struct PooledConnection<T: Poolable> {
+pub struct PooledConnection<T: Poolable + redis::r#async::ConnectionLike> {
     /// Track that the future has not been cancelled while executing a query
     pub(crate) last_op_completed: bool,
     pub(crate) managed: Managed<T>,
 }
 
-impl<T: Poolable> Drop for PooledConnection<T> {
+impl<T: Poolable + redis::r#async::ConnectionLike> Drop for PooledConnection<T> {
     fn drop(&mut self) {
         if !self.last_op_completed {
             self.managed.value.take();
@@ -20,7 +20,7 @@ impl<T: Poolable> Drop for PooledConnection<T> {
     }
 }
 
-impl<T: Poolable> std::ops::Deref for PooledConnection<T> {
+impl<T: Poolable + redis::r#async::ConnectionLike> std::ops::Deref for PooledConnection<T> {
     type Target = T;
 
     fn deref(&self) -> &T {

@@ -12,7 +12,7 @@ use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{NewConnection, NewConnectionError};
-use crate::error::ErrorKind;
+use crate::error::CheckoutErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::pool::{Config, ConnectionFactory, Pool};
 use crate::Poolable;
@@ -172,11 +172,11 @@ fn with_empty_pool_checkout_returns_timeout() {
 
     let checked_out = pool.check_out(Some(Duration::from_millis(10)));
     let err = checked_out.wait().err().unwrap();
-    assert_eq!(err.kind(), ErrorKind::CheckoutTimeout);
+    assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
     let checked_out = pool.check_out(Some(Duration::from_millis(10)));
     let err = checked_out.wait().err().unwrap();
-    assert_eq!(err.kind(), ErrorKind::CheckoutTimeout);
+    assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
@@ -245,9 +245,7 @@ fn put_and_checkout_do_not_race() {
 }
 */
 
-impl Poolable for () {
-    type Error = ();
-}
+impl Poolable for () {}
 
 struct UnitFactory;
 impl ConnectionFactory for UnitFactory {
@@ -257,9 +255,7 @@ impl ConnectionFactory for UnitFactory {
     }
 }
 
-impl Poolable for u32 {
-    type Error = ();
-}
+impl Poolable for u32 {}
 
 struct U32Factory {
     counter: AtomicU32,

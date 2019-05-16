@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0
+
+* BREAKING CHANGES
+    * keep closer to the types of redis-rs
+
 ## 0.7.0
 
 * BREAKING CHANGES

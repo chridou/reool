@@ -396,7 +396,7 @@ impl<T: Poolable> Clone for SingleNodePool<T> {
     }
 }
 
-impl<T: Poolable> RedisPool for SingleNodePool<T> {
+impl<T: Poolable + redis::r#async::ConnectionLike> RedisPool for SingleNodePool<T> {
     type Connection = T;
     fn check_out(&self) -> Checkout<T> {
         Checkout(self.pool.check_out(self.checkout_timeout))

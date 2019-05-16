@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 
 use crate::connection_factory::ConnectionFactory;
 use crate::error::InitializationResult;
-use crate::error::{ErrorKind, ReoolError};
+use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
@@ -444,7 +444,7 @@ impl<T: Poolable> Clone for MultiNodePool<T> {
     }
 }
 
-impl<T: Poolable> RedisPool for MultiNodePool<T> {
+impl<T: Poolable + redis::r#async::ConnectionLike> RedisPool for MultiNodePool<T> {
     type Connection = T;
 
     fn check_out(&self) -> Checkout<T> {
@@ -461,11 +461,11 @@ struct Inner<T: Poolable> {
     pools: Vec<Pool<T>>,
 }
 
-impl<T: Poolable> Inner<T> {
+impl<T: Poolable + redis::r#async::ConnectionLike> Inner<T> {
     fn check_out(&self, checkout_timeout: Option<Duration>) -> Checkout<T> {
         if self.pools.is_empty() {
-            Checkout(CheckoutManaged::new(future::err(ReoolError::new(
-                ErrorKind::NoConnection,
+            Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
+                CheckoutErrorKind::NoConnection,
             ))))
         } else {
             let count = self.count.fetch_add(1, Ordering::SeqCst);

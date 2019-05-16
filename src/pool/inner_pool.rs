@@ -9,7 +9,7 @@ use log::{debug, error, trace};
 use parking_lot::{Mutex, MutexGuard};
 use tokio_timer::Timeout;
 
-use crate::error::{ErrorKind, ReoolError};
+use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::instrumentation::Instrumentation;
 
 use super::MinMax;
@@ -206,8 +206,8 @@ where
                         instrumentation.reservation_limit_reached()
                     }
 
-                    return CheckoutManaged::new(future::err(ReoolError::new(
-                        ErrorKind::QueueLimitReached,
+                    return CheckoutManaged::new(future::err(CheckoutError::new(
+                        CheckoutErrorKind::QueueLimitReached,
                     )));
                 }
             }
@@ -231,10 +231,10 @@ where
 
         let fut = rx
             .map(From::from)
-            .map_err(|err| ReoolError::with_cause(ErrorKind::NoConnection, err));
+            .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::NoConnection, err));
         let fut = if let Some(timeout) = timeout {
             let timeout_fut = Timeout::new(fut, timeout)
-                .map_err(|err| ReoolError::with_cause(ErrorKind::CheckoutTimeout, err));
+                .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::CheckoutTimeout, err));
             CheckoutManaged::new(timeout_fut)
         } else {
             CheckoutManaged::new(fut)

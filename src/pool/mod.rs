@@ -15,7 +15,7 @@ use log::{debug, trace, warn};
 use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
-use crate::error::ReoolError;
+use crate::error::CheckoutError;
 use crate::executor_flavour::*;
 use crate::instrumentation::Instrumentation;
 use crate::Poolable;
@@ -127,7 +127,7 @@ where
         connection_factory: C,
         executor: ExecutorFlavour,
         instrumentation: Option<I>,
-    ) -> Pool<<C as ConnectionFactory>::Connection>
+    ) -> Self
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
         I: Instrumentation + Send + Sync + 'static,
@@ -323,13 +323,13 @@ where
 }
 
 pub(crate) struct CheckoutManaged<T: Poolable> {
-    inner: Box<Future<Item = Managed<T>, Error = ReoolError> + Send + 'static>,
+    inner: Box<Future<Item = Managed<T>, Error = CheckoutError> + Send + 'static>,
 }
 
 impl<T: Poolable> CheckoutManaged<T> {
     pub fn new<F>(fut: F) -> Self
     where
-        F: Future<Item = Managed<T>, Error = ReoolError> + Send + 'static,
+        F: Future<Item = Managed<T>, Error = CheckoutError> + Send + 'static,
     {
         Self {
             inner: Box::new(fut),
@@ -339,7 +339,7 @@ impl<T: Poolable> CheckoutManaged<T> {
 
 impl<T: Poolable> Future for CheckoutManaged<T> {
     type Item = Managed<T>;
-    type Error = ReoolError;
+    type Error = CheckoutError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.inner.poll()
