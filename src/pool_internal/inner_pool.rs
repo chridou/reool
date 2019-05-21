@@ -83,8 +83,8 @@ where
         }
     }
 
-    fn check_in_alive(&self, managed: Managed<T>) {
-        let checked_out_at = managed.checked_out_at;
+    fn check_in_alive(&self, mut managed: Managed<T>) {
+        let checked_out_at = managed.checked_out_at.take();
 
         if let Some(instrumentation) = self.instrumentation.as_ref() {
             if let Some(checked_out_at) = checked_out_at {
@@ -122,13 +122,14 @@ where
             let mut to_fulfill = managed;
             while let Some(one_waiting) = core.reservations.pop_front() {
                 core.reservations_tracker.dec();
-                match one_waiting.fulfill(to_fulfill) {
-                    Fulfillment::Fulfilled(FulfillmentType::Reservation(waited_for)) => {
+                match one_waiting.try_fulfill(to_fulfill) {
+                    Fulfillment::Reservation(waited_for) => {
                         core.in_flight_tracker.inc();
                         trace!(
                             "fulfill reservation - fulfilled - in-flight {}",
                             core.in_flight_tracker.current()
                         );
+
                         unlock_then_publish_stats(
                             core,
                             self.instrumentation.as_ref().map(|i| &**i),
@@ -141,10 +142,10 @@ where
 
                         return;
                     }
-                    Fulfillment::Fulfilled(FulfillmentType::Killed) => {
+                    Fulfillment::Killed => {
                         core.pool_size_tracker.dec();
                         trace!(
-                            "reservation -killed - pool size {}",
+                            "reservation - killed - pool size {}",
                             core.pool_size_tracker.current()
                         );
 
@@ -183,7 +184,7 @@ where
         let mut core = self.core.lock();
 
         if let Some((mut managed, idle_since)) = { core.idle.get() } {
-            trace!("check out - fulfilling with idle connection");
+            trace!("check out - checking out idle connection");
             managed.checked_out_at = Some(Instant::now());
             core.idle_tracker.dec();
             core.in_flight_tracker.inc();
@@ -404,10 +405,6 @@ enum Reservation<T: Poolable> {
 
 enum Fulfillment<T: Poolable> {
     NotFulfilled(Managed<T>, Duration),
-    Fulfilled(FulfillmentType),
-}
-
-enum FulfillmentType {
     Reservation(Duration),
     Killed,
 }
@@ -423,21 +420,21 @@ impl<T: Poolable> Reservation<T> {
 }
 
 impl<T: Poolable> Reservation<T> {
-    fn fulfill(self, mut managed: Managed<T>) -> Fulfillment<T> {
-        managed.checked_out_at = Some(Instant::now());
+    fn try_fulfill(self, mut managed: Managed<T>) -> Fulfillment<T> {
         match self {
             Reservation::Checkout(sender, waiting_since) => {
+                managed.checked_out_at = Some(Instant::now());
                 if let Err(mut managed) = sender.send(managed) {
                     managed.checked_out_at = None;
                     Fulfillment::NotFulfilled(managed, waiting_since.elapsed())
                 } else {
-                    Fulfillment::Fulfilled(FulfillmentType::Reservation(waiting_since.elapsed()))
+                    Fulfillment::Reservation(waiting_since.elapsed())
                 }
             }
             Reservation::ReducePoolSize => {
                 managed.checked_out_at = None;
                 managed.marked_for_kill = true;
-                Fulfillment::Fulfilled(FulfillmentType::Killed)
+                Fulfillment::Killed
             }
         }
     }

@@ -2,15 +2,20 @@ use std::env;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use futures::future::{join_all, Future};
 use futures::stream::{iter_ok, Stream};
-use log::{debug, error, info};
+use futures::{
+    future::{join_all, Future},
+    sync::oneshot,
+};
+use log::{debug, error, info, warn};
 use pretty_env_logger;
 use redis::RedisError;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Runtime, TaskExecutor};
 
-use reool::node_pool::Builder;
+use reool::node_pool::{Builder, PoolStats};
 use reool::{Commands, PooledConnection, RedisPool};
+
+const POOL_SIZE: usize = 8;
 
 /// Do some ping commands and measure the time elapsed
 fn main() {
@@ -21,9 +26,10 @@ fn main() {
 
     let pool = Builder::default()
         .connect_to("redis://127.0.0.1:6379")
-        .desired_pool_size(3)
+        .desired_pool_size(POOL_SIZE)
         .reservation_limit(None)
         .checkout_timeout(Some(Duration::from_millis(50)))
+        .instrumented(MyMetrics)
         .task_executor(runtime.executor())
         .redis_rs()
         .unwrap();
@@ -96,6 +102,11 @@ fn main() {
     runtime.block_on(fut).unwrap();
     info!("PINGED 100 times concurrently in {:?}", start.elapsed());
 
+    info!("ping many times");
+    let start = Instant::now();
+    ping_concurrently(pool.clone(), runtime.executor());
+    info!("PINGED many times concurrently in {:?}", start.elapsed());
+
     drop(pool);
     info!("pool dropped");
     runtime.shutdown_on_idle().wait().unwrap();
@@ -112,4 +123,52 @@ where
     T: Commands,
 {
     conn.ping()
+}
+
+struct MyMetrics;
+
+impl reool::instrumentation::Instrumentation for MyMetrics {
+    fn checked_out_connection(&self, _idle_for: Duration) {}
+    fn checked_in_returned_connection(&self, _flight_time: Duration) {}
+    fn checked_in_new_connection(&self) {}
+    fn connection_dropped(&self, _flight_time: Duration, _lifetime: Duration) {}
+    fn connection_created(&self, _connected_after: Duration, _total_time: Duration) {}
+    fn connection_killed(&self, _lifetime: Duration) {}
+    fn reservation_added(&self) {}
+    fn reservation_fulfilled(&self, _after: Duration) {
+        info!("reservation fulfilled")
+    }
+    fn reservation_not_fulfilled(&self, _after: Duration) {
+        warn!("reservation NOT fulfilled")
+    }
+    fn reservation_limit_reached(&self) {}
+    fn connection_factory_failed(&self) {}
+    fn stats(&self, _stats: PoolStats) {}
+}
+
+fn ping_concurrently<P: RedisPool + Clone + Send + 'static>(pool: P, executor: TaskExecutor) {
+    let handles: Vec<_> = (0..POOL_SIZE * 2)
+        .map(|_| {
+            let pool = pool.clone();
+            let executor = executor.clone();
+            thread::spawn(move || ping_sequentially(&pool, &executor))
+        })
+        .collect();
+
+    handles
+        .into_iter()
+        .for_each(|handle| handle.join().unwrap());
+}
+
+fn ping_sequentially<P: RedisPool>(pool: &P, executor: &TaskExecutor) {
+    (0..1000).for_each(|_| {
+        if let Err(err) = oneshot::spawn(
+            pool.check_out().from_err().and_then(Commands::ping),
+            executor,
+        )
+        .wait()
+        {
+            error!("ping failed: {}", err);
+        }
+    })
 }
