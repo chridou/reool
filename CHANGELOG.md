@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+* update parking lot
+
 ## 0.9.0
 
 * Support LiFo and FiFo mode for reactivating idle connections
