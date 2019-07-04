@@ -7,7 +7,7 @@ use log::info;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::node_pool::Builder;
+use reool::RedisPool;
 
 /// Simply connect to redis and establish some connections
 fn main() {
@@ -16,14 +16,12 @@ fn main() {
 
     let runtime = Runtime::new().unwrap();
 
-    let pool = Builder::default()
-        .connect_to("redis://127.0.0.1:6379")
+    let pool = RedisPool::builder()
+        .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(5)
         .task_executor(runtime.executor())
         .redis_rs()
         .unwrap();
-
-    let _cloned_pool = pool.clone();
 
     info!("{:#?}", pool.stats());
 
@@ -32,6 +30,26 @@ fn main() {
     info!("{:#?}", pool.stats());
 
     drop(pool);
-    info!("DROPPED POOL");
+    info!("DROPPED single node pool POOL");
+
+    let pool = RedisPool::builder()
+        .connect_to_nodes(vec![
+            "redis://127.0.0.1:6379".to_string(),
+            "redis://127.0.0.1:6379".to_string(),
+        ])
+        .desired_pool_size(5)
+        .task_executor(runtime.executor())
+        .redis_rs()
+        .unwrap();
+
+    info!("{:#?}", pool.stats());
+
+    thread::sleep(Duration::from_secs(1));
+
+    info!("{:#?}", pool.stats());
+
+    drop(pool);
+    info!("DROPPED multi node pool POOL");
+
     runtime.shutdown_on_idle().wait().unwrap();
 }

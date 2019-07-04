@@ -94,7 +94,7 @@ impl<T: Poolable + redis::r#async::ConnectionLike> Inner<T> {
     pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<T> {
         if self.pools.is_empty() {
             Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
-                CheckoutErrorKind::NoConnection,
+                CheckoutErrorKind::NoPool,
             ))))
         } else {
             let count = self.count.fetch_add(1, Ordering::SeqCst);

@@ -6,8 +6,8 @@ use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::node_pool::Builder;
-use reool::{Commands, RedisPool};
+use reool::Commands;
+use reool::RedisPool;
 
 /// Do many ping commands with no checkout timeout
 /// and an unbounded checkout queue
@@ -17,8 +17,8 @@ fn main() {
 
     let mut runtime = Runtime::new().unwrap();
 
-    let pool = Builder::default()
-        .connect_to("redis://127.0.0.1:6379")
+    let pool = RedisPool::builder()
+        .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(10)
         .reservation_limit(None) // No limit
         .checkout_timeout(None) // No timeout

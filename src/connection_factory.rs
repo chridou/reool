@@ -5,6 +5,11 @@ use futures::{future::Future, Poll};
 
 use crate::Poolable;
 
+pub trait ConnectionFactory {
+    type Connection: Poolable;
+    fn create_connection(&self) -> NewConnection<Self::Connection>;
+}
+
 pub struct NewConnectionError {
     cause: Box<StdError + Send + 'static>,
 }
@@ -46,9 +51,4 @@ impl<T: Poolable> Future for NewConnection<T> {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.inner.poll()
     }
-}
-
-pub trait ConnectionFactory {
-    type Connection: Poolable;
-    fn create_connection(&self) -> NewConnection<Self::Connection>;
 }

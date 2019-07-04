@@ -26,26 +26,37 @@
 //! License: Apache-2.0/MIT
 use std::time::Duration;
 
-use crate::pool_internal::CheckoutManaged;
+use futures::{
+    future::{self, Future},
+    try_ready, Async, Poll,
+};
 
-use futures::{future::Future, try_ready, Async, Poll};
+use crate::config::Builder;
+use crate::instrumentation::NoInstrumentation;
+use crate::pool_internal::CheckoutManaged;
 
 mod activation_order;
 mod backoff_strategy;
 mod commands;
-pub mod connection_factory;
 mod error;
-pub(crate) mod executor_flavour;
-pub(crate) mod helpers;
-pub mod instrumentation;
-pub mod multi_node_pool;
-pub mod node_pool;
+mod multi_node_pool;
 mod pool_internal;
 mod pooled_connection;
+mod single_node_pool;
+
+pub(crate) mod executor_flavour;
+
+pub(crate) mod connection_factory;
+pub(crate) mod helpers;
+
+pub mod config;
+pub mod instrumentation;
 
 pub use crate::error::{CheckoutError, CheckoutErrorKind};
-pub use commands::*;
-pub use pooled_connection::PooledConnection;
+
+pub use commands::Commands;
+use pooled_connection::ConnectionFlavour;
+pub use pooled_connection::RedisConnection;
 
 mod redis_rs;
 
@@ -59,33 +70,89 @@ pub trait Poolable: Send + Sized + 'static {}
 /// * There was a timeout on the checkout and it timed out
 /// * The queue size was limited and the limit was reached
 /// * There are simply no connections available
-pub struct Checkout<T: Poolable + redis::r#async::ConnectionLike>(CheckoutManaged<T>);
+/// * There is no connected node
+pub struct Checkout(CheckoutManaged<ConnectionFlavour>);
 
-impl<T: Poolable + redis::r#async::ConnectionLike> Future for Checkout<T> {
-    type Item = PooledConnection<T>;
+impl Future for Checkout {
+    type Item = RedisConnection;
     type Error = CheckoutError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let managed = try_ready!(self.0.poll());
-        Ok(Async::Ready(PooledConnection {
+        Ok(Async::Ready(RedisConnection {
             managed,
             connection_state_ok: true,
         }))
     }
 }
 
-/// A trait that can be used as an interface for a connection pool.
-pub trait RedisPool {
-    type Connection: Poolable + redis::r#async::ConnectionLike;
-    /// Checkout a new connection and if the request has to be enqueued
-    /// use a timeout as defined by the implementor.
-    fn check_out(&self) -> Checkout<Self::Connection>;
-    /// Checkout a new connection and if the request has to be enqueued
-    /// use the given timeout or wait indefinetly.
-    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<Self::Connection>;
+#[derive(Clone)]
+enum RedisPoolFlavour {
+    NoPool,
+    SingleNode(single_node_pool::SingleNodePool),
+    MultiNode(multi_node_pool::MultiNodePool),
 }
 
-mod stats {
+/// A pool to one or more Redis instances.
+#[derive(Clone)]
+pub struct RedisPool(RedisPoolFlavour);
+
+impl RedisPool {
+    pub fn builder() -> Builder<NoInstrumentation> {
+        Builder::default()
+    }
+
+    pub fn no_pool() -> Self {
+        RedisPool(RedisPoolFlavour::NoPool)
+    }
+
+    /// Checkout a new connection and if the request has to be enqueued
+    /// use a timeout as defined by the implementor.
+    pub fn check_out(&self) -> Checkout {
+        match self.0 {
+            RedisPoolFlavour::SingleNode(ref pool) => pool.check_out(),
+            RedisPoolFlavour::MultiNode(ref pool) => pool.check_out(),
+            RedisPoolFlavour::NoPool => Checkout(CheckoutManaged::new(future::err(
+                CheckoutError::new(CheckoutErrorKind::NoPool),
+            ))),
+        }
+    }
+    /// Checkout a new connection and if the request has to be enqueued
+    /// use the given timeout or wait indefinetly.
+    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+        match self.0 {
+            RedisPoolFlavour::SingleNode(ref pool) => pool.check_out_explicit_timeout(timeout),
+            RedisPoolFlavour::MultiNode(ref pool) => pool.check_out_explicit_timeout(timeout),
+            RedisPoolFlavour::NoPool => Checkout(CheckoutManaged::new(future::err(
+                CheckoutError::new(CheckoutErrorKind::NoPool),
+            ))),
+        }
+    }
+
+    /// Get some statistics from the pool.
+    ///
+    /// This locks the pool.
+    pub fn stats(&self) -> Vec<self::stats::PoolStats> {
+        match self.0 {
+            RedisPoolFlavour::SingleNode(ref pool) => vec![pool.stats()],
+            RedisPoolFlavour::MultiNode(ref pool) => pool.stats(),
+            RedisPoolFlavour::NoPool => Vec::new(),
+        }
+    }
+
+    /// Triggers the pool to emit statistics if `stats_interval` has elapsed.
+    ///
+    /// This locks the pool.
+    pub fn trigger_stats(&self) {
+        match self.0 {
+            RedisPoolFlavour::SingleNode(ref pool) => pool.trigger_stats(),
+            RedisPoolFlavour::MultiNode(ref pool) => pool.trigger_stats(),
+            RedisPoolFlavour::NoPool => {}
+        }
+    }
+}
+
+pub mod stats {
     /// Simple statistics on the internals of the pool.
     ///
     /// The values are not very accurate since they

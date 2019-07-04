@@ -2,6 +2,7 @@ use std::env;
 use std::time::Duration;
 
 use crate::activation_order::ActivationOrder;
+use crate::config::PoolMode;
 use crate::error::{InitializationError, InitializationResult};
 
 fn make_prefix<T: Into<String>>(prefix: Option<T>) -> String {
@@ -127,6 +128,25 @@ where
     let prefix = make_prefix(prefix);
 
     let key = format!("{}_{}", prefix, "ACTIVATION_ORDER");
+    match env::var(&key) {
+        Ok(s) => {
+            f(s.parse()
+                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            Ok(())
+        }
+        Err(env::VarError::NotPresent) => Ok(()),
+        Err(err) => Err(InitializationError::new(key, Some(err))),
+    }
+}
+
+pub fn set_pool_mode<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+where
+    F: FnMut(PoolMode) -> (),
+    T: Into<String>,
+{
+    let prefix = make_prefix(prefix);
+
+    let key = format!("{}_{}", prefix, "POOL_MODE");
     match env::var(&key) {
         Ok(s) => {
             f(s.parse()
