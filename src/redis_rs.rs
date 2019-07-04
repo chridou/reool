@@ -1,67 +1,35 @@
-use futures::future::{self, Future};
-use redis::{
-    r#async::{Connection, ConnectionLike},
-    Client, ErrorKind, RedisFuture, Value,
-};
+use futures::future::Future;
+use redis::{r#async::Connection, Client};
 
 use crate::connection_factory::{ConnectionFactory, NewConnection, NewConnectionError};
-use crate::pooled_connection::PooledConnection;
+use crate::error::{InitializationError, InitializationResult};
+use crate::pooled_connection::ConnectionFlavour;
 use crate::Poolable;
 
 impl Poolable for Connection {}
 
-impl ConnectionFactory for Client {
-    type Connection = Connection;
+pub struct RedisRsFactory(Client);
 
-    fn create_connection(&self) -> NewConnection<Self::Connection> {
-        NewConnection::new(self.get_async_connection().map_err(NewConnectionError::new))
+impl RedisRsFactory {
+    pub fn new(connect_to: String) -> InitializationResult<Self> {
+        Ok(Self(Client::open(&*connect_to).map_err(|err| {
+            InitializationError::new(
+                format!("Could not create a redis-rs client to {}", connect_to),
+                Some(Box::new(err)),
+            )
+        })?))
     }
 }
 
-impl<T: Poolable + ConnectionLike> ConnectionLike for PooledConnection<T> {
-    fn req_packed_command(mut self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
-        if let Some(conn) = self.managed.value.take() {
-            self.connection_state_ok = false;
-            Box::new(conn.req_packed_command(cmd).map(|(conn, value)| {
-                self.managed.value = Some(conn);
-                self.connection_state_ok = true;
-                (self, value)
-            }))
-        } else {
-            Box::new(future::err(
-                (ErrorKind::IoError, "no connection - this is a bug of reool").into(),
-            ))
-        }
-    }
+impl ConnectionFactory for RedisRsFactory {
+    type Connection = ConnectionFlavour;
 
-    fn req_packed_commands(
-        mut self,
-        cmd: Vec<u8>,
-        offset: usize,
-        count: usize,
-    ) -> RedisFuture<(Self, Vec<Value>)> {
-        if let Some(conn) = self.managed.value.take() {
-            self.connection_state_ok = false;
-            Box::new(
-                conn.req_packed_commands(cmd, offset, count)
-                    .map(|(conn, values)| {
-                        self.managed.value = Some(conn);
-                        self.connection_state_ok = true;
-                        (self, values)
-                    }),
-            )
-        } else {
-            Box::new(future::err(
-                (ErrorKind::IoError, "no connection - this is a bug of reool").into(),
-            ))
-        }
-    }
-
-    fn get_db(&self) -> i64 {
-        if let Some(conn) = self.managed.value.as_ref() {
-            conn.get_db()
-        } else {
-            -1
-        }
+    fn create_connection(&self) -> NewConnection<Self::Connection> {
+        NewConnection::new(
+            self.0
+                .get_async_connection()
+                .map(ConnectionFlavour::RedisRs)
+                .map_err(NewConnectionError::new),
+        )
     }
 }

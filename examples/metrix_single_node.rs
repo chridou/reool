@@ -7,7 +7,7 @@ use metrix::driver::DriverBuilder;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::node_pool::{Builder, ActivationOrder};
+use reool::config::ActivationOrder;
 use reool::{Commands, RedisPool};
 
 /// Do many ping commands where many will faile because either
@@ -23,8 +23,8 @@ fn main() {
 
     let mut runtime = Runtime::new().unwrap();
 
-    let pool = Builder::default()
-        .connect_to("redis://127.0.0.1:6379")
+    let pool = RedisPool::builder()
+        .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(200)
         .reservation_limit(Some(10_000))
         .checkout_timeout(Some(Duration::from_secs(10)))

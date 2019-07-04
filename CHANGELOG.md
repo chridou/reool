@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0 (BREAKING CHANGES)
+
+* only use one struct `RedisPool` as the external interface
+* Remove generic parameters
+
 ## 0.9.1
 
 * update parking lot

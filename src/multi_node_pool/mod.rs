@@ -7,364 +7,17 @@ use futures::future;
 use log::{debug, warn};
 use parking_lot::Mutex;
 
+use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
+use crate::error::InitializationError;
 use crate::error::InitializationResult;
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::ExecutorFlavour;
-use crate::helpers;
-use crate::instrumentation::{Instrumentation, NoInstrumentation};
+use crate::instrumentation::Instrumentation;
 use crate::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
-use crate::{Checkout, Poolable, RedisPool};
-
-pub use crate::activation_order::ActivationOrder;
-pub use crate::backoff_strategy::BackoffStrategy;
-pub use crate::error::InitializationError;
-pub use crate::stats::{MinMax, PoolStats};
-
-/// A configuration for creating a `MultiNodePool`.
-///
-/// You should prefer using the `MultiNodePool::builder()` function.
-pub struct Config {
-    /// The number of connections the pool should initially have
-    /// and try to maintain
-    pub desired_pool_size: usize,
-    /// The timeout for a checkout if no specific tinmeout is given
-    /// with a checkout.
-    pub checkout_timeout: Option<Duration>,
-    /// The `BackoffStrategy` to use when retrying on
-    /// failures to create new connections
-    pub backoff_strategy: BackoffStrategy,
-    /// The maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub reservation_limit: Option<usize>,
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub stats_interval: Duration,
-    /// Defines the `ActivationOrder` in which idle connections are
-    /// activated.
-    ///
-    /// Default is `ActivationOrder::FiFo`
-    pub activation_order: ActivationOrder,
-    /// The minimum required nodes to start
-    pub min_required_nodes: usize,
-}
-
-impl Config {
-    /// Sets the number of connections the pool should initially have
-    /// and try to maintain
-    pub fn desired_pool_size(mut self, v: usize) -> Self {
-        self.desired_pool_size = v;
-        self
-    }
-
-    /// Sets the timeout for a checkout if no specific tinmeout is given
-    /// with a checkout.
-    pub fn checkout_timeout(mut self, v: Option<Duration>) -> Self {
-        self.checkout_timeout = v;
-        self
-    }
-
-    /// Sets the `BackoffStrategy` to use when retrying on
-    /// failures to create new connections
-    pub fn backoff_strategy(mut self, v: BackoffStrategy) -> Self {
-        self.backoff_strategy = v;
-        self
-    }
-
-    /// Sets the maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
-        self.reservation_limit = v;
-        self
-    }
-
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub fn stats_interval(mut self, v: Duration) -> Self {
-        self.stats_interval = v;
-        self
-    }
-
-    /// Defines the `ActivationOrder` in which idle connections are
-    /// activated.
-    ///
-    /// Default is `ActivationOrder::FiFo`
-    pub fn activation_order(mut self, v: ActivationOrder) -> Self {
-        self.activation_order = v;
-        self
-    }
-
-    /// Sets the maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub fn min_required_nodes(mut self, v: usize) -> Self {
-        self.min_required_nodes = v;
-        self
-    }
-
-    /// Updates this configuration from the environment.
-    ///
-    /// If no `prefix` is set all the given env key start with `REOOL_`.
-    /// Otherwise the prefix is used with an automatically appended `_`.
-    ///
-    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
-    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
-    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
-    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
-    pub fn update_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
-        helpers::set_desired_pool_size(prefix, |v| {
-            self.desired_pool_size = v;
-        })?;
-
-        helpers::set_checkout_timeout(prefix, |v| {
-            self.checkout_timeout = v;
-        })?;
-
-        helpers::set_reservation_limit(prefix, |v| {
-            self.reservation_limit = v;
-        })?;
-
-        helpers::set_stats_interval(prefix, |v| {
-            self.stats_interval = v;
-        })?;
-
-        helpers::set_activation_order(prefix, |v| {
-            self.activation_order = v;
-        })?;
-
-        helpers::set_min_required_nodes(prefix, |v| {
-            self.min_required_nodes = v;
-        })?;
-
-        Ok(self)
-    }
-
-    /// Create a `Builder` initialized with the values from this `Config`
-    pub fn builder(&self) -> Builder<(), NoInstrumentation> {
-        Builder::default()
-            .desired_pool_size(self.desired_pool_size)
-            .checkout_timeout(self.checkout_timeout)
-            .backoff_strategy(self.backoff_strategy)
-            .reservation_limit(self.reservation_limit)
-            .stats_interval(self.stats_interval)
-            .min_required_nodes(self.min_required_nodes)
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            desired_pool_size: 20,
-            checkout_timeout: Some(Duration::from_millis(20)),
-            backoff_strategy: BackoffStrategy::default(),
-            reservation_limit: Some(100),
-            stats_interval: Duration::from_millis(100),
-            activation_order: ActivationOrder::default(),
-            min_required_nodes: 1,
-        }
-    }
-}
-
-/// A builder for a `MultiNodePool`
-pub struct Builder<C, I> {
-    config: Config,
-    executor_flavour: ExecutorFlavour,
-    connect_to: Vec<C>,
-    instrumentation: Option<I>,
-}
-
-impl Default for Builder<(), NoInstrumentation> {
-    fn default() -> Self {
-        Self {
-            config: Config::default(),
-            executor_flavour: ExecutorFlavour::Runtime,
-            connect_to: Vec::default(),
-            instrumentation: None,
-        }
-    }
-}
-
-impl<C, I> Builder<C, I> {
-    /// The number of connections the pool should initially have
-    /// and try to maintain
-    pub fn desired_pool_size(mut self, v: usize) -> Self {
-        self.config.desired_pool_size = v;
-        self
-    }
-
-    /// The timeout for a checkout if no specific tinmeout is given
-    /// with a checkout.
-    pub fn checkout_timeout(mut self, v: Option<Duration>) -> Self {
-        self.config.checkout_timeout = v;
-        self
-    }
-
-    /// The `BackoffStrategy` to use when retrying on
-    /// failures to create new connections
-    pub fn backoff_strategy(mut self, v: BackoffStrategy) -> Self {
-        self.config.backoff_strategy = v;
-        self
-    }
-
-    /// The maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
-        self.config.reservation_limit = v;
-        self
-    }
-
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub fn stats_interval(mut self, v: Duration) -> Self {
-        self.config.stats_interval = v;
-        self
-    }
-
-    pub fn activation_order(mut self, v: ActivationOrder) -> Self {
-        self.config.activation_order = v;
-        self
-    }
-
-    /// The minimum required nodes to start
-    pub fn min_required_nodes(mut self, v: usize) -> Self {
-        self.config.min_required_nodes = v;
-        self
-    }
-
-    /// The Redis nodes to connect to
-    pub fn connect_to(self, connect_to: Vec<String>) -> Builder<String, I> {
-        Builder {
-            config: self.config,
-            executor_flavour: self.executor_flavour,
-            connect_to,
-            instrumentation: self.instrumentation,
-        }
-    }
-
-    /// The exucutor to use for spawning tasks. If not set it is assumed
-    /// that the poolis created on the default runtime.
-    pub fn task_executor(mut self, executor: ::tokio::runtime::TaskExecutor) -> Self {
-        self.executor_flavour = ExecutorFlavour::TokioTaskExecutor(executor);
-        self
-    }
-
-    /// Updates this builder's config(not `connect_to`) from the environment.
-    ///
-    /// If no `prefix` is set all the given env key start with `REOOL_`.
-    /// Otherwise the prefix is used with an automatically appended `_`.
-    ///
-    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
-    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
-    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
-    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
-    pub fn update_config_from_environment(
-        self,
-        prefix: Option<&str>,
-    ) -> InitializationResult<Builder<C, I>> {
-        let config = self.config.update_from_environment(prefix)?;
-
-        Ok(Builder {
-            config,
-            executor_flavour: self.executor_flavour,
-            connect_to: self.connect_to,
-            instrumentation: self.instrumentation,
-        })
-    }
-
-    /// Adds instrumentation to the pool
-    pub fn instrumented<II>(self, instrumentation: II) -> Builder<C, II>
-    where
-        II: Instrumentation + Send + Sync + 'static,
-    {
-        Builder {
-            config: self.config,
-            executor_flavour: self.executor_flavour,
-            connect_to: self.connect_to,
-            instrumentation: Some(instrumentation),
-        }
-    }
-
-    #[cfg(feature = "metrix")]
-    pub fn instrumented_with_metrix<A: metrix::processor::AggregatesProcessors>(
-        self,
-        aggregates_processors: &mut A,
-        config: crate::instrumentation::MetrixConfig,
-    ) -> Builder<C, crate::instrumentation::metrix::MetrixInstrumentation> {
-        let instrumentation = crate::instrumentation::metrix::create(aggregates_processors, config);
-        Builder {
-            config: self.config,
-            executor_flavour: self.executor_flavour,
-            connect_to: self.connect_to,
-            instrumentation: Some(instrumentation),
-        }
-    }
-}
-
-impl<I> Builder<(), I>
-where
-    I: Instrumentation + Send + Sync + 'static,
-{
-    /// Updates this builder from the environment.
-    ///
-    /// If no `prefix` is set all the given env key start with `REOOL_`.
-    /// Otherwise the prefix is used with an automatically appended `_`.
-    ///
-    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
-    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
-    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
-    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. MANDATORY
-    pub fn update_from_environment(
-        self,
-        prefix: Option<&str>,
-    ) -> InitializationResult<Builder<String, I>> {
-        let config = self.config.update_from_environment(prefix)?;
-
-        if let Some(connect_to) = helpers::get_connect_to(prefix)? {
-            Ok(Builder {
-                config,
-                executor_flavour: self.executor_flavour,
-                connect_to,
-                instrumentation: self.instrumentation,
-            })
-        } else {
-            Err(InitializationError::message_only("'CONNECT_TO' was empty"))
-        }
-    }
-}
-
-impl<I> Builder<String, I>
-where
-    I: Instrumentation + Send + Sync + 'static,
-{
-    /// Build a new `MultiNodePool`
-    pub fn redis_rs(self) -> InitializationResult<MultiNodePool<redis::r#async::Connection>> {
-        let mut connection_factories = Vec::new();
-
-        for connect_to in self.connect_to {
-            let client =
-                match redis::Client::open(&*connect_to).map_err(InitializationError::cause_only) {
-                    Ok(client) => client,
-                    Err(err) => {
-                        warn!("failed to create a client: {}", err);
-                        continue;
-                    }
-                };
-            connection_factories.push(client);
-        }
-
-        MultiNodePool::<redis::r#async::Connection>::create(
-            self.config,
-            connection_factories,
-            self.executor_flavour,
-            self.instrumentation,
-        )
-    }
-}
+use crate::pooled_connection::ConnectionFlavour;
+use crate::stats::{MinMax, PoolStats};
+use crate::Checkout;
 
 /// A connection pool that maintains multiple connections
 /// to a multiple Redis instances containing the same data(replicas).
@@ -377,21 +30,22 @@ where
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
-pub struct MultiNodePool<T: Poolable> {
-    inner: Arc<Inner<T>>,
+pub struct MultiNodePool {
+    inner: Arc<Inner>,
     checkout_timeout: Option<Duration>,
 }
 
-impl<T: Poolable> MultiNodePool<T> {
-    pub(crate) fn create<I, F>(
+impl MultiNodePool {
+    pub(crate) fn create<I, F, CF>(
         config: Config,
-        connection_factories: Vec<F>,
+        create_connection_factory: F,
         executor_flavour: ExecutorFlavour,
         instrumentation: Option<I>,
-    ) -> InitializationResult<MultiNodePool<<F as ConnectionFactory>::Connection>>
+    ) -> InitializationResult<MultiNodePool>
     where
         I: Instrumentation + Send + Sync + 'static,
-        F: ConnectionFactory + Send + Sync + 'static,
+        CF: ConnectionFactory<Connection = ConnectionFlavour> + Send + Sync + 'static,
+        F: Fn(String) -> InitializationResult<CF>,
     {
         let mut pools = Vec::new();
 
@@ -400,7 +54,8 @@ impl<T: Poolable> MultiNodePool<T> {
             .map(Arc::new);
 
         let mut pool_idx = 0;
-        for connection_factory in connection_factories {
+        for connect_to in config.connect_to_nodes {
+            let connection_factory = create_connection_factory(connect_to)?;
             let pool_conf = PoolConfig {
                 desired_pool_size: config.desired_pool_size,
                 backoff_strategy: config.backoff_strategy,
@@ -444,10 +99,18 @@ impl<T: Poolable> MultiNodePool<T> {
             pools,
         };
 
-        Ok(MultiNodePool::<<F as ConnectionFactory>::Connection> {
+        Ok(MultiNodePool {
             inner: Arc::new(inner),
             checkout_timeout: config.checkout_timeout,
         })
+    }
+
+    pub fn check_out(&self) -> Checkout {
+        self.inner.check_out(self.checkout_timeout)
+    }
+
+    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+        self.inner.check_out(timeout)
     }
 
     /// Get some statistics from each the pools.
@@ -468,7 +131,7 @@ impl<T: Poolable> MultiNodePool<T> {
     }
 }
 
-impl<T: Poolable> Clone for MultiNodePool<T> {
+impl Clone for MultiNodePool {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -477,25 +140,13 @@ impl<T: Poolable> Clone for MultiNodePool<T> {
     }
 }
 
-impl<T: Poolable + redis::r#async::ConnectionLike> RedisPool for MultiNodePool<T> {
-    type Connection = T;
-
-    fn check_out(&self) -> Checkout<T> {
-        self.inner.check_out(self.checkout_timeout)
-    }
-
-    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<T> {
-        self.inner.check_out(timeout)
-    }
-}
-
-struct Inner<T: Poolable> {
+struct Inner {
     count: AtomicUsize,
-    pools: Vec<PoolInternal<T>>,
+    pools: Vec<PoolInternal<ConnectionFlavour>>,
 }
 
-impl<T: Poolable + redis::r#async::ConnectionLike> Inner<T> {
-    fn check_out(&self, checkout_timeout: Option<Duration>) -> Checkout<T> {
+impl Inner {
+    fn check_out(&self, checkout_timeout: Option<Duration>) -> Checkout {
         if self.pools.is_empty() {
             Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::NoConnection,

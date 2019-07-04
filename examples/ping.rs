@@ -12,8 +12,7 @@ use pretty_env_logger;
 use redis::RedisError;
 use tokio::runtime::{Runtime, TaskExecutor};
 
-use reool::node_pool::{Builder, PoolStats};
-use reool::{Commands, PooledConnection, RedisPool};
+use reool::{stats::PoolStats, Commands, RedisConnection, RedisPool};
 
 const POOL_SIZE: usize = 8;
 
@@ -24,8 +23,8 @@ fn main() {
 
     let mut runtime = Runtime::new().unwrap();
 
-    let pool = Builder::default()
-        .connect_to("redis://127.0.0.1:6379")
+    let pool = RedisPool::builder()
+        .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(POOL_SIZE)
         .reservation_limit(None)
         .checkout_timeout(Some(Duration::from_millis(50)))
@@ -112,9 +111,7 @@ fn main() {
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
-fn ping_on_pool<P: RedisPool>(
-    pool: &P,
-) -> impl Future<Item = (PooledConnection<P::Connection>, ()), Error = RedisError> {
+fn ping_on_pool(pool: &RedisPool) -> impl Future<Item = (RedisConnection, ()), Error = RedisError> {
     pool.check_out().from_err().and_then(do_a_ping)
 }
 
@@ -146,7 +143,7 @@ impl reool::instrumentation::Instrumentation for MyMetrics {
     fn stats(&self, _stats: PoolStats) {}
 }
 
-fn ping_concurrently<P: RedisPool + Clone + Send + 'static>(pool: P, executor: TaskExecutor) {
+fn ping_concurrently(pool: RedisPool, executor: TaskExecutor) {
     let handles: Vec<_> = (0..POOL_SIZE * 2)
         .map(|_| {
             let pool = pool.clone();
@@ -160,7 +157,7 @@ fn ping_concurrently<P: RedisPool + Clone + Send + 'static>(pool: P, executor: T
         .for_each(|handle| handle.join().unwrap());
 }
 
-fn ping_sequentially<P: RedisPool>(pool: &P, executor: &TaskExecutor) {
+fn ping_sequentially(pool: &RedisPool, executor: &TaskExecutor) {
     (0..1000).for_each(|_| {
         if let Err(err) = oneshot::spawn(
             pool.check_out().from_err().and_then(Commands::ping),

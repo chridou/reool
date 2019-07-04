@@ -1,22 +1,41 @@
-//! A connection pool for conencting to a single node
+//! Configuration for `RedisPool` including a builder.
+//!
+//!
+//! # Connecting to a single node or multiple replicas
+//!
+//! ## Connecting to a single node
+//!
+//! Set the value `connect_to_nodes` to one node or explicitly set
+//! `PoolMode::Single` in which case the first of multiple node
+//! will be selected.
+//!
+//! ## Connecting to a multiple nodes
+//!
+//! Set the value `connect_to_nodes` to more than one nodes or explicitly set
+//! `PoolMode::Multi` if there is only a single node to connect to but you
+//! want to enforce the mechanics for a replica set pool.
+use std::fmt;
 use std::time::Duration;
 
-use crate::connection_factory::ConnectionFactory;
+use log::debug;
+
 use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
-use crate::pool_internal::{Config as PoolConfig, PoolInternal};
-use crate::{Checkout, Poolable, RedisPool};
+use crate::multi_node_pool::MultiNodePool;
+use crate::redis_rs::RedisRsFactory;
+use crate::single_node_pool::SingleNodePool;
 
 pub use crate::activation_order::ActivationOrder;
 pub use crate::backoff_strategy::BackoffStrategy;
 pub use crate::error::InitializationError;
-pub use crate::stats::{MinMax, PoolStats};
 
-/// A configuration for creating a `SingleNodePool`.
+use super::{RedisPool, RedisPoolFlavour};
+
+/// A configuration for creating a `MultiNodePool`.
 ///
-/// You should prefer using the `SingleNodePool::builder()` function.
+/// You should prefer using the `MultiNodePool::builder()` function.
 pub struct Config {
     /// The number of connections the pool should initially have
     /// and try to maintain
@@ -33,7 +52,17 @@ pub struct Config {
     /// The interval in which the pool will send statistics to
     /// the instrumentation
     pub stats_interval: Duration,
+    /// Defines the `ActivationOrder` in which idle connections are
+    /// activated.
+    ///
+    /// Default is `ActivationOrder::FiFo`
     pub activation_order: ActivationOrder,
+    /// The minimum required nodes to start
+    pub min_required_nodes: usize,
+    /// The nodes to connect To
+    pub connect_to_nodes: Vec<String>,
+    /// Sets the `PoolMode` to be used when creating the pool.
+    pub pool_mode: PoolMode,
 }
 
 impl Config {
@@ -81,6 +110,31 @@ impl Config {
         self
     }
 
+    /// Sets the maximum length of the queue for waiting checkouts
+    /// when no idle connections are available
+    pub fn min_required_nodes(mut self, v: usize) -> Self {
+        self.min_required_nodes = v;
+        self
+    }
+
+    /// The Redis nodes to connect to
+    pub fn connect_to_nodes(mut self, v: Vec<String>) -> Self {
+        self.connect_to_nodes = v;
+        self
+    }
+
+    /// The Redis node to connect to
+    pub fn connect_to_node<T: Into<String>>(mut self, v: T) -> Self {
+        self.connect_to_nodes = vec![v.into()];
+        self
+    }
+
+    /// Sets the `PoolMode` to be used when creating the pool.
+    pub fn pool_mode(mut self, v: PoolMode) -> Self {
+        self.pool_mode = v;
+        self
+    }
+
     /// Updates this configuration from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
@@ -91,7 +145,10 @@ impl Config {
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
-    pub fn update_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
+    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. Omit if you do not want to update the value
+    /// * `POOL_MODE`: Omit if you do not want to update the value
+    pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
         })?;
@@ -112,17 +169,32 @@ impl Config {
             self.activation_order = v;
         })?;
 
-        Ok(self)
+        helpers::set_min_required_nodes(prefix, |v| {
+            self.min_required_nodes = v;
+        })?;
+
+        if let Some(v) = helpers::get_connect_to(prefix)? {
+            self.connect_to_nodes = v;
+        };
+
+        helpers::set_pool_mode(prefix, |v| {
+            self.pool_mode = v;
+        })?;
+
+        Ok(())
     }
 
     /// Create a `Builder` initialized with the values from this `Config`
-    pub fn builder(&self) -> Builder<(), NoInstrumentation> {
+    pub fn builder(&self) -> Builder<NoInstrumentation> {
         Builder::default()
             .desired_pool_size(self.desired_pool_size)
             .checkout_timeout(self.checkout_timeout)
             .backoff_strategy(self.backoff_strategy)
             .reservation_limit(self.reservation_limit)
             .stats_interval(self.stats_interval)
+            .min_required_nodes(self.min_required_nodes)
+            .connect_to_nodes(self.connect_to_nodes.clone())
+            .pool_mode(self.pool_mode)
     }
 }
 
@@ -135,30 +207,31 @@ impl Default for Config {
             reservation_limit: Some(100),
             stats_interval: Duration::from_millis(100),
             activation_order: ActivationOrder::default(),
+            min_required_nodes: 1,
+            connect_to_nodes: Vec::new(),
+            pool_mode: PoolMode::default(),
         }
     }
 }
 
-/// A builder for a `SingleNodePool`
-pub struct Builder<C, I> {
+/// A builder for a `MultiNodePool`
+pub struct Builder<I> {
     config: Config,
     executor_flavour: ExecutorFlavour,
-    connect_to: C,
     instrumentation: Option<I>,
 }
 
-impl Default for Builder<(), ()> {
+impl Default for Builder<NoInstrumentation> {
     fn default() -> Self {
         Self {
             config: Config::default(),
             executor_flavour: ExecutorFlavour::Runtime,
-            connect_to: (),
             instrumentation: None,
         }
     }
 }
 
-impl<T, I> Builder<T, I> {
+impl<I> Builder<I> {
     /// The number of connections the pool should initially have
     /// and try to maintain
     pub fn desired_pool_size(mut self, v: usize) -> Self {
@@ -194,23 +267,33 @@ impl<T, I> Builder<T, I> {
         self
     }
 
-    /// Defines the `ActivationOrder` in which idle connections are
-    /// activated.
-    ///
-    /// Default is `ActivationOrder::FiFo`
     pub fn activation_order(mut self, v: ActivationOrder) -> Self {
         self.config.activation_order = v;
         self
     }
 
+    /// The minimum required nodes to start
+    pub fn min_required_nodes(mut self, v: usize) -> Self {
+        self.config.min_required_nodes = v;
+        self
+    }
+
+    /// The Redis nodes to connect to
+    pub fn connect_to_nodes(mut self, v: Vec<String>) -> Self {
+        self.config.connect_to_nodes = v;
+        self
+    }
+
     /// The Redis node to connect to
-    pub fn connect_to<C: Into<String>>(self, connect_to: C) -> Builder<String, I> {
-        Builder {
-            config: self.config,
-            executor_flavour: self.executor_flavour,
-            connect_to: connect_to.into(),
-            instrumentation: self.instrumentation,
-        }
+    pub fn connect_to_node<T: Into<String>>(mut self, v: T) -> Self {
+        self.config.connect_to_nodes = vec![v.into()];
+        self
+    }
+
+    /// Sets the `PoolMode` to be used when creating the pool.
+    pub fn pool_mode(mut self, v: PoolMode) -> Self {
+        self.config.pool_mode = v;
+        self
     }
 
     /// The exucutor to use for spawning tasks. If not set it is assumed
@@ -220,39 +303,14 @@ impl<T, I> Builder<T, I> {
         self
     }
 
-    /// Updates this builder's config(not `connect_to`) from the environment.
-    ///
-    /// If no `prefix` is set all the given env key start with `REOOL_`.
-    /// Otherwise the prefix is used with an automatically appended `_`.
-    ///
-    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
-    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
-    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
-    pub fn update_config_from_environment(
-        self,
-        prefix: Option<&str>,
-    ) -> InitializationResult<Builder<T, I>> {
-        let config = self.config.update_from_environment(prefix)?;
-
-        Ok(Builder {
-            config,
-            executor_flavour: self.executor_flavour,
-            connect_to: self.connect_to,
-            instrumentation: self.instrumentation,
-        })
-    }
-
     /// Adds instrumentation to the pool
-    pub fn instrumented<II>(self, instrumentation: II) -> Builder<T, II>
+    pub fn instrumented<II>(self, instrumentation: II) -> Builder<II>
     where
         II: Instrumentation + Send + Sync + 'static,
     {
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
-            connect_to: self.connect_to,
             instrumentation: Some(instrumentation),
         }
     }
@@ -262,21 +320,15 @@ impl<T, I> Builder<T, I> {
         self,
         aggregates_processors: &mut A,
         config: crate::instrumentation::MetrixConfig,
-    ) -> Builder<T, crate::instrumentation::metrix::MetrixInstrumentation> {
+    ) -> Builder<crate::instrumentation::metrix::MetrixInstrumentation> {
         let instrumentation = crate::instrumentation::metrix::create(aggregates_processors, config);
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
-            connect_to: self.connect_to,
             instrumentation: Some(instrumentation),
         }
     }
-}
 
-impl<I> Builder<(), I>
-where
-    I: Instrumentation + Send + Sync + 'static,
-{
     /// Updates this builder from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
@@ -285,152 +337,106 @@ where
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
     /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
-    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. MANDATORY. If there is a list, the first
-    /// entry is chosen
-    pub fn update_from_environment(
-        self,
-        prefix: Option<&str>,
-    ) -> InitializationResult<Builder<String, I>> {
-        let config = self.config.update_from_environment(prefix)?;
-
-        if let Some(mut connect_to) = helpers::get_connect_to(prefix)? {
-            if connect_to.is_empty() {
-                Err(InitializationError::message_only(
-                    "'CONNECT_TO' was found but empty",
-                ))
-            } else {
-                Ok(Builder {
-                    config,
-                    executor_flavour: self.executor_flavour,
-                    connect_to: connect_to.remove(0),
-                    instrumentation: self.instrumentation,
-                })
-            }
-        } else {
-            Err(InitializationError::message_only("'CONNECT_TO' was empty"))
-        }
+    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
+    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. Omit if you do not want to update the value
+    /// * `POOL_MODE`: ` Omit if you do not want to update the value
+    pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
+        self.config.update_from_environment(prefix)?;
+        Ok(())
     }
 }
 
-impl<I> Builder<String, I>
+impl<I> Builder<I>
 where
     I: Instrumentation + Send + Sync + 'static,
 {
-    /// Build a new `SingleNodePool`
-    pub fn redis_rs(self) -> InitializationResult<SingleNodePool<redis::r#async::Connection>> {
-        let client =
-            redis::Client::open(&*self.connect_to).map_err(InitializationError::cause_only)?;
-
-        SingleNodePool::<redis::r#async::Connection>::create(
-            self.config,
-            client,
-            self.executor_flavour,
-            self.instrumentation,
-        )
-    }
-}
-
-/// A connection pool that maintains multiple connections
-/// to a single Redis instance.
-///
-/// The pool is cloneable and all clones share their connections.
-/// Once the last instance drops the shared connections will be dropped.
-pub struct SingleNodePool<T: Poolable> {
-    pool: PoolInternal<T>,
-    checkout_timeout: Option<Duration>,
-}
-
-impl<T: Poolable> SingleNodePool<T> {
-    pub(crate) fn create<I, F>(
-        config: Config,
-        connection_factory: F,
-        executor_flavour: ExecutorFlavour,
-        instrumentation: Option<I>,
-    ) -> InitializationResult<SingleNodePool<<F as ConnectionFactory>::Connection>>
-    where
-        I: Instrumentation + Send + Sync + 'static,
-        F: ConnectionFactory + Send + Sync + 'static,
-    {
-        if config.desired_pool_size == 0 {
+    /// Build a new `RedisPool`
+    pub fn redis_rs(self) -> InitializationResult<RedisPool> {
+        if self.config.connect_to_nodes.is_empty() {
             return Err(InitializationError::message_only(
-                "'desired_pool_size' must be at least 1",
+                "There must be at least one node specified",
             ));
         }
 
-        let pool_conf = PoolConfig {
-            desired_pool_size: config.desired_pool_size,
-            backoff_strategy: config.backoff_strategy,
-            reservation_limit: config.reservation_limit,
-            stats_interval: config.stats_interval,
-            activation_order: config.activation_order,
+        let create_single_pool = self.config.pool_mode == PoolMode::Single
+            || (self.config.pool_mode == PoolMode::Auto && self.config.connect_to_nodes.len() == 1);
+
+        let flavour = if create_single_pool {
+            debug!("Create pool with single node");
+            RedisPoolFlavour::SingleNode(SingleNodePool::create(
+                self.config,
+                RedisRsFactory::new,
+                self.executor_flavour,
+                self.instrumentation,
+            )?)
+        } else {
+            debug!("Create pool with muliple nodes");
+            RedisPoolFlavour::MultiNode(MultiNodePool::create(
+                self.config,
+                RedisRsFactory::new,
+                self.executor_flavour,
+                self.instrumentation,
+            )?)
         };
 
-        let pool = PoolInternal::new(
-            pool_conf,
-            connection_factory,
-            executor_flavour,
-            instrumentation,
-        );
-
-        Ok(SingleNodePool::<<F as ConnectionFactory>::Connection> {
-            pool,
-            checkout_timeout: config.checkout_timeout,
-        })
-    }
-
-    /// Add `n` new connections to the pool.
-    ///
-    /// This might not happen immediately.
-    pub fn add_connections(&self, n: usize) {
-        (0..n).for_each(|_| {
-            self.pool.add_new_connection();
-        });
-    }
-
-    /// Remove a connection from the pool.
-    ///
-    /// This might not happen immediately.
-    ///
-    /// Do not call this function when there are no more connections
-    /// managed by the pool. The requests to reduce the
-    /// number of connections will are taken from a queue.
-    pub fn remove_connection(&self) {
-        self.pool.remove_connection();
-    }
-
-    /// Get some statistics from the pool.
-    ///
-    /// This locks the underlying pool.
-    pub fn stats(&self) -> PoolStats {
-        self.pool.stats()
-    }
-
-    /// Triggers the pool to emit statistics if `stats_interval` has elapsed.
-    ///
-    /// This locks the underlying pool.
-    pub fn trigger_stats(&self) {
-        self.pool.trigger_stats()
+        Ok(RedisPool(flavour))
     }
 }
 
-impl<T: Poolable> Clone for SingleNodePool<T> {
-    fn clone(&self) -> Self {
-        Self {
-            pool: self.pool.clone(),
-            checkout_timeout: self.checkout_timeout,
+impl std::str::FromStr for PoolMode {
+    type Err = ParsePoolModeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &*s.to_lowercase() {
+            "single" => Ok(PoolMode::Single),
+            "multi" => Ok(PoolMode::Multi),
+            "auto" => Ok(PoolMode::Auto),
+            invalid => Err(ParsePoolModeError(format!(
+                "'{}' is not a valid PoolMode. Only 'single' and 'multi' and 'auto' are allowed.",
+                invalid
+            ))),
         }
     }
 }
 
-impl<T: Poolable + redis::r#async::ConnectionLike> RedisPool for SingleNodePool<T> {
-    type Connection = T;
-    fn check_out(&self) -> Checkout<T> {
-        Checkout(self.pool.check_out(self.checkout_timeout))
+/// Determines which kind of pool to create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolMode {
+    /// Create the pool depending on the number of nodes specified
+    /// via the `connect_to_*`-parameters:
+    ///
+    /// * One node: Create a pool for a single node
+    /// * Two or more: Create a multi node pool
+    Auto,
+    /// Always create a single node pool
+    Single,
+    /// Always create a multi node pool
+    Multi,
+}
+
+impl Default for PoolMode {
+    fn default() -> Self {
+        PoolMode::Auto
+    }
+}
+
+#[derive(Debug)]
+pub struct ParsePoolModeError(String);
+
+impl fmt::Display for ParsePoolModeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Could not parse PoolMode. {}", self.0)
+    }
+}
+
+impl std::error::Error for ParsePoolModeError {
+    fn description(&self) -> &str {
+        "parse activation order initialization failed"
     }
 
-    fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout<T> {
-        Checkout(self.pool.check_out(timeout))
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        None
     }
 }

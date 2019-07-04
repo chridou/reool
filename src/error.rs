@@ -44,6 +44,8 @@ pub enum CheckoutErrorKind {
     /// requests can be enqueued to wait for a connection
     /// because the queue has reached it`s limit
     QueueLimitReached,
+    /// No connection because there is no pool available.
+    NoPool,
     /// Something went wrong executing a task. Keep in
     /// mind that it depends on the `Executor` whether
     /// this error is returned. Some `Executor`s might simply
@@ -69,6 +71,7 @@ impl StdError for CheckoutError {
                 "there was no connection to checkout available in time"
             }
             CheckoutErrorKind::QueueLimitReached => "the queue limit has been reached",
+            CheckoutErrorKind::NoPool => "there was no pool available",
             CheckoutErrorKind::TaskExecution => "task execution failed",
         }
     }
