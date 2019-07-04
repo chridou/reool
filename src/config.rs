@@ -329,7 +329,7 @@ impl<I> Builder<I> {
         }
     }
 
-    /// Updates this builder from the environment.
+    /// Sets values in this builder from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
     /// Otherwise the prefix is used with an automatically appended `_`.
@@ -345,6 +345,24 @@ impl<I> Builder<I> {
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         self.config.update_from_environment(prefix)?;
         Ok(())
+    }
+
+    /// Updates this builder from the environment and returns `Self`.
+    ///
+    /// If no `prefix` is set all the given env key start with `REOOL_`.
+    /// Otherwise the prefix is used with an automatically appended `_`.
+    ///
+    /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
+    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
+    /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
+    /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
+    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. Omit if you do not want to update the value
+    /// * `POOL_MODE`: ` Omit if you do not want to update the value
+    pub fn updated_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
+        self.config.update_from_environment(prefix)?;
+        Ok(self)
     }
 }
 

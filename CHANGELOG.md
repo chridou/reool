@@ -1,5 +1,10 @@
 # Changelog
 
+
+## 0.10.1
+
+* Builder updates from environment while maintaining the builder chain
+
 ## 0.10.0 (BREAKING CHANGES)
 
 * only use one struct `RedisPool` as the external interface
