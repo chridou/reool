@@ -107,7 +107,7 @@ impl RedisPool {
     }
 
     /// Checkout a new connection and if the request has to be enqueued
-    /// use a timeout as defined by the implementor.
+    /// use a timeout as defined by the pool as a default.
     pub fn check_out(&self) -> Checkout {
         match self.0 {
             RedisPoolFlavour::SingleNode(ref pool) => pool.check_out(),
@@ -118,7 +118,7 @@ impl RedisPool {
         }
     }
     /// Checkout a new connection and if the request has to be enqueued
-    /// use the given timeout or wait indefinetly.
+    /// use the given timeout or wait indefinetly in `timeout` is `None`.
     pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
         match self.0 {
             RedisPoolFlavour::SingleNode(ref pool) => pool.check_out_explicit_timeout(timeout),

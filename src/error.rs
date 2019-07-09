@@ -38,7 +38,7 @@ pub enum CheckoutErrorKind {
     /// Currently there is no connection available
     NoConnection,
     /// An enqueued request for a checkout that had a timeout
-    /// set timed out
+    /// set timed out. A reservation could not be fulfilled.
     CheckoutTimeout,
     /// No connection immediately available and no more
     /// requests can be enqueued to wait for a connection

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.10.2
+
+* Added some documentation
 
 ## 0.10.1
 
