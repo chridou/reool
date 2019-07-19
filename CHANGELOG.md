@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0 (BREAKING CHANGES)
+
+* Updated redis-rs to 0.11
+
 ## 0.10.2
 
 * Added some documentation
@@ -8,7 +12,7 @@
 
 * Builder updates from environment while maintaining the builder chain
 
-## 0.10.0 (BREAKING CHANGES)
+## 0.10.0
 
 * only use one struct `RedisPool` as the external interface
 * Remove generic parameters

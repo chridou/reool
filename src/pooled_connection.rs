@@ -1,5 +1,5 @@
 use futures::future::{self, Future};
-use redis::{r#async::ConnectionLike, ErrorKind, RedisFuture, Value};
+use redis::{aio::ConnectionLike, ErrorKind, RedisFuture, Value};
 
 use crate::pool_internal::Managed;
 use crate::Poolable;
@@ -77,7 +77,7 @@ impl Drop for RedisConnection {
 }
 
 pub enum ConnectionFlavour {
-    RedisRs(redis::r#async::Connection),
+    RedisRs(redis::aio::Connection),
     // Tls(?)
 }
 

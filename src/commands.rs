@@ -1,6 +1,6 @@
 use futures::future::Future;
 use redis::{
-    cmd, r#async::ConnectionLike, Cmd, ErrorKind, FromRedisValue, RedisFuture, ToRedisArgs,
+    cmd, aio::ConnectionLike, Cmd, ErrorKind, FromRedisValue, RedisFuture, ToRedisArgs,
 };
 
 impl<T> Commands for T where T: ConnectionLike + Sized + Send + 'static {}

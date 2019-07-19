@@ -1,5 +1,5 @@
 use futures::future::Future;
-use redis::{r#async::Connection, Client};
+use redis::{aio::Connection, Client};
 
 use crate::connection_factory::{ConnectionFactory, NewConnection, NewConnectionError};
 use crate::error::{InitializationError, InitializationResult};
