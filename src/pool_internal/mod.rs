@@ -267,7 +267,7 @@ where
 }
 
 pub(crate) struct CheckoutManaged<T: Poolable> {
-    inner: Box<Future<Item = Managed<T>, Error = CheckoutError> + Send + 'static>,
+    inner: Box<dyn Future<Item = Managed<T>, Error = CheckoutError> + Send + 'static>,
 }
 
 impl<T: Poolable> CheckoutManaged<T> {
@@ -344,7 +344,7 @@ pub(crate) enum NewConnMessage {
 }
 
 pub(crate) struct NewManaged<T: Poolable> {
-    inner: Box<Future<Item = Managed<T>, Error = NewConnectionError> + Send + 'static>,
+    inner: Box<dyn Future<Item = Managed<T>, Error = NewConnectionError> + Send + 'static>,
 }
 
 impl<T: Poolable> NewManaged<T> {
@@ -379,7 +379,7 @@ impl StdError for PoolIsGoneError {
         "the pool was already gone"
     }
 
-    fn cause(&self) -> Option<&StdError> {
+    fn cause(&self) -> Option<&dyn StdError> {
         None
     }
 }

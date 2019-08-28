@@ -296,7 +296,7 @@ impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
                 "hups, no connection"
             }
 
-            fn cause(&self) -> Option<&StdError> {
+            fn cause(&self) -> Option<&dyn StdError> {
                 None
             }
         }
@@ -333,7 +333,7 @@ impl ConnectionFactory for UnitFactoryAlwaysFails {
                 "i have no connections"
             }
 
-            fn cause(&self) -> Option<&StdError> {
+            fn cause(&self) -> Option<&dyn StdError> {
                 None
             }
         }

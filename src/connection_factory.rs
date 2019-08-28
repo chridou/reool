@@ -11,7 +11,7 @@ pub trait ConnectionFactory {
 }
 
 pub struct NewConnectionError {
-    cause: Box<StdError + Send + 'static>,
+    cause: Box<dyn StdError + Send + 'static>,
 }
 
 impl NewConnectionError {
@@ -32,7 +32,7 @@ impl fmt::Display for NewConnectionError {
 }
 
 pub struct NewConnection<T: Poolable> {
-    inner: Box<Future<Item = T, Error = NewConnectionError> + Send + 'static>,
+    inner: Box<dyn Future<Item = T, Error = NewConnectionError> + Send + 'static>,
 }
 
 impl<T: Poolable> NewConnection<T> {

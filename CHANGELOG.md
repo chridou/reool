@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0 (BREAKING CHANGES)
+
+* Updated redis-rs to 0.12
+* Added `dyn`
+* Added commands `set_nx` and `mset_nx`
+
 ## 0.11.0 (BREAKING CHANGES)
 
 * Updated redis-rs to 0.11

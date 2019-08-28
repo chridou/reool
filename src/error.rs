@@ -9,7 +9,7 @@ pub type InitializationResult<T> = Result<T, InitializationError>;
 #[derive(Debug)]
 pub struct CheckoutError {
     kind: CheckoutErrorKind,
-    cause: Option<Box<StdError + Send + Sync>>,
+    cause: Option<Box<dyn StdError + Send + Sync>>,
 }
 
 /// An error returned from `reool` when a checkout failed
@@ -76,8 +76,8 @@ impl StdError for CheckoutError {
         }
     }
 
-    fn cause(&self) -> Option<&StdError> {
-        self.cause.as_ref().map(|cause| &**cause as &StdError)
+    fn cause(&self) -> Option<&dyn StdError> {
+        self.cause.as_ref().map(|cause| &**cause as &dyn StdError)
     }
 }
 

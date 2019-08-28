@@ -1,7 +1,5 @@
 use futures::future::Future;
-use redis::{
-    cmd, aio::ConnectionLike, Cmd, ErrorKind, FromRedisValue, RedisFuture, ToRedisArgs,
-};
+use redis::{aio::ConnectionLike, cmd, Cmd, ErrorKind, FromRedisValue, RedisFuture, ToRedisArgs};
 
 impl<T> Commands for T where T: ConnectionLike + Sized + Send + 'static {}
 
@@ -69,12 +67,29 @@ pub trait Commands: Sized + ConnectionLike + Send + 'static {
         cmd("SET").arg(key).arg(value).query_async(self)
     }
 
+    /// Set the value of a key, only if the key does not exist
+    fn set_nx<K: ToRedisArgs, V: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
+        self,
+        key: K,
+        value: V,
+    ) -> RedisFuture<(Self, RV)> {
+        cmd("SETNX").arg(key).arg(value).query_async(self)
+    }
+
     /// Sets multiple keys to their values.
     fn set_multiple<K: ToRedisArgs, V: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
         self,
         items: &[(K, V)],
     ) -> RedisFuture<(Self, RV)> {
         cmd("MSET").arg(items).query_async(self)
+    }
+
+    /// Sets multiple keys to their values failing if at least one already exists.
+    fn set_multiple_nx<K: ToRedisArgs, V: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
+        self,
+        items: &[(K, V)],
+    ) -> RedisFuture<(Self, RV)> {
+        cmd("MSETNX").arg(items).query_async(self)
     }
 
     /// Delete one or more keys.
