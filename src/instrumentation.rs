@@ -6,7 +6,7 @@ use log::info;
 pub use crate::stats::PoolStats;
 
 #[cfg(feature = "metrix")]
-pub use self::metrix::MetrixConfig;
+pub use self::metrix::{MetrixConfig, MetrixInstrumentation};
 
 /// This instrumentation will do nothing.
 pub type NoInstrumentation = ();
@@ -220,7 +220,7 @@ pub(crate) mod metrix {
         NodeCount,
     }
 
-    pub fn create<A: AggregatesProcessors>(
+    fn create<A: AggregatesProcessors>(
         aggregates_processors: &mut A,
         config: MetrixConfig,
     ) -> MetrixInstrumentation {
@@ -385,7 +385,7 @@ pub(crate) mod metrix {
 
         aggregates_processors.add_processor(rx);
 
-        MetrixInstrumentation::new(tx)
+        MetrixInstrumentation { transmitter: tx }
     }
 
     #[derive(Clone)]
@@ -394,8 +394,11 @@ pub(crate) mod metrix {
     }
 
     impl MetrixInstrumentation {
-        pub fn new(transmitter: TelemetryTransmitter<Metric>) -> Self {
-            Self { transmitter }
+        pub fn new<A: AggregatesProcessors>(
+            aggregates_processors: &mut A,
+            config: MetrixConfig,
+        ) -> Self {
+            create(aggregates_processors, config)
         }
     }
 
