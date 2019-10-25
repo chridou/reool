@@ -23,7 +23,7 @@ pub struct Inner<T: Poolable> {
     checkout_timeout: Option<Duration>,
 }
 
-impl<T: Poolable + redis::r#async::ConnectionLike> Inner<T> {
+impl<T: Poolable + redis::aio::ConnectionLike> Inner<T> {
     pub(crate) fn new<I, F>(
         config: Config,
         connection_factories: Vec<F>,

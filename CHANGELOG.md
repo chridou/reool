@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.1
+
+* Allow creation of pool without nodes
+* pool without nodes triggers metrics
+
+## 0.13.0 Update to redis 0.13
+
 ## 0.12.0 (BREAKING CHANGES)
 
 * Updated redis-rs to 0.12

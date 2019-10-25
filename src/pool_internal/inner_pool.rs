@@ -336,7 +336,7 @@ pub(super) enum CheckInParcel<T: Poolable> {
 
 // ===== SYNC CORE =====
 
-/// Used to ensure there is no race between choeckouts and puts
+/// Used to ensure there is no race between checkouts and puts
 struct SyncCore<T: Poolable> {
     pub idle: IdleConnections<Managed<T>>,
     pub reservations: VecDeque<Reservation<T>>,

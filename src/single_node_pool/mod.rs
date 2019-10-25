@@ -1,4 +1,4 @@
-//! A connection pool for conencting to a single node
+//! A connection pool for connecting to a single node
 use std::time::Duration;
 
 use crate::config::Config;
@@ -11,12 +11,13 @@ use crate::pool_internal::{Config as PoolConfig, PoolInternal};
 use crate::pooled_connection::ConnectionFlavour;
 use crate::stats::PoolStats;
 use crate::Checkout;
+
 /// A connection pool that maintains multiple connections
 /// to a single Redis instance.
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
-pub struct SingleNodePool {
+pub(crate) struct SingleNodePool {
     pool: PoolInternal<ConnectionFlavour>,
     checkout_timeout: Option<Duration>,
 }
