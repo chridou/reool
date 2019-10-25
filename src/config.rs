@@ -17,7 +17,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use log::debug;
+use log::{debug, warn};
 
 use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
@@ -36,11 +36,12 @@ use super::{RedisPool, RedisPoolFlavour};
 /// A configuration for creating a `MultiNodePool`.
 ///
 /// You should prefer using the `MultiNodePool::builder()` function.
+#[derive(Debug, Clone)]
 pub struct Config {
     /// The number of connections the pool should initially have
     /// and try to maintain
     pub desired_pool_size: usize,
-    /// The timeout for a checkout if no specific tinmeout is given
+    /// The timeout for a checkout if no specific timeout is given
     /// with a checkout.
     pub checkout_timeout: Option<Duration>,
     /// The `BackoffStrategy` to use when retrying on
@@ -73,7 +74,7 @@ impl Config {
         self
     }
 
-    /// Sets the timeout for a checkout if no specific tinmeout is given
+    /// Sets the timeout for a checkout if no specific timeout is given
     /// with a checkout.
     pub fn checkout_timeout(mut self, v: Option<Duration>) -> Self {
         self.checkout_timeout = v;
@@ -146,7 +147,7 @@ impl Config {
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
-    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. Omit if you do not want to update the value
+    /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `POOL_MODE`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
@@ -239,7 +240,7 @@ impl<I> Builder<I> {
         self
     }
 
-    /// The timeout for a checkout if no specific tinmeout is given
+    /// The timeout for a checkout if no specific timeout is given
     /// with a checkout.
     pub fn checkout_timeout(mut self, v: Option<Duration>) -> Self {
         self.config.checkout_timeout = v;
@@ -296,8 +297,8 @@ impl<I> Builder<I> {
         self
     }
 
-    /// The exucutor to use for spawning tasks. If not set it is assumed
-    /// that the poolis created on the default runtime.
+    /// The executor to use for spawning tasks. If not set it is assumed
+    /// that the pool is created on the default runtime.
     pub fn task_executor(mut self, executor: ::tokio::runtime::TaskExecutor) -> Self {
         self.executor_flavour = ExecutorFlavour::TokioTaskExecutor(executor);
         self
@@ -340,7 +341,7 @@ impl<I> Builder<I> {
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
-    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. Omit if you do not want to update the value
+    /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `POOL_MODE`: ` Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         self.config.update_from_environment(prefix)?;
@@ -358,7 +359,7 @@ impl<I> Builder<I> {
     /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
-    /// * `CONNECT_TO`: `[String]`. Seperated by `;`. Omit if you do not want to update the value
+    /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `POOL_MODE`: ` Omit if you do not want to update the value
     pub fn updated_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         self.config.update_from_environment(prefix)?;
@@ -372,10 +373,17 @@ where
 {
     /// Build a new `RedisPool`
     pub fn redis_rs(self) -> InitializationResult<RedisPool> {
+        if self.config.connect_to_nodes.len() < self.config.min_required_nodes {
+            return Err(InitializationError::message_only(format!(
+                "There must be at least {} node(s) defined. There are only {} defined.",
+                self.config.min_required_nodes,
+                self.config.connect_to_nodes.len()
+            )));
+        }
+
         if self.config.connect_to_nodes.is_empty() {
-            return Err(InitializationError::message_only(
-                "There must be at least one node specified",
-            ));
+            warn!("creating a pool with no nodes");
+            return Ok(create_no_pool(self.instrumentation));
         }
 
         let create_single_pool = self.config.pool_mode == PoolMode::Single
@@ -390,7 +398,7 @@ where
                 self.instrumentation,
             )?)
         } else {
-            debug!("Create pool with muliple nodes");
+            debug!("Create pool with multiple nodes");
             RedisPoolFlavour::MultiNode(MultiNodePool::create(
                 self.config,
                 RedisRsFactory::new,
@@ -457,4 +465,14 @@ impl std::error::Error for ParsePoolModeError {
     fn cause(&self) -> Option<&dyn std::error::Error> {
         None
     }
+}
+
+fn create_no_pool<I>(instrumentation: Option<I>) -> RedisPool
+where
+    I: Instrumentation,
+{
+    instrumentation
+        .iter()
+        .for_each(|instr| instr.stats(crate::stats::PoolStats::default()));
+    RedisPool(RedisPoolFlavour::NoPool)
 }

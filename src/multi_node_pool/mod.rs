@@ -30,7 +30,7 @@ use crate::Checkout;
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
-pub struct MultiNodePool {
+pub(crate) struct MultiNodePool {
     inner: Arc<Inner>,
     checkout_timeout: Option<Duration>,
 }
@@ -113,7 +113,7 @@ impl MultiNodePool {
         self.inner.check_out(timeout)
     }
 
-    /// Get some statistics from each the pools.
+    /// Get some statistics from each of the pools.
     ///
     /// This locks the underlying pool.
     pub fn stats(&self) -> Vec<PoolStats> {
