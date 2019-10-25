@@ -1,9 +1,13 @@
 # Changelog
 
+## 0.13.2
+
+* made MetrixInstrumentation ctor public
+
 ## 0.13.1
 
 * Allow creation of pool without nodes
-* pool without nodes triggers metrics
+* Pool without nodes triggers metrics
 
 ## 0.13.0 Update to redis 0.13
 

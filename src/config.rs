@@ -322,7 +322,8 @@ impl<I> Builder<I> {
         aggregates_processors: &mut A,
         config: crate::instrumentation::MetrixConfig,
     ) -> Builder<crate::instrumentation::metrix::MetrixInstrumentation> {
-        let instrumentation = crate::instrumentation::metrix::create(aggregates_processors, config);
+        let instrumentation =
+            crate::instrumentation::MetrixInstrumentation::new(aggregates_processors, config);
         Builder {
             config: self.config,
             executor_flavour: self.executor_flavour,
