@@ -1,5 +1,8 @@
 //! A connection pool for connecting to a single node
+use std::error::Error as StdError;
 use std::time::Duration;
+
+use futures::prelude::Future;
 
 use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
@@ -10,7 +13,7 @@ use crate::pool_internal::{Config as PoolConfig, PoolInternal};
 
 use crate::pooled_connection::ConnectionFlavour;
 use crate::stats::PoolStats;
-use crate::Checkout;
+use crate::{Checkout, Ping};
 
 /// A connection pool that maintains multiple connections
 /// to a single Redis instance.
@@ -111,6 +114,13 @@ impl SingleNodePool {
     /// This locks the underlying pool.
     pub fn trigger_stats(&self) {
         self.pool.trigger_stats()
+    }
+
+    pub fn ping(
+        &self,
+        timeout: Option<Duration>,
+    ) -> impl Future<Item = Ping, Error = Box<dyn StdError + Send>> + Send {
+        self.pool.ping(timeout)
     }
 }
 

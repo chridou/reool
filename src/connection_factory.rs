@@ -8,6 +8,7 @@ use crate::Poolable;
 pub trait ConnectionFactory {
     type Connection: Poolable;
     fn create_connection(&self) -> NewConnection<Self::Connection>;
+    fn connecting_to(&self) -> &str;
 }
 
 pub struct NewConnectionError {

@@ -1,9 +1,13 @@
 use std::env;
 use std::time::Duration;
 
+use futures::future::Future;
+use tokio::timer::Timeout;
+
 use crate::activation_order::ActivationOrder;
 use crate::config::PoolMode;
 use crate::error::{InitializationError, InitializationResult};
+use crate::Ping;
 
 fn make_prefix<T: Into<String>>(prefix: Option<T>) -> String {
     prefix
@@ -189,6 +193,25 @@ fn parse_connect_to(what: &str) -> Vec<String> {
         .map(str::trim)
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn ping_with_timeout<F>(
+    f: F,
+    timeout: Duration,
+) -> impl Future<Item = Ping, Error = Box<dyn std::error::Error + Send + 'static>> + Send
+where
+    F: Future<Item = Ping, Error = Box<dyn std::error::Error + Send>> + Send,
+{
+    Timeout::new(f, timeout).then(|r| match r {
+        Ok(p) => Ok(p),
+        Err(err) => {
+            if err.is_inner() {
+                Err(err.into_inner().unwrap())
+            } else {
+                Err(Box::new(err) as Box<dyn std::error::Error + Send + 'static>)
+            }
+        }
+    })
 }
 
 #[test]

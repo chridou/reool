@@ -23,6 +23,7 @@ pub(crate) struct InnerPool<T: Poolable> {
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
     config: Config,
     instrumentation: Option<Box<dyn Instrumentation + Send + Sync>>,
+    connected_to: String,
 }
 
 impl<T> InnerPool<T>
@@ -30,6 +31,7 @@ where
     T: Poolable,
 {
     pub fn new<I>(
+        connected_to: String,
         config: Config,
         request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
         instrumentation: Option<I>,
@@ -49,6 +51,7 @@ where
             config,
             instrumentation: instrumentation
                 .map(|i| Box::new(i) as Box<dyn Instrumentation + Send + Sync>),
+            connected_to,
         }
     }
 
@@ -72,7 +75,8 @@ where
                 let mut core = self.core.lock();
                 core.pool_size_tracker.dec();
                 debug!(
-                    "connection killed - pool size {}",
+                    "connection to {} killed - pool size {}",
+                    self.connected_to,
                     core.pool_size_tracker.current()
                 );
                 unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
@@ -259,7 +263,10 @@ where
             .unbounded_send(NewConnMessage::RequestNewConn)
             .is_err()
         {
-            error!("could not request a new connection")
+            error!(
+                "could not request a new connection to {}",
+                self.connected_to
+            )
         }
     }
 
@@ -310,6 +317,10 @@ where
             self.instrumentation.as_ref().map(|i| &**i),
         );
     }
+
+    pub fn connected_to(&self) -> &str {
+        &self.connected_to
+    }
 }
 
 impl<T: Poolable> Drop for InnerPool<T> {
@@ -322,7 +333,7 @@ impl<T: Poolable> Drop for InnerPool<T> {
             instr.stats(PoolStats::default())
         }
 
-        debug!("inner pool dropped - all connections will be terminated on return");
+        debug!("inner pool dropped - all connections will be terminated when returned");
     }
 }
 

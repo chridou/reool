@@ -211,3 +211,15 @@ pub mod stats {
         }
     }
 }
+
+#[derive(Debug)]
+pub enum PingState {
+    Ok,
+    Failed(Box<dyn std::error::Error + Send>),
+}
+
+pub struct Ping {
+    pub latency: Duration,
+    pub host: String,
+    pub state: PingState,
+}
