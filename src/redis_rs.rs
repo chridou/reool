@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures::future::Future;
 use redis::{aio::Connection, Client};
 
@@ -8,16 +10,19 @@ use crate::Poolable;
 
 impl Poolable for Connection {}
 
-pub struct RedisRsFactory(Client);
+pub struct RedisRsFactory(Client, Arc<String>);
 
 impl RedisRsFactory {
     pub fn new(connect_to: String) -> InitializationResult<Self> {
-        Ok(Self(Client::open(&*connect_to).map_err(|err| {
-            InitializationError::new(
-                format!("Could not create a redis-rs client to {}", connect_to),
-                Some(Box::new(err)),
-            )
-        })?))
+        Ok(Self(
+            Client::open(&*connect_to).map_err(|err| {
+                InitializationError::new(
+                    format!("Could not create a redis-rs client to {}", connect_to),
+                    Some(Box::new(err)),
+                )
+            })?,
+            Arc::new(connect_to),
+        ))
     }
 }
 
@@ -31,5 +36,9 @@ impl ConnectionFactory for RedisRsFactory {
                 .map(ConnectionFlavour::RedisRs)
                 .map_err(NewConnectionError::new),
         )
+    }
+
+    fn connecting_to(&self) -> &str {
+        &self.1
     }
 }

@@ -10,7 +10,7 @@ use futures::{
     Poll,
 };
 use log::{debug, trace, warn};
-use tokio_timer::Delay;
+use tokio_timer::{Delay, Timeout};
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
@@ -18,7 +18,8 @@ use crate::connection_factory::{ConnectionFactory, NewConnectionError};
 use crate::error::CheckoutError;
 use crate::executor_flavour::*;
 use crate::instrumentation::Instrumentation;
-use crate::{stats::PoolStats, Poolable};
+use crate::pooled_connection::ConnectionFlavour;
+use crate::{stats::PoolStats, Ping, PingState, Poolable};
 
 use inner_pool::{CheckInParcel, InnerPool};
 
@@ -80,6 +81,7 @@ where
 
         let num_connections = config.desired_pool_size;
         let inner_pool = Arc::new(InnerPool::new(
+            connection_factory.connecting_to().to_string(),
             config.clone(),
             new_con_tx.clone(),
             instrumentation,
@@ -135,10 +137,72 @@ where
         self.inner_pool.trigger_stats()
     }
 
+    pub fn connected_to(&self) -> &str {
+        self.inner_pool.connected_to()
+    }
+
     #[cfg(test)]
     #[allow(unused)]
     fn inner_pool(&self) -> &Arc<InnerPool<T>> {
         &self.inner_pool
+    }
+}
+
+impl PoolInternal<ConnectionFlavour> {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
+        use crate::commands::Commands;
+
+        #[derive(Debug)]
+        struct PingError(String);
+
+        impl fmt::Display for PingError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        impl StdError for PingError {
+            fn description(&self) -> &str {
+                "ping failed"
+            }
+
+            fn cause(&self) -> Option<&dyn StdError> {
+                None
+            }
+        }
+
+        let started_at = Instant::now();
+        let connected_to = self.connected_to().to_owned();
+
+        let f = crate::Checkout(self.inner_pool.check_out(Some(timeout)))
+            .map_err(|err| Box::new(err) as Box<dyn StdError + Send>)
+            .and_then(|conn| {
+                conn.ping()
+                    .map(|_| ())
+                    .map_err(|err| Box::new(err) as Box<dyn StdError + Send>)
+            });
+
+        Timeout::new(f, timeout).then(move |r| {
+            Ok(Ping {
+                host: connected_to,
+                latency: started_at.elapsed(),
+                state: match r {
+                    Ok(()) => PingState::Ok,
+                    Err(err) => {
+                        if err.is_inner() {
+                            PingState::Failed(err.into_inner().unwrap())
+                        } else if err.is_elapsed() {
+                            PingState::Failed(Box::new(PingError(format!(
+                                "ping timed out of {:?} reached",
+                                timeout
+                            ))))
+                        } else {
+                            PingState::Failed(Box::new(PingError(err.to_string())))
+                        }
+                    }
+                },
+            })
+        })
     }
 }
 
@@ -176,7 +240,7 @@ fn start_new_conn_stream<T, C>(
                         Box::new(fut)
                     } else {
                         warn!("attempt to create new connection even though the pool is gone");
-                        Box::new(future::err(())) as Box<Future<Item = _, Error = _> + Send>
+                        Box::new(future::err(())) as Box<dyn Future<Item = _, Error = _> + Send>
                     }
                 }
                 NewConnMessage::Shutdown => {
@@ -292,6 +356,7 @@ impl<T: Poolable> Future for CheckoutManaged<T> {
 
 pub(crate) struct Managed<T: Poolable> {
     created_at: Instant,
+    /// Is `Some` taken from the pool otherwise fresh connection
     checked_out_at: Option<Instant>,
     pub value: Option<T>,
     inner_pool: Weak<InnerPool<T>>,

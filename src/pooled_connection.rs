@@ -11,7 +11,7 @@ use crate::Poolable;
 /// Pooled connection implements `redis::async::ConnectionLike`
 /// to easily integrate with code that already uses `redis-rs`.
 pub struct RedisConnection {
-    /// Track whether the is still in a valid state.
+    /// Track whether the connection is still in a valid state.
     ///
     /// If a future gets cancelled it is likely that the connection
     /// is not in a valid state anymore. For stateless connections this

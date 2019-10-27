@@ -107,4 +107,12 @@ pub trait Commands: Sized + ConnectionLike + Send + 'static {
     ) -> RedisFuture<(Self, RV)> {
         cmd("EXISTS").arg(key).query_async(self)
     }
+
+    /// Determine the number of keys.
+    fn db_size<K: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
+        self,
+        key: K,
+    ) -> RedisFuture<(Self, RV)> {
+        cmd("DBSIZE").arg(key).query_async(self)
+    }
 }

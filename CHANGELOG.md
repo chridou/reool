@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.3
+
+* each node of a pool can be pinged
+* pool returns connection strings for its nodes
+* added `dbsize` command
+
 ## 0.13.2
 
 * made MetrixInstrumentation ctor public

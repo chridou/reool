@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future;
+use futures::future::{self, Future};
 use log::{debug, warn};
 use parking_lot::Mutex;
 
@@ -17,7 +17,7 @@ use crate::instrumentation::Instrumentation;
 use crate::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
 use crate::pooled_connection::ConnectionFlavour;
 use crate::stats::{MinMax, PoolStats};
-use crate::Checkout;
+use crate::{Checkout, Ping};
 
 /// A connection pool that maintains multiple connections
 /// to a multiple Redis instances containing the same data(replicas).
@@ -129,6 +129,18 @@ impl MultiNodePool {
             .iter()
             .for_each(PoolInternal::trigger_stats)
     }
+
+    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+        self.inner.ping(timeout)
+    }
+
+    pub fn connected_to(&self) -> Vec<String> {
+        self.inner
+            .pools
+            .iter()
+            .map(|p| p.connected_to().to_owned())
+            .collect()
+    }
 }
 
 impl Clone for MultiNodePool {
@@ -158,6 +170,11 @@ impl Inner {
 
             Checkout(self.pools[idx].check_out(checkout_timeout))
         }
+    }
+
+    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+        let futs: Vec<_> = self.pools.iter().map(|p| p.ping(timeout)).collect();
+        future::join_all(futs)
     }
 }
 

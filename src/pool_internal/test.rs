@@ -255,6 +255,9 @@ impl ConnectionFactory for UnitFactory {
     fn create_connection(&self) -> NewConnection<Self::Connection> {
         NewConnection::new(future::ok(()))
     }
+    fn connecting_to(&self) -> &str {
+        ""
+    }
 }
 
 impl Poolable for u32 {}
@@ -275,6 +278,9 @@ impl ConnectionFactory for U32Factory {
     type Connection = u32;
     fn create_connection(&self) -> NewConnection<Self::Connection> {
         NewConnection::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
+    }
+    fn connecting_to(&self) -> &str {
+        ""
     }
 }
 
@@ -308,6 +314,9 @@ impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
             NewConnection::new(future::err(NewConnectionError::new(MyError)))
         }
     }
+    fn connecting_to(&self) -> &str {
+        ""
+    }
 }
 impl Default for U32FactoryFailsThreeTimesInARow {
     fn default() -> Self {
@@ -340,6 +349,9 @@ impl ConnectionFactory for UnitFactoryAlwaysFails {
 
         NewConnection::new(future::err(NewConnectionError::new(MyError)))
     }
+    fn connecting_to(&self) -> &str {
+        ""
+    }
 }
 
 struct U32DelayFactory {
@@ -366,5 +378,8 @@ impl ConnectionFactory for U32DelayFactory {
                 .map_err(NewConnectionError::new)
                 .and_then(move |()| future::ok(next)),
         )
+    }
+    fn connecting_to(&self) -> &str {
+        ""
     }
 }
