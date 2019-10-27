@@ -10,7 +10,7 @@ use futures::{
     Poll,
 };
 use log::{debug, trace, warn};
-use tokio_timer::Delay;
+use tokio_timer::{Delay, Timeout};
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
@@ -149,32 +149,60 @@ where
 }
 
 impl PoolInternal<ConnectionFlavour> {
-    pub fn ping(
-        &self,
-        timeout: Option<Duration>,
-    ) -> impl Future<Item = Ping, Error = Box<dyn StdError + Send>> + Send {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
         use crate::commands::Commands;
+
+        #[derive(Debug)]
+        struct PingError(String);
+
+        impl fmt::Display for PingError {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+
+        impl StdError for PingError {
+            fn description(&self) -> &str {
+                "ping failed"
+            }
+
+            fn cause(&self) -> Option<&dyn StdError> {
+                None
+            }
+        }
 
         let started_at = Instant::now();
         let connected_to = self.connected_to().to_owned();
 
-        crate::Checkout(self.inner_pool.check_out(timeout))
+        let f = crate::Checkout(self.inner_pool.check_out(Some(timeout)))
             .map_err(|err| Box::new(err) as Box<dyn StdError + Send>)
             .and_then(|conn| {
                 conn.ping()
                     .map(|_| ())
                     .map_err(|err| Box::new(err) as Box<dyn StdError + Send>)
+            });
+
+        Timeout::new(f, timeout).then(move |r| {
+            Ok(Ping {
+                host: connected_to,
+                latency: started_at.elapsed(),
+                state: match r {
+                    Ok(()) => PingState::Ok,
+                    Err(err) => {
+                        if err.is_inner() {
+                            PingState::Failed(err.into_inner().unwrap())
+                        } else if err.is_elapsed() {
+                            PingState::Failed(Box::new(PingError(format!(
+                                "ping timed out of {:?} reached",
+                                timeout
+                            ))))
+                        } else {
+                            PingState::Failed(Box::new(PingError(err.to_string())))
+                        }
+                    }
+                },
             })
-            .then(move |r| {
-                Ok(Ping {
-                    host: connected_to,
-                    latency: started_at.elapsed(),
-                    state: match r {
-                        Ok(()) => PingState::Ok,
-                        Err(err) => PingState::Failed(err),
-                    },
-                })
-            })
+        })
     }
 }
 

@@ -150,6 +150,25 @@ impl RedisPool {
             RedisPoolFlavour::NoPool => {}
         }
     }
+
+    /// Ping all the nodes which this pool is connected to.
+    ///
+    /// `timeout` is the maximum time allowed for a ping.
+    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+        match self.0 {
+            RedisPoolFlavour::SingleNode(ref pool) => Box::new(pool.ping(timeout).map(|p| vec![p]))
+                as Box<dyn Future<Item = _, Error = ()> + Send>,
+            RedisPoolFlavour::MultiNode(ref pool) => Box::new(pool.ping(timeout)),
+            RedisPoolFlavour::NoPool => Box::new(future::ok(vec![])),
+        }
+    }
+    pub fn connected_to(&self) -> Vec<String> {
+        match self.0 {
+            RedisPoolFlavour::SingleNode(ref pool) => vec![pool.connected_to()],
+            RedisPoolFlavour::MultiNode(ref pool) => pool.connected_to(),
+            RedisPoolFlavour::NoPool => vec![],
+        }
+    }
 }
 
 pub mod stats {
@@ -222,4 +241,17 @@ pub struct Ping {
     pub latency: Duration,
     pub host: String,
     pub state: PingState,
+}
+
+impl Ping {
+    pub fn is_ok(&self) -> bool {
+        match self.state {
+            PingState::Ok => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_failed(&self) -> bool {
+        !self.is_ok()
+    }
 }

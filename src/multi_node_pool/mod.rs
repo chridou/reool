@@ -130,11 +130,16 @@ impl MultiNodePool {
             .for_each(PoolInternal::trigger_stats)
     }
 
-    pub fn ping(
-        &self,
-        timeout: Option<Duration>,
-    ) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
         self.inner.ping(timeout)
+    }
+
+    pub fn connected_to(&self) -> Vec<String> {
+        self.inner
+            .pools
+            .iter()
+            .map(|p| p.connected_to().to_owned())
+            .collect()
     }
 }
 
@@ -167,11 +172,9 @@ impl Inner {
         }
     }
 
-    pub fn ping(
-        &self,
-        timeout: Option<Duration>,
-    ) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
-        self.pool.ping(timeout)
+    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+        let futs: Vec<_> = self.pools.iter().map(|p| p.ping(timeout)).collect();
+        future::join_all(futs)
     }
 }
 

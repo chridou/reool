@@ -1,5 +1,4 @@
 //! A connection pool for connecting to a single node
-use std::error::Error as StdError;
 use std::time::Duration;
 
 use futures::prelude::Future;
@@ -116,11 +115,12 @@ impl SingleNodePool {
         self.pool.trigger_stats()
     }
 
-    pub fn ping(
-        &self,
-        timeout: Option<Duration>,
-    ) -> impl Future<Item = Ping, Error = Box<dyn StdError + Send>> + Send {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
         self.pool.ping(timeout)
+    }
+
+    pub fn connected_to(&self) -> String {
+        self.pool.connected_to().to_owned()
     }
 }
 
