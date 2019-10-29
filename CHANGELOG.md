@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.4
+
+* Ping struct implements `Debug` trait
+
 ## 0.13.3
 
 * each node of a pool can be pinged

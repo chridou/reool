@@ -162,6 +162,7 @@ impl RedisPool {
             RedisPoolFlavour::NoPool => Box::new(future::ok(vec![])),
         }
     }
+
     pub fn connected_to(&self) -> Vec<String> {
         match self.0 {
             RedisPoolFlavour::SingleNode(ref pool) => vec![pool.connected_to()],
@@ -237,6 +238,7 @@ pub enum PingState {
     Failed(Box<dyn std::error::Error + Send>),
 }
 
+#[derive(Debug)]
 pub struct Ping {
     pub latency: Duration,
     pub host: String,
