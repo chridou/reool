@@ -22,7 +22,7 @@ fn main() {
         .reservation_limit(Some(500))
         .checkout_timeout(Some(Duration::from_millis(150)))
         .task_executor(runtime.executor())
-        .redis_rs()
+        .finish_redis_rs()
         .unwrap();
 
     info!("Do 1000 pings concurrently");

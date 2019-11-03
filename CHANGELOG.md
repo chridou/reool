@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0 (BREAKING CHANGES)
+
+    * Changed the overall construction logic of the pools
+    * ConnectionFactory can return connections to different nodes
+    * Removed `PoolMode` which was replaced by `NodePoolStrategy`(breaking change)
+
 ## 0.13.4
 
 * Ping struct implements `Debug` trait

@@ -1,8 +1,10 @@
 use std::env;
 use std::time::Duration;
 
+use log::warn;
+
 use crate::activation_order::ActivationOrder;
-use crate::config::PoolMode;
+use crate::config::NodePoolStrategy;
 use crate::error::{InitializationError, InitializationResult};
 
 fn make_prefix<T: Into<String>>(prefix: Option<T>) -> String {
@@ -139,21 +141,33 @@ where
     }
 }
 
-pub fn set_pool_mode<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+pub fn set_node_pool_strategy<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(PoolMode) -> (),
+    F: FnMut(NodePoolStrategy) -> (),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
 
-    let key = format!("{}_{}", prefix, "POOL_MODE");
+    let key = format!("{}_{}", prefix, "NODE_POOL_STRATEGY");
     match env::var(&key) {
         Ok(s) => {
             f(s.parse()
                 .map_err(|err| InitializationError::new(key, Some(err)))?);
             Ok(())
         }
-        Err(env::VarError::NotPresent) => Ok(()),
+        Err(env::VarError::NotPresent) => {
+            let key = format!("{}_{}", prefix, "POOL_MODE");
+            match env::var(&key) {
+                Ok(s) => {
+                    warn!("Found deprecated env var 'POOL_MODE' - use 'NODE_POOL_STRATEGY'");
+                    f(s.parse()
+                        .map_err(|err| InitializationError::new(key, Some(err)))?);
+                    Ok(())
+                }
+                Err(env::VarError::NotPresent) => Ok(()),
+                Err(err) => Err(InitializationError::new(key, Some(err))),
+            }
+        }
         Err(err) => Err(InitializationError::new(key, Some(err))),
     }
 }

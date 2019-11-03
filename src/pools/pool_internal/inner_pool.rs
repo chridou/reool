@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::{
@@ -23,7 +24,7 @@ pub(crate) struct InnerPool<T: Poolable> {
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
     config: Config,
     instrumentation: Option<Box<dyn Instrumentation + Send + Sync>>,
-    connected_to: String,
+    connected_to: Arc<Vec<String>>,
 }
 
 impl<T> InnerPool<T>
@@ -31,7 +32,7 @@ where
     T: Poolable,
 {
     pub fn new<I>(
-        connected_to: String,
+        connected_to: Vec<String>,
         config: Config,
         request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
         instrumentation: Option<I>,
@@ -51,7 +52,7 @@ where
             config,
             instrumentation: instrumentation
                 .map(|i| Box::new(i) as Box<dyn Instrumentation + Send + Sync>),
-            connected_to,
+            connected_to: Arc::new(connected_to),
         }
     }
 
@@ -75,8 +76,7 @@ where
                 let mut core = self.core.lock();
                 core.pool_size_tracker.dec();
                 debug!(
-                    "connection to {} killed - pool size {}",
-                    self.connected_to,
+                    "connection killed - pool size {}",
                     core.pool_size_tracker.current()
                 );
                 unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
@@ -263,10 +263,7 @@ where
             .unbounded_send(NewConnMessage::RequestNewConn)
             .is_err()
         {
-            error!(
-                "could not request a new connection to {}",
-                self.connected_to
-            )
+            error!("could not request a new connection")
         }
     }
 
@@ -318,7 +315,7 @@ where
         );
     }
 
-    pub fn connected_to(&self) -> &str {
+    pub fn connected_to(&self) -> &[String] {
         &self.connected_to
     }
 }

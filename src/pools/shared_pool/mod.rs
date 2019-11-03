@@ -8,33 +8,34 @@ use crate::connection_factory::ConnectionFactory;
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::Instrumentation;
-use crate::pool_internal::{Config as PoolConfig, PoolInternal};
 
 use crate::pooled_connection::ConnectionFlavour;
 use crate::stats::PoolStats;
 use crate::{Checkout, Ping};
 
+use super::pool_internal::{Config as PoolConfig, PoolInternal};
+
 /// A connection pool that maintains multiple connections
-/// to a single Redis instance.
+/// to possibly multiple Redis instances.
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
-pub(crate) struct SingleNodePool {
+pub struct SharedPool {
     pool: PoolInternal<ConnectionFlavour>,
     checkout_timeout: Option<Duration>,
 }
 
-impl SingleNodePool {
-    pub(crate) fn create<I, F, CF>(
+impl SharedPool {
+    pub fn new<I, F, CF>(
         config: Config,
         create_connection_factory: F,
         executor_flavour: ExecutorFlavour,
         instrumentation: Option<I>,
-    ) -> InitializationResult<SingleNodePool>
+    ) -> InitializationResult<SharedPool>
     where
         I: Instrumentation + Send + Sync + 'static,
         CF: ConnectionFactory<Connection = ConnectionFlavour> + Send + Sync + 'static,
-        F: Fn(String) -> InitializationResult<CF>,
+        F: Fn(Vec<String>) -> InitializationResult<CF>,
     {
         if config.desired_pool_size == 0 {
             return Err(InitializationError::message_only(
@@ -50,8 +51,8 @@ impl SingleNodePool {
             activation_order: config.activation_order,
         };
 
-        let connection_factory = if let Some(connect_to) = config.connect_to_nodes.first() {
-            create_connection_factory(connect_to.clone())?
+        let connection_factory = if !config.connect_to_nodes.is_empty() {
+            create_connection_factory(config.connect_to_nodes.clone())?
         } else {
             return Err(InitializationError::message_only(
                 "There is nothing to connect to.",
@@ -65,7 +66,7 @@ impl SingleNodePool {
             instrumentation,
         );
 
-        Ok(SingleNodePool {
+        Ok(SharedPool {
             pool,
             checkout_timeout: config.checkout_timeout,
         })
@@ -119,12 +120,12 @@ impl SingleNodePool {
         self.pool.ping(timeout)
     }
 
-    pub fn connected_to(&self) -> String {
-        self.pool.connected_to().to_owned()
+    pub fn connected_to(&self) -> &[String] {
+        self.pool.connected_to()
     }
 }
 
-impl Clone for SingleNodePool {
+impl Clone for SharedPool {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),

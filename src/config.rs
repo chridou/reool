@@ -5,15 +5,13 @@
 //!
 //! ## Connecting to a single node
 //!
-//! Set the value `connect_to_nodes` to one node or explicitly set
-//! `PoolMode::Single` in which case the first of multiple node
-//! will be selected.
+//! Set the value `connect_to_nodes` to one node only
 //!
-//! ## Connecting to a multiple nodes
+//! ## Connecting to multiple nodes
 //!
-//! Set the value `connect_to_nodes` to more than one nodes or explicitly set
-//! `PoolMode::Multi` if there is only a single node to connect to but you
-//! want to enforce the mechanics for a replica set pool.
+//! Set the value `connect_to_nodes` to more than one node.
+//! See `NodePoolStrategy` to read on how to configure a pool with multiple
+//! nodes.
 use std::fmt;
 use std::time::Duration;
 
@@ -23,9 +21,8 @@ use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, NoInstrumentation};
-use crate::multi_node_pool::MultiNodePool;
+use crate::pools::{PoolPerNode, SharedPool};
 use crate::redis_rs::RedisRsFactory;
-use crate::single_node_pool::SingleNodePool;
 
 pub use crate::activation_order::ActivationOrder;
 pub use crate::backoff_strategy::BackoffStrategy;
@@ -62,8 +59,8 @@ pub struct Config {
     pub min_required_nodes: usize,
     /// The nodes to connect To
     pub connect_to_nodes: Vec<String>,
-    /// Sets the `PoolMode` to be used when creating the pool.
-    pub pool_mode: PoolMode,
+    /// Sets the `NodePoolStrategy` to be used when creating the pool.
+    pub node_pool_strategy: NodePoolStrategy,
 }
 
 impl Config {
@@ -130,9 +127,9 @@ impl Config {
         self
     }
 
-    /// Sets the `PoolMode` to be used when creating the pool.
-    pub fn pool_mode(mut self, v: PoolMode) -> Self {
-        self.pool_mode = v;
+    /// Sets the `NodePoolStrategy` to be used when creating the pool.
+    pub fn node_pool_strategy(mut self, v: NodePoolStrategy) -> Self {
+        self.node_pool_strategy = v;
         self
     }
 
@@ -148,7 +145,7 @@ impl Config {
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
-    /// * `POOL_MODE`: Omit if you do not want to update the value
+    /// * `NODE_POOL_STRATEGY`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -178,8 +175,8 @@ impl Config {
             self.connect_to_nodes = v;
         };
 
-        helpers::set_pool_mode(prefix, |v| {
-            self.pool_mode = v;
+        helpers::set_node_pool_strategy(prefix, |v| {
+            self.node_pool_strategy = v;
         })?;
 
         Ok(())
@@ -195,7 +192,7 @@ impl Config {
             .stats_interval(self.stats_interval)
             .min_required_nodes(self.min_required_nodes)
             .connect_to_nodes(self.connect_to_nodes.clone())
-            .pool_mode(self.pool_mode)
+            .node_pool_strategy(self.node_pool_strategy)
     }
 }
 
@@ -210,7 +207,7 @@ impl Default for Config {
             activation_order: ActivationOrder::default(),
             min_required_nodes: 1,
             connect_to_nodes: Vec::new(),
-            pool_mode: PoolMode::default(),
+            node_pool_strategy: NodePoolStrategy::default(),
         }
     }
 }
@@ -291,9 +288,9 @@ impl<I> Builder<I> {
         self
     }
 
-    /// Sets the `PoolMode` to be used when creating the pool.
-    pub fn pool_mode(mut self, v: PoolMode) -> Self {
-        self.config.pool_mode = v;
+    /// Sets the `NodePoolStrategy` to be used when creating the pool.
+    pub fn node_pool_strategy(mut self, v: NodePoolStrategy) -> Self {
+        self.config.node_pool_strategy = v;
         self
     }
 
@@ -343,7 +340,7 @@ impl<I> Builder<I> {
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
-    /// * `POOL_MODE`: ` Omit if you do not want to update the value
+    /// * `NODE_POOL_STRATEGY`: ` Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         self.config.update_from_environment(prefix)?;
         Ok(())
@@ -361,7 +358,7 @@ impl<I> Builder<I> {
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
-    /// * `POOL_MODE`: ` Omit if you do not want to update the value
+    /// * `NODE_POOL_STRATEGY`: ` Omit if you do not want to update the value
     pub fn updated_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         self.config.update_from_environment(prefix)?;
         Ok(self)
@@ -373,35 +370,44 @@ where
     I: Instrumentation + Send + Sync + 'static,
 {
     /// Build a new `RedisPool`
-    pub fn redis_rs(self) -> InitializationResult<RedisPool> {
-        if self.config.connect_to_nodes.len() < self.config.min_required_nodes {
+    pub fn finish_redis_rs(self) -> InitializationResult<RedisPool> {
+        let config = self.config;
+
+        if config.connect_to_nodes.len() < config.min_required_nodes {
             return Err(InitializationError::message_only(format!(
                 "There must be at least {} node(s) defined. There are only {} defined.",
-                self.config.min_required_nodes,
-                self.config.connect_to_nodes.len()
+                config.min_required_nodes,
+                config.connect_to_nodes.len()
             )));
         }
 
-        if self.config.connect_to_nodes.is_empty() {
+        if config.connect_to_nodes.is_empty() {
             warn!("creating a pool with no nodes");
             return Ok(create_no_pool(self.instrumentation));
         }
 
-        let create_single_pool = self.config.pool_mode == PoolMode::Single
-            || (self.config.pool_mode == PoolMode::Auto && self.config.connect_to_nodes.len() == 1);
+        let connect_to = config.connect_to_nodes.clone();
+        let create_single_pool =
+            config.node_pool_strategy == NodePoolStrategy::SharedPool || connect_to.len() == 1;
 
         let flavour = if create_single_pool {
-            debug!("Create pool with single node");
-            RedisPoolFlavour::SingleNode(SingleNodePool::create(
-                self.config,
+            debug!(
+                "Create shared pool for {} nodes",
+                config.connect_to_nodes.len()
+            );
+            RedisPoolFlavour::Shared(SharedPool::new(
+                config,
                 RedisRsFactory::new,
                 self.executor_flavour,
                 self.instrumentation,
             )?)
         } else {
-            debug!("Create pool with multiple nodes");
-            RedisPoolFlavour::MultiNode(MultiNodePool::create(
-                self.config,
+            debug!(
+                "Create multiple pools. One for each of the {} nodes",
+                config.connect_to_nodes.len()
+            );
+            RedisPoolFlavour::PerNode(PoolPerNode::new(
+                config,
                 RedisRsFactory::new,
                 self.executor_flavour,
                 self.instrumentation,
@@ -412,16 +418,21 @@ where
     }
 }
 
-impl std::str::FromStr for PoolMode {
-    type Err = ParsePoolModeError;
+impl std::str::FromStr for NodePoolStrategy {
+    type Err = ParseNodesStrategyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match &*s.to_lowercase() {
-            "single" => Ok(PoolMode::Single),
-            "multi" => Ok(PoolMode::Multi),
-            "auto" => Ok(PoolMode::Auto),
-            invalid => Err(ParsePoolModeError(format!(
-                "'{}' is not a valid PoolMode. Only 'single' and 'multi' and 'auto' are allowed.",
+            "shared-pool" => Ok(NodePoolStrategy::SharedPool),
+            "pool-per-node" => Ok(NodePoolStrategy::PoolPerNode),
+            "single" | "auto" => {
+                 warn!("found 'single' or 'auto' in the env which are deprecated - using 'shared-pool'");
+                 Ok(NodePoolStrategy::SharedPool)},
+            "multi"  => {
+                 warn!("found 'multi' in the env which is deprecated - using 'pool-per-node'");
+                Ok(NodePoolStrategy::PoolPerNode)},
+            invalid => Err(ParseNodesStrategyError(format!(
+                "'{}' is not a valid NodesStrategy. Only 'shared_pool' and 'pool-per-node' are allowed.",
                 invalid
             ))),
         }
@@ -429,36 +440,68 @@ impl std::str::FromStr for PoolMode {
 }
 
 /// Determines which kind of pool to create.
+///
+/// 2 kinds of pools can be created: A shared pool which
+/// will have connections to possibly multiple nodes
+/// or a pool with multiple sub pools which will all connect
+/// to one node only.
+///
+/// If there is only 1 node to connect to `NodePoolStrategy::SharedPool` will always
+///  be used which is also the default.
+///
+/// ## `NodePoolStrategy::SharedPool`
+///
+/// The pool created will create connections to each nose in a round robin fashion.
+/// Since connections can also be closed it is never really known how many connections
+/// the pool has to a specific node. Nevertheless the connections should be evenly
+/// distributed under normal circumstances.
+///
+/// When a node fails the connections to that node will be replaced by connections to the
+/// other nodes once the pool is recreating connections (e.g. after a connection caused an error).
+///
+/// When pinged it is not certain which od the nodes in the pool is getting pinged.
+///
+/// In configurations or when using `FromStr` this value is created from the
+/// string `shared-pool`.
+///
+/// ## `NodePoolStrategy::PoolPerNode`
+///
+/// This pool can only be created if there are more than one node. Each of the pools
+/// within the resulting pool will be connected to a single node. When checking out a connection
+/// the checkout will be done in a round robin fashion and the next pool will be tried if
+/// a pool has no connections left.
+///
+/// When pinged it is exactly known which host is pinged and it is even guaranteed that all of
+/// the hosts will get pinged.
+///
+/// In configurations or when using `FromStr` this value is created from the
+/// string `pool-per-node`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PoolMode {
-    /// Create the pool depending on the number of nodes specified
-    /// via the `connect_to_*`-parameters:
-    ///
-    /// * One node: Create a pool for a single node
-    /// * Two or more: Create a multi node pool
-    Auto,
-    /// Always create a single node pool
-    Single,
-    /// Always create a multi node pool
-    Multi,
+pub enum NodePoolStrategy {
+    /// There will only be a single pool and all connections to maybe different nodes
+    /// will share the pool
+    SharedPool,
+    /// Create a pool that contains connection pools where
+    /// each pool is connected to one node only
+    PoolPerNode,
 }
 
-impl Default for PoolMode {
+impl Default for NodePoolStrategy {
     fn default() -> Self {
-        PoolMode::Auto
+        NodePoolStrategy::SharedPool
     }
 }
 
 #[derive(Debug)]
-pub struct ParsePoolModeError(String);
+pub struct ParseNodesStrategyError(String);
 
-impl fmt::Display for ParsePoolModeError {
+impl fmt::Display for ParseNodesStrategyError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Could not parse PoolMode. {}", self.0)
+        write!(f, "Could not parse NodesStrategy. {}", self.0)
     }
 }
 
-impl std::error::Error for ParsePoolModeError {
+impl std::error::Error for ParseNodesStrategyError {
     fn description(&self) -> &str {
         "parse activation order initialization failed"
     }
@@ -475,5 +518,5 @@ where
     instrumentation
         .iter()
         .for_each(|instr| instr.stats(crate::stats::PoolStats::default()));
-    RedisPool(RedisPoolFlavour::NoPool)
+    RedisPool(RedisPoolFlavour::Empty)
 }

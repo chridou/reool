@@ -30,7 +30,7 @@ fn main() {
         .checkout_timeout(Some(Duration::from_millis(50)))
         .instrumented(MyMetrics)
         .task_executor(runtime.executor())
-        .redis_rs()
+        .finish_redis_rs()
         .unwrap();
 
     info!("Do one ping");

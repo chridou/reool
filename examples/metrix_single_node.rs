@@ -31,7 +31,7 @@ fn main() {
         .activation_order(ActivationOrder::LiFo)
         .task_executor(runtime.executor())
         .instrumented_with_metrix(&mut driver, Default::default())
-        .redis_rs()
+        .finish_redis_rs()
         .unwrap();
 
     // create idle time

@@ -81,6 +81,12 @@ impl StdError for CheckoutError {
     }
 }
 
+impl From<CheckoutErrorKind> for CheckoutError {
+    fn from(kind: CheckoutErrorKind) -> Self {
+        Self { kind, cause: None }
+    }
+}
+
 impl From<CheckoutError> for RedisError {
     fn from(error: CheckoutError) -> Self {
         (

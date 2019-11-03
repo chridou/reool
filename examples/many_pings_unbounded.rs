@@ -23,7 +23,7 @@ fn main() {
         .reservation_limit(None) // No limit
         .checkout_timeout(None) // No timeout
         .task_executor(runtime.executor())
-        .redis_rs()
+        .finish_redis_rs()
         .unwrap();
 
     info!("Do one 1000 pings concurrently");
