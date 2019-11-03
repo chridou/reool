@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use futures::future::{self, Future};
 use redis::{aio::ConnectionLike, ErrorKind, RedisFuture, Value};
 
-use crate::pool_internal::Managed;
+use crate::pools::pool_internal::Managed;
 use crate::Poolable;
 
 /// A connection that has been taken from the pool.
@@ -18,6 +20,12 @@ pub struct RedisConnection {
     /// field is useless.
     pub(crate) connection_state_ok: bool,
     pub(crate) managed: Managed<ConnectionFlavour>,
+}
+
+impl RedisConnection {
+    pub fn connected_to(&self) -> &str {
+        self.managed.connected_to()
+    }
 }
 
 impl ConnectionLike for RedisConnection {
@@ -77,18 +85,24 @@ impl Drop for RedisConnection {
 }
 
 pub enum ConnectionFlavour {
-    RedisRs(redis::aio::Connection),
+    RedisRs(redis::aio::Connection, Arc<String>),
     // Tls(?)
 }
 
-impl Poolable for ConnectionFlavour {}
+impl Poolable for ConnectionFlavour {
+    fn connected_to(&self) -> &str {
+        match self {
+            ConnectionFlavour::RedisRs(_, c) => &c,
+        }
+    }
+}
 
 impl ConnectionLike for ConnectionFlavour {
     fn req_packed_command(self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
         match self {
-            ConnectionFlavour::RedisRs(conn) => Box::new(
+            ConnectionFlavour::RedisRs(conn, c) => Box::new(
                 conn.req_packed_command(cmd)
-                    .map(|(conn, v)| (ConnectionFlavour::RedisRs(conn), v)),
+                    .map(|(conn, v)| (ConnectionFlavour::RedisRs(conn, c), v)),
             ),
         }
     }
@@ -100,16 +114,16 @@ impl ConnectionLike for ConnectionFlavour {
         count: usize,
     ) -> RedisFuture<(Self, Vec<Value>)> {
         match self {
-            ConnectionFlavour::RedisRs(conn) => Box::new(
+            ConnectionFlavour::RedisRs(conn, c) => Box::new(
                 conn.req_packed_commands(cmd, offset, count)
-                    .map(|(conn, v)| (ConnectionFlavour::RedisRs(conn), v)),
+                    .map(|(conn, v)| (ConnectionFlavour::RedisRs(conn, c), v)),
             ),
         }
     }
 
     fn get_db(&self) -> i64 {
         match self {
-            ConnectionFlavour::RedisRs(ref conn) => conn.get_db(),
+            ConnectionFlavour::RedisRs(ref conn, _) => conn.get_db(),
         }
     }
 }

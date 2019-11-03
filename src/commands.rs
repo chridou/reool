@@ -100,7 +100,7 @@ pub trait Commands: Sized + ConnectionLike + Send + 'static {
         cmd("DEL").arg(key).query_async(self)
     }
 
-    /// Determine if a key exists.
+    /// Determine if one or more keys exist.
     fn exists<K: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
         self,
         key: K,

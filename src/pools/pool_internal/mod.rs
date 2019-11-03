@@ -81,7 +81,11 @@ where
 
         let num_connections = config.desired_pool_size;
         let inner_pool = Arc::new(InnerPool::new(
-            connection_factory.connecting_to().to_string(),
+            connection_factory
+                .connecting_to()
+                .iter()
+                .map(|c| c.as_ref().to_owned())
+                .collect(),
             config.clone(),
             new_con_tx.clone(),
             instrumentation,
@@ -137,7 +141,7 @@ where
         self.inner_pool.trigger_stats()
     }
 
-    pub fn connected_to(&self) -> &str {
+    pub fn connected_to(&self) -> &[String] {
         self.inner_pool.connected_to()
     }
 
@@ -172,35 +176,56 @@ impl PoolInternal<ConnectionFlavour> {
         }
 
         let started_at = Instant::now();
-        let connected_to = self.connected_to().to_owned();
+
+        let known_connected_to = if self.inner_pool.connected_to().len() == 1 {
+            Some(self.inner_pool.connected_to()[0].to_owned())
+        } else {
+            None
+        };
 
         let f = crate::Checkout(self.inner_pool.check_out(Some(timeout)))
-            .map_err(|err| Box::new(err) as Box<dyn StdError + Send>)
+            .map_err(|err| (Box::new(err) as Box<dyn StdError + Send>, None))
             .and_then(|conn| {
-                conn.ping()
-                    .map(|_| ())
-                    .map_err(|err| Box::new(err) as Box<dyn StdError + Send>)
+                let connected_to = conn.connected_to().to_owned();
+                conn.ping().then(|r| match r {
+                    Ok(_) => Ok(connected_to),
+                    Err(err) => Err((
+                        Box::new(err) as Box<dyn StdError + Send>,
+                        Some(connected_to),
+                    )),
+                })
             });
 
         Timeout::new(f, timeout).then(move |r| {
-            Ok(Ping {
-                host: connected_to,
-                latency: started_at.elapsed(),
-                state: match r {
-                    Ok(()) => PingState::Ok,
-                    Err(err) => {
-                        if err.is_inner() {
-                            PingState::Failed(err.into_inner().unwrap())
-                        } else if err.is_elapsed() {
+            let (uri, state) = match r {
+                Ok(uri) => (Some(uri), PingState::Ok),
+                Err(err) => {
+                    if err.is_inner() {
+                        let (err, uri) = err.into_inner().unwrap();
+                        (uri, PingState::Failed(err))
+                    } else if err.is_elapsed() {
+                        (
+                            known_connected_to,
                             PingState::Failed(Box::new(PingError(format!(
-                                "ping timed out of {:?} reached",
+                                "ping time out of {:?} reached",
                                 timeout
-                            ))))
-                        } else {
-                            PingState::Failed(Box::new(PingError(err.to_string())))
-                        }
+                            )))),
+                        )
+                    } else {
+                        (
+                            known_connected_to,
+                            PingState::Failed(Box::new(PingError(
+                                "a timer error occurred".to_string(),
+                            ))),
+                        )
                     }
-                },
+                }
+            };
+
+            Ok(Ping {
+                uri,
+                latency: started_at.elapsed(),
+                state,
             })
         })
     }
@@ -372,6 +397,13 @@ impl<T: Poolable> Managed<T> {
             created_at: Instant::now(),
             checked_out_at: None,
         }
+    }
+
+    pub fn connected_to(&self) -> &str {
+        self.value
+            .as_ref()
+            .expect("no value in managed - this is a bug")
+            .connected_to()
     }
 }
 

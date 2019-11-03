@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::error::Error as StdError;
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,7 +16,7 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{NewConnection, NewConnectionError};
 use crate::error::CheckoutErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
-use crate::pool_internal::{Config, ConnectionFactory, PoolInternal};
+use crate::pools::pool_internal::{Config, ConnectionFactory, PoolInternal};
 use crate::Poolable;
 
 #[test]
@@ -247,7 +249,11 @@ fn put_and_checkout_do_not_race() {
 }
 */
 
-impl Poolable for () {}
+impl Poolable for () {
+    fn connected_to(&self) -> &str {
+        ""
+    }
+}
 
 struct UnitFactory;
 impl ConnectionFactory for UnitFactory {
@@ -255,12 +261,16 @@ impl ConnectionFactory for UnitFactory {
     fn create_connection(&self) -> NewConnection<Self::Connection> {
         NewConnection::new(future::ok(()))
     }
-    fn connecting_to(&self) -> &str {
-        ""
+    fn connecting_to(&self) -> Cow<[Arc<String>]> {
+        Cow::Owned(Vec::new())
     }
 }
 
-impl Poolable for u32 {}
+impl Poolable for u32 {
+    fn connected_to(&self) -> &str {
+        ""
+    }
+}
 
 struct U32Factory {
     counter: AtomicU32,
@@ -279,8 +289,8 @@ impl ConnectionFactory for U32Factory {
     fn create_connection(&self) -> NewConnection<Self::Connection> {
         NewConnection::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
     }
-    fn connecting_to(&self) -> &str {
-        ""
+    fn connecting_to(&self) -> Cow<[Arc<String>]> {
+        Cow::Owned(Vec::new())
     }
 }
 
@@ -314,8 +324,8 @@ impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
             NewConnection::new(future::err(NewConnectionError::new(MyError)))
         }
     }
-    fn connecting_to(&self) -> &str {
-        ""
+    fn connecting_to(&self) -> Cow<[Arc<String>]> {
+        Cow::Owned(Vec::new())
     }
 }
 impl Default for U32FactoryFailsThreeTimesInARow {
@@ -349,8 +359,8 @@ impl ConnectionFactory for UnitFactoryAlwaysFails {
 
         NewConnection::new(future::err(NewConnectionError::new(MyError)))
     }
-    fn connecting_to(&self) -> &str {
-        ""
+    fn connecting_to(&self) -> Cow<[Arc<String>]> {
+        Cow::Owned(Vec::new())
     }
 }
 
@@ -379,7 +389,7 @@ impl ConnectionFactory for U32DelayFactory {
                 .and_then(move |()| future::ok(next)),
         )
     }
-    fn connecting_to(&self) -> &str {
-        ""
+    fn connecting_to(&self) -> Cow<[Arc<String>]> {
+        Cow::Owned(Vec::new())
     }
 }

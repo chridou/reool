@@ -28,7 +28,7 @@ fn main() {
         .instrumented(StatsLogger)
         .stats_interval(Duration::from_millis(100))
         .task_executor(runtime.executor())
-        .redis_rs()
+        .finish_redis_rs()
         .unwrap();
 
     info!("WAIT");

@@ -1,16 +1,16 @@
 //! # Reool
 //!
-//! Currently in early development.
-//!
 //! ## About
 //!
-//! Reool is a connection pool for Redis based on [redis-rs](https://crates.io/crates/redis).
+//! Reool is a REdis connection pOOL based on [redis-rs](https://crates.io/crates/redis).
 //!
-//! Currently `reool` is a fixed size connection pool.
-//! `Reool` provides an interface for instrumentation.
+//! Reool is aimed at either connecting to a single primary node or
+//! connecting to a replica set using the replicas as read only nodes.
 //!
+//! Currently Reool is a fixed size connection pool.
+//! Reool provides an interface for instrumentation.
 //!
-//! You should also consider multiplexing instead of a pool based on your needs.
+//! You should also consider multiplexing instead of a pool based upon your needs.
 //!
 //! The `PooledConnection` of `reool` implements the `ConnectionLike`
 //! interface of [redis-rs](https://crates.io/crates/redis) for easier integration.
@@ -24,6 +24,7 @@
 //!
 //! See LICENSE-APACHE and LICENSE-MIT for details.
 //! License: Apache-2.0/MIT
+use std::borrow::Cow;
 use std::time::Duration;
 
 use futures::{
@@ -33,34 +34,31 @@ use futures::{
 
 use crate::config::Builder;
 use crate::instrumentation::NoInstrumentation;
-use crate::pool_internal::CheckoutManaged;
-
-mod activation_order;
-mod backoff_strategy;
-mod commands;
-mod error;
-mod multi_node_pool;
-mod pool_internal;
-mod pooled_connection;
-mod single_node_pool;
-
-pub(crate) mod executor_flavour;
-
-pub(crate) mod connection_factory;
-pub(crate) mod helpers;
+use crate::pooled_connection::ConnectionFlavour;
+use crate::pools::pool_internal::{CheckoutManaged, Managed};
 
 pub mod config;
 pub mod instrumentation;
 
 pub use crate::error::{CheckoutError, CheckoutErrorKind};
-
 pub use commands::Commands;
-use pooled_connection::ConnectionFlavour;
 pub use pooled_connection::RedisConnection;
 
+pub(crate) mod connection_factory;
+pub(crate) mod executor_flavour;
+pub(crate) mod helpers;
+
+mod activation_order;
+mod backoff_strategy;
+mod commands;
+mod error;
+mod pooled_connection;
+mod pools;
 mod redis_rs;
 
-pub trait Poolable: Send + Sized + 'static {}
+pub trait Poolable: Send + Sized + 'static {
+    fn connected_to(&self) -> &str;
+}
 
 /// A `Future` that represents a checkout.
 ///
@@ -72,6 +70,15 @@ pub trait Poolable: Send + Sized + 'static {}
 /// * There are simply no connections available
 /// * There is no connected node
 pub struct Checkout(CheckoutManaged<ConnectionFlavour>);
+
+impl Checkout {
+    pub(crate) fn new<F>(f: F) -> Self
+    where
+        F: Future<Item = Managed<ConnectionFlavour>, Error = CheckoutError> + Send + 'static,
+    {
+        Checkout(CheckoutManaged::new(f))
+    }
+}
 
 impl Future for Checkout {
     type Item = RedisConnection;
@@ -88,9 +95,9 @@ impl Future for Checkout {
 
 #[derive(Clone)]
 enum RedisPoolFlavour {
-    NoPool,
-    SingleNode(single_node_pool::SingleNodePool),
-    MultiNode(multi_node_pool::MultiNodePool),
+    Empty,
+    Shared(pools::SharedPool),
+    PerNode(pools::PoolPerNode),
 }
 
 /// A pool to one or more Redis instances.
@@ -103,27 +110,27 @@ impl RedisPool {
     }
 
     pub fn no_pool() -> Self {
-        RedisPool(RedisPoolFlavour::NoPool)
+        RedisPool(RedisPoolFlavour::Empty)
     }
 
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the pool as a default.
     pub fn check_out(&self) -> Checkout {
         match self.0 {
-            RedisPoolFlavour::SingleNode(ref pool) => pool.check_out(),
-            RedisPoolFlavour::MultiNode(ref pool) => pool.check_out(),
-            RedisPoolFlavour::NoPool => Checkout(CheckoutManaged::new(future::err(
+            RedisPoolFlavour::Shared(ref pool) => pool.check_out(),
+            RedisPoolFlavour::PerNode(ref pool) => pool.check_out(),
+            RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
                 CheckoutError::new(CheckoutErrorKind::NoPool),
             ))),
         }
     }
     /// Checkout a new connection and if the request has to be enqueued
-    /// use the given timeout or wait indefinitely in `timeout` is `None`.
+    /// use the given timeout or wait indefinitely if `timeout` is `None`.
     pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
         match self.0 {
-            RedisPoolFlavour::SingleNode(ref pool) => pool.check_out_explicit_timeout(timeout),
-            RedisPoolFlavour::MultiNode(ref pool) => pool.check_out_explicit_timeout(timeout),
-            RedisPoolFlavour::NoPool => Checkout(CheckoutManaged::new(future::err(
+            RedisPoolFlavour::Shared(ref pool) => pool.check_out_explicit_timeout(timeout),
+            RedisPoolFlavour::PerNode(ref pool) => pool.check_out_explicit_timeout(timeout),
+            RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
                 CheckoutError::new(CheckoutErrorKind::NoPool),
             ))),
         }
@@ -134,9 +141,9 @@ impl RedisPool {
     /// This locks the pool.
     pub fn stats(&self) -> Vec<self::stats::PoolStats> {
         match self.0 {
-            RedisPoolFlavour::SingleNode(ref pool) => vec![pool.stats()],
-            RedisPoolFlavour::MultiNode(ref pool) => pool.stats(),
-            RedisPoolFlavour::NoPool => Vec::new(),
+            RedisPoolFlavour::Shared(ref pool) => vec![pool.stats()],
+            RedisPoolFlavour::PerNode(ref pool) => pool.stats(),
+            RedisPoolFlavour::Empty => Vec::new(),
         }
     }
 
@@ -145,9 +152,9 @@ impl RedisPool {
     /// This locks the pool.
     pub fn trigger_stats(&self) {
         match self.0 {
-            RedisPoolFlavour::SingleNode(ref pool) => pool.trigger_stats(),
-            RedisPoolFlavour::MultiNode(ref pool) => pool.trigger_stats(),
-            RedisPoolFlavour::NoPool => {}
+            RedisPoolFlavour::Shared(ref pool) => pool.trigger_stats(),
+            RedisPoolFlavour::PerNode(ref pool) => pool.trigger_stats(),
+            RedisPoolFlavour::Empty => {}
         }
     }
 
@@ -156,18 +163,18 @@ impl RedisPool {
     /// `timeout` is the maximum time allowed for a ping.
     pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
         match self.0 {
-            RedisPoolFlavour::SingleNode(ref pool) => Box::new(pool.ping(timeout).map(|p| vec![p]))
+            RedisPoolFlavour::Shared(ref pool) => Box::new(pool.ping(timeout).map(|p| vec![p]))
                 as Box<dyn Future<Item = _, Error = ()> + Send>,
-            RedisPoolFlavour::MultiNode(ref pool) => Box::new(pool.ping(timeout)),
-            RedisPoolFlavour::NoPool => Box::new(future::ok(vec![])),
+            RedisPoolFlavour::PerNode(ref pool) => Box::new(pool.ping(timeout)),
+            RedisPoolFlavour::Empty => Box::new(future::ok(vec![])),
         }
     }
 
-    pub fn connected_to(&self) -> Vec<String> {
+    pub fn connected_to(&self) -> Cow<[String]> {
         match self.0 {
-            RedisPoolFlavour::SingleNode(ref pool) => vec![pool.connected_to()],
-            RedisPoolFlavour::MultiNode(ref pool) => pool.connected_to(),
-            RedisPoolFlavour::NoPool => vec![],
+            RedisPoolFlavour::Shared(ref pool) => Cow::Borrowed(pool.connected_to()),
+            RedisPoolFlavour::PerNode(ref pool) => Cow::Owned(pool.connected_to()),
+            RedisPoolFlavour::Empty => Cow::Owned(vec![]),
         }
     }
 }
@@ -241,7 +248,7 @@ pub enum PingState {
 #[derive(Debug)]
 pub struct Ping {
     pub latency: Duration,
-    pub host: String,
+    pub uri: Option<String>,
     pub state: PingState,
 }
 

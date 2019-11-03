@@ -7,7 +7,7 @@ use metrix::driver::DriverBuilder;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::{Commands, RedisPool};
+use reool::{config::NodePoolStrategy, Commands, RedisPool};
 
 /// Do many ping commands where many will faile because either
 /// the checkout ties out or the checkout queue is full
@@ -29,11 +29,12 @@ fn main() {
             "redis://127.0.0.1:6379".to_string(),
         ])
         .desired_pool_size(10)
+        .node_pool_strategy(NodePoolStrategy::PoolPerNode)
         .reservation_limit(None) // No limit
         .checkout_timeout(None) // No timeout
         .task_executor(runtime.executor())
         .instrumented_with_metrix(&mut driver, Default::default())
-        .redis_rs()
+        .finish_redis_rs()
         .unwrap();
 
     info!("Do 10000 pings concurrently");

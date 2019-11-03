@@ -20,7 +20,7 @@ fn main() {
         .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(5)
         .task_executor(runtime.executor())
-        .redis_rs()
+        .finish_redis_rs()
         .unwrap();
 
     info!("{:#?}", pool.stats());
@@ -39,7 +39,7 @@ fn main() {
         ])
         .desired_pool_size(5)
         .task_executor(runtime.executor())
-        .redis_rs()
+        .finish_redis_rs()
         .unwrap();
 
     info!("{:#?}", pool.stats());
