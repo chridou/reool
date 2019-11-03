@@ -5,15 +5,13 @@
 //!
 //! ## Connecting to a single node
 //!
-//! Set the value `connect_to_nodes` to one node or explicitly set
-//! `NodesStrategy::Single` in which case the first of multiple node
-//! will be selected.
+//! Set the value `connect_to_nodes` to one node only
 //!
-//! ## Connecting to a multiple nodes
+//! ## Connecting to multiple nodes
 //!
-//! Set the value `connect_to_nodes` to more than one nodes or explicitly set
-//! `NodesStrategy::Multi` if there is only a single node to connect to but you
-//! want to enforce the mechanics for a replica set pool.
+//! Set the value `connect_to_nodes` to more than one node.
+//! See `NodePoolStrategy` to read on how to configure a pool with multiple
+//! nodes.
 use std::fmt;
 use std::time::Duration;
 
