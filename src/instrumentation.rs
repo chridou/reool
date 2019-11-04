@@ -353,7 +353,7 @@ pub(crate) mod metrix {
         panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
-        let mut panel = Panel::with_name(Metric::InFlightConnectionsChangedMax, "in_fligh_max");
+        let mut panel = Panel::with_name(Metric::InFlightConnectionsChangedMax, "in_flight_max");
         let mut gauge = Gauge::new_with_defaults("count");
         config.configure_gauge(&mut gauge);
         panel.set_gauge(gauge);

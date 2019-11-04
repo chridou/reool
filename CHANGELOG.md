@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.0 (BREAKING CHANGES, metrix only)
+
+    * fixed type in metrics label `in_fligh_max` to `in_flight_max` old value still there but wll be removed
+
 ## 0.15.0 (BREAKING CHANGES)
 
     * renamed `pool_size` to `connections` in PoolStats
