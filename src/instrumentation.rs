@@ -209,8 +209,8 @@ pub(crate) mod metrix {
         ReservationLimitReached,
         ConnectionFactoryFailed,
         LifeTime,
-        PoolSizeChangedMin,
-        PoolSizeChangedMax,
+        ConnectionsChangedMin,
+        ConnectionsChangedMax,
         InFlightConnectionsChangedMin,
         InFlightConnectionsChangedMax,
         IdleConnectionsChangedMin,
@@ -218,6 +218,7 @@ pub(crate) mod metrix {
         ReservationsChangedMin,
         ReservationsChangedMax,
         NodeCount,
+        PoolCount,
     }
 
     fn create<A: AggregatesProcessors>(
@@ -322,13 +323,13 @@ pub(crate) mod metrix {
         panel.set_histogram(Histogram::new_with_defaults("life_time_ms"));
         cockpit.add_panel(panel);
 
-        let mut panel = Panel::with_name(Metric::PoolSizeChangedMin, "pool_size_min");
+        let mut panel = Panel::with_name(Metric::ConnectionsChangedMin, "connections_min");
         let mut gauge = Gauge::new_with_defaults("count");
         config.configure_gauge(&mut gauge);
         panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
-        let mut panel = Panel::with_name(Metric::PoolSizeChangedMax, "pool_size_max");
+        let mut panel = Panel::with_name(Metric::ConnectionsChangedMax, "connections_max");
         let mut gauge = Gauge::new_with_defaults("count");
         config.configure_gauge(&mut gauge);
         panel.set_gauge(gauge);
@@ -371,6 +372,12 @@ pub(crate) mod metrix {
         cockpit.add_panel(panel);
 
         let mut panel = Panel::with_name(Metric::NodeCount, "nodes");
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
+        cockpit.add_panel(panel);
+
+        let mut panel = Panel::with_name(Metric::PoolCount, "pools");
         let mut gauge = Gauge::new_with_defaults("count");
         config.configure_gauge(&mut gauge);
         panel.set_gauge(gauge);
@@ -452,9 +459,16 @@ pub(crate) mod metrix {
 
         fn stats(&self, stats: PoolStats) {
             self.transmitter
-                .observed_one_value_now(Metric::PoolSizeChangedMin, stats.pool_size.min() as u64)
-                .observed_one_value_now(Metric::PoolSizeChangedMax, stats.pool_size.max() as u64)
+                .observed_one_value_now(
+                    Metric::ConnectionsChangedMin,
+                    stats.connections.min() as u64,
+                )
+                .observed_one_value_now(
+                    Metric::ConnectionsChangedMax,
+                    stats.connections.max() as u64,
+                )
                 .observed_one_value_now(Metric::NodeCount, stats.node_count as u64)
+                .observed_one_value_now(Metric::PoolCount, stats.pool_count as u64)
                 .observed_one_value_now(
                     Metric::InFlightConnectionsChangedMin,
                     stats.in_flight.min() as u64,
