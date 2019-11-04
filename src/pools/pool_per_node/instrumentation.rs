@@ -12,10 +12,11 @@ pub struct InstrumentationAggregator<I> {
 }
 
 struct Tracking {
-    pool_size: ValueTracker,
-    idle: ValueTracker,
-    in_flight: ValueTracker,
-    reservations: ValueTracker,
+    connections: MinMaxTracker,
+    idle: MinMaxTracker,
+    in_flight: MinMaxTracker,
+    reservations: MinMaxTracker,
+    node_count: SumTracker,
 }
 
 impl<I> InstrumentationAggregator<I>
@@ -26,20 +27,22 @@ where
         InstrumentationAggregator {
             outbound: instrumentation,
             tracking: Mutex::new(Tracking {
-                pool_size: ValueTracker::default(),
-                idle: ValueTracker::default(),
-                in_flight: ValueTracker::default(),
-                reservations: ValueTracker::default(),
+                connections: MinMaxTracker::default(),
+                idle: MinMaxTracker::default(),
+                in_flight: MinMaxTracker::default(),
+                reservations: MinMaxTracker::default(),
+                node_count: SumTracker::default(),
             }),
         }
     }
 
     pub fn add_new_pool(&self) {
         let mut tracking = self.tracking.lock();
-        tracking.pool_size.add_pool();
+        tracking.connections.add_pool();
         tracking.idle.add_pool();
         tracking.in_flight.add_pool();
         tracking.reservations.add_pool();
+        tracking.node_count.add_pool();
     }
 }
 
@@ -89,30 +92,59 @@ where
 
     fn stats(&self, stats: PoolStats, pool_idx: usize) {
         let mut tracking = self.tracking.lock();
-        let pool_size = tracking.pool_size.update(pool_idx, stats.pool_size);
+        let connections = tracking.connections.update(pool_idx, stats.connections);
         let idle = tracking.idle.update(pool_idx, stats.idle);
         let reservations = tracking.reservations.update(pool_idx, stats.reservations);
         let in_flight = tracking.in_flight.update(pool_idx, stats.in_flight);
-        let node_count = tracking.pool_size.node_count();
+        let node_count = tracking.node_count.update(pool_idx, stats.node_count);
+        let pool_count = tracking.node_count.pool_count();
         drop(tracking);
 
         let stats = PoolStats {
-            pool_size,
+            connections,
             reservations,
             idle,
             in_flight,
             node_count,
+            pool_count,
         };
 
         self.outbound.stats(stats)
     }
 }
 
-struct ValueTracker {
+struct SumTracker {
+    pool_values: Vec<usize>,
+}
+
+impl SumTracker {
+    pub fn add_pool(&mut self) {
+        self.pool_values.push(0)
+    }
+
+    pub fn update(&mut self, idx: usize, v: usize) -> usize {
+        self.pool_values[idx] = v;
+        self.pool_values.iter().sum()
+    }
+
+    pub fn pool_count(&self) -> usize {
+        self.pool_values.len()
+    }
+}
+
+impl Default for SumTracker {
+    fn default() -> Self {
+        Self {
+            pool_values: Vec::new(),
+        }
+    }
+}
+
+struct MinMaxTracker {
     pool_values: Vec<MinMax>,
 }
 
-impl ValueTracker {
+impl MinMaxTracker {
     pub fn add_pool(&mut self) {
         self.pool_values.push(MinMax::default())
     }
@@ -123,13 +155,9 @@ impl ValueTracker {
         let curr_max = self.pool_values.iter().map(MinMax::max).max().unwrap_or(0);
         MinMax(curr_min, curr_max)
     }
-
-    pub fn node_count(&self) -> usize {
-        self.pool_values.len()
-    }
 }
 
-impl Default for ValueTracker {
+impl Default for MinMaxTracker {
     fn default() -> Self {
         Self {
             pool_values: Vec::new(),

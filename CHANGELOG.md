@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.0 (BREAKING CHANGES)
+
+    * renamed `pool_size` to `connections` in PoolStats
+    * metrix: renamed metric `pool_size` to `connections`
+
 ## 0.14.0 (BREAKING CHANGES)
 
     * Changed the overall construction logic of the pools

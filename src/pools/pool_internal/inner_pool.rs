@@ -44,6 +44,7 @@ where
             config.desired_pool_size,
             config.stats_interval,
             config.activation_order,
+            connected_to.len(),
         ));
 
         Self {
@@ -61,7 +62,7 @@ where
             CheckInParcel::Alive(managed) => self.check_in_alive(managed),
             CheckInParcel::Dropped(in_flight_time, life_time) => {
                 let mut core = self.core.lock();
-                core.pool_size_tracker.dec();
+                core.total_connections_tracker.dec();
                 core.in_flight_tracker.dec();
                 unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
                 if let Some((instrumentation, flight_time)) = self
@@ -74,10 +75,10 @@ where
             }
             CheckInParcel::Killed(life_time) => {
                 let mut core = self.core.lock();
-                core.pool_size_tracker.dec();
+                core.total_connections_tracker.dec();
                 debug!(
                     "connection killed - pool size {}",
-                    core.pool_size_tracker.current()
+                    core.total_connections_tracker.current()
                 );
                 unlock_then_publish_stats(core, self.instrumentation.as_ref().map(|i| &**i));
                 if let Some(instrumentation) = self.instrumentation.as_ref() {
@@ -101,10 +102,10 @@ where
         let mut core = self.core.lock();
 
         if checked_out_at.is_none() {
-            core.pool_size_tracker.inc();
+            core.total_connections_tracker.inc();
             trace!(
                 "check in - new connection - pool size {}",
-                core.pool_size_tracker.current()
+                core.total_connections_tracker.current()
             );
         } else {
             core.in_flight_tracker.dec();
@@ -147,10 +148,10 @@ where
                         return;
                     }
                     Fulfillment::Killed => {
-                        core.pool_size_tracker.dec();
+                        core.total_connections_tracker.dec();
                         trace!(
                             "reservation - killed - pool size {}",
-                            core.pool_size_tracker.current()
+                            core.total_connections_tracker.current()
                         );
 
                         unlock_then_publish_stats(
@@ -351,9 +352,10 @@ struct SyncCore<T: Poolable> {
     pub idle_tracker: ValueTracker,
     pub in_flight_tracker: ValueTracker,
     pub reservations_tracker: ValueTracker,
-    pub pool_size_tracker: ValueTracker,
+    pub total_connections_tracker: ValueTracker,
     pub stats_interval: Duration,
     pub last_flushed: Instant,
+    pub num_nodes_connected_to: usize,
 }
 
 impl<T: Poolable> SyncCore<T> {
@@ -361,6 +363,7 @@ impl<T: Poolable> SyncCore<T> {
         desired_pool_size: usize,
         stats_interval: Duration,
         activation_order: ActivationOrder,
+        num_nodes_connected_to: usize,
     ) -> Self {
         Self {
             idle: IdleConnections::new(desired_pool_size, activation_order),
@@ -368,9 +371,10 @@ impl<T: Poolable> SyncCore<T> {
             idle_tracker: ValueTracker::default(),
             in_flight_tracker: ValueTracker::default(),
             reservations_tracker: ValueTracker::default(),
-            pool_size_tracker: ValueTracker::default(),
+            total_connections_tracker: ValueTracker::default(),
             stats_interval,
             last_flushed: Instant::now() - stats_interval,
+            num_nodes_connected_to,
         }
     }
 }
@@ -378,11 +382,12 @@ impl<T: Poolable> SyncCore<T> {
 impl<T: Poolable> SyncCore<T> {
     pub fn stats(&self) -> PoolStats {
         PoolStats {
-            pool_size: self.pool_size_tracker.get(),
+            connections: self.total_connections_tracker.get(),
             in_flight: self.in_flight_tracker.get(),
             reservations: self.reservations_tracker.get(),
             idle: self.idle_tracker.get(),
-            node_count: 1,
+            node_count: self.num_nodes_connected_to,
+            pool_count: 1,
         }
     }
 
@@ -394,7 +399,7 @@ impl<T: Poolable> SyncCore<T> {
             self.last_flushed = now;
             let current = self.stats();
 
-            self.pool_size_tracker.apply_flush();
+            self.total_connections_tracker.apply_flush();
             self.in_flight_tracker.apply_flush();
             self.reservations_tracker.apply_flush();
             self.idle_tracker.apply_flush();

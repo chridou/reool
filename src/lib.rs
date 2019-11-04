@@ -187,8 +187,8 @@ pub mod stats {
     /// observed during a configurable interval.
     #[derive(Debug, Clone)]
     pub struct PoolStats {
-        /// The amount of connections
-        pub pool_size: MinMax,
+        /// The amount of connections currently established
+        pub connections: MinMax,
         /// The number of connections that are currently checked out
         pub in_flight: MinMax,
         /// The number of pending requests for connections
@@ -200,16 +200,21 @@ pub mod stats {
         ///
         /// Unless connected to multiple nodes this value will be 1.
         pub node_count: usize,
+        /// The number of effective connection pools created.
+        ///
+        /// Unless connected to multiple nodes this value will be 1.
+        pub pool_count: usize,
     }
 
     impl Default for PoolStats {
         fn default() -> Self {
             Self {
-                pool_size: MinMax::default(),
+                connections: MinMax::default(),
                 in_flight: MinMax::default(),
                 reservations: MinMax::default(),
                 idle: MinMax::default(),
                 node_count: 0,
+                pool_count: 0,
             }
         }
     }
