@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.1
+
+    * log created pool type as info
+
 ## 0.16.0 (BREAKING CHANGES, metrix only)
 
     * fixed type in metrics label `in_fligh_max` to `in_flight_max` old value still there but wll be removed

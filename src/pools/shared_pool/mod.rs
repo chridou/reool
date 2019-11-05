@@ -2,6 +2,7 @@
 use std::time::Duration;
 
 use futures::prelude::Future;
+use log::info;
 
 use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
@@ -43,6 +44,11 @@ impl SharedPool {
             ));
         }
 
+        info!(
+            "Creating shared pool with {:?} nodes",
+            config.connect_to_nodes
+        );
+
         let pool_conf = PoolConfig {
             desired_pool_size: config.desired_pool_size,
             backoff_strategy: config.backoff_strategy,
@@ -55,7 +61,7 @@ impl SharedPool {
             create_connection_factory(config.connect_to_nodes.clone())?
         } else {
             return Err(InitializationError::message_only(
-                "There is nothing to connect to.",
+                "there is nothing to connect to.",
             ));
         };
 

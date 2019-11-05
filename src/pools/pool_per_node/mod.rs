@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::Future;
+use log::info;
 
 use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
@@ -49,6 +50,11 @@ impl PoolPerNode {
         CF: ConnectionFactory<Connection = ConnectionFlavour> + Send + Sync + 'static,
         F: Fn(Vec<String>) -> InitializationResult<CF>,
     {
+        info!(
+            "Creating pool per node for {:?} nodes",
+            config.connect_to_nodes
+        );
+
         let checkout_timeout = config.checkout_timeout;
         let inner = Inner::new(
             config,
