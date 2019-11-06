@@ -526,7 +526,7 @@ pub(crate) mod metrix {
 
         fn contention(&self, count: usize) {
             self.transmitter
-                .observed_one_value_now(Metric::Contention, count);
+                .observed_one_value_now(Metric::Contention, count as u64);
         }
 
         fn lock_wait_duration(&self, since: Instant) {
