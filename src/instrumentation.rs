@@ -101,7 +101,7 @@ impl Instrumentation for StatsLogger {
 
 #[cfg(feature = "metrix")]
 pub(crate) mod metrix {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use metrix::cockpit::Cockpit;
     use metrix::instruments::switches::StaircaseTimer;
@@ -525,16 +525,17 @@ pub(crate) mod metrix {
         }
 
         fn contention(&self, count: usize) {
-            self.transmitter.observed_one_value_now(Metric::Contention, count);
+            self.transmitter
+                .observed_one_value_now(Metric::Contention, count);
         }
 
         fn lock_wait_duration(&self, since: Instant) {
-            self.transmitter.measure_time(Metric::LockWaitDuration, since);
-
+            self.transmitter
+                .measure_time(Metric::LockWaitDuration, since);
         }
 
         fn lock_duration(&self, since: Instant) {
-             self.transmitter.measure_time(Metric::LockDuration, since);
+            self.transmitter.measure_time(Metric::LockDuration, since);
         }
     }
 }

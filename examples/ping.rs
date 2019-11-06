@@ -141,6 +141,9 @@ impl reool::instrumentation::Instrumentation for MyMetrics {
     fn reservation_limit_reached(&self) {}
     fn connection_factory_failed(&self) {}
     fn stats(&self, _stats: PoolStats) {}
+    fn contention(&self, count: usize) {}
+    fn lock_wait_duration(&self, since: Instant) {}
+    fn lock_duration(&self, since: Instant) {}
 }
 
 fn ping_concurrently(pool: RedisPool, executor: TaskExecutor) {
