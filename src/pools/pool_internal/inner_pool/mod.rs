@@ -8,14 +8,15 @@ use futures::{
 use log::{debug, error, trace};
 use tokio_timer::Timeout;
 
-use super::{CheckoutManaged, Config, Managed, NewConnMessage};
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::instrumentation::Instrumentation;
 use crate::{stats::PoolStats, Poolable};
 
-mod core;
+use super::{CheckoutManaged, Config, Managed, NewConnMessage};
 
-use self::core::{Core, CoreGuard, SyncCore};
+use self::core::{Core, CoreGuard, Fulfillment, Reservation, SyncCore};
+
+mod core;
 
 pub(crate) struct InnerPool<T: Poolable> {
     sync_core: SyncCore<T>,
@@ -343,50 +344,6 @@ pub(super) enum CheckInParcel<T: Poolable> {
     Alive(Managed<T>),
     Dropped(Option<Duration>, Duration),
     Killed(Duration),
-}
-
-// ===== RESERVATION =====
-
-enum Reservation<T: Poolable> {
-    Checkout(oneshot::Sender<Managed<T>>, Instant),
-    ReducePoolSize,
-}
-
-enum Fulfillment<T: Poolable> {
-    NotFulfilled(Managed<T>, Duration),
-    Reservation(Duration),
-    Killed,
-}
-
-impl<T: Poolable> Reservation<T> {
-    pub fn checkout(sender: oneshot::Sender<Managed<T>>) -> Self {
-        Reservation::Checkout(sender, Instant::now())
-    }
-
-    pub fn reduce_pool_size() -> Self {
-        Reservation::ReducePoolSize
-    }
-}
-
-impl<T: Poolable> Reservation<T> {
-    fn try_fulfill(self, mut managed: Managed<T>) -> Fulfillment<T> {
-        match self {
-            Reservation::Checkout(sender, waiting_since) => {
-                managed.checked_out_at = Some(Instant::now());
-                if let Err(mut managed) = sender.send(managed) {
-                    managed.checked_out_at = None;
-                    Fulfillment::NotFulfilled(managed, waiting_since.elapsed())
-                } else {
-                    Fulfillment::Reservation(waiting_since.elapsed())
-                }
-            }
-            Reservation::ReducePoolSize => {
-                managed.checked_out_at = None;
-                managed.marked_for_kill = true;
-                Fulfillment::Killed
-            }
-        }
-    }
 }
 
 fn unlock_then_publish_stats<T: Poolable>(

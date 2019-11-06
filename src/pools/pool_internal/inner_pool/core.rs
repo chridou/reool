@@ -7,7 +7,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use super::{Managed, Reservation};
+use futures::sync::oneshot;
+
+use super::Managed;
 use crate::activation_order::ActivationOrder;
 use crate::instrumentation::Instrumentation;
 use crate::{
@@ -106,6 +108,7 @@ impl<T: Poolable> SyncCore<T> {
         }
         let enter_lock_at = Instant::now();
         let guard = self.mutex.lock();
+        let lock_released_at = Instant::now();
 
         if let Some(ref instrumentation) = self.instrumentation {
             instrumentation.lock_wait_duration(enter_lock_at);
@@ -114,7 +117,7 @@ impl<T: Poolable> SyncCore<T> {
 
         CoreGuard {
             inner: guard,
-            created_instant: Instant::now(),
+            lock_released_at,
             instrumentation: self.instrumentation.as_ref().map(Arc::clone),
         }
     }
@@ -122,7 +125,7 @@ impl<T: Poolable> SyncCore<T> {
 
 pub(super) struct CoreGuard<'a, T: Poolable> {
     inner: MutexGuard<'a, Core<T>>,
-    created_instant: Instant,
+    lock_released_at: Instant,
     instrumentation: Option<Arc<dyn Instrumentation + Send + Sync>>,
 }
 
@@ -141,9 +144,9 @@ impl<'a, T: Poolable> ops::DerefMut for CoreGuard<'a, T> {
 
 impl<'a, T: Poolable> Drop for CoreGuard<'a, T> {
     fn drop(&mut self) {
-        self.instrumentation
-            .as_ref()
-            .map(|instrumentation| instrumentation.lock_duration(self.created_instant));
+        if let Some(ref instrumentation) = self.instrumentation {
+            instrumentation.lock_duration(self.lock_released_at);
+        }
     }
 }
 
@@ -186,6 +189,50 @@ impl<T> IdleConnections<T> {
         match self {
             IdleConnections::FiFo(idle) => idle.len(),
             IdleConnections::LiFo(idle) => idle.len(),
+        }
+    }
+}
+
+// ===== RESERVATION =====
+
+pub(super) enum Reservation<T: Poolable> {
+    Checkout(oneshot::Sender<Managed<T>>, Instant),
+    ReducePoolSize,
+}
+
+pub(super) enum Fulfillment<T: Poolable> {
+    NotFulfilled(Managed<T>, Duration),
+    Reservation(Duration),
+    Killed,
+}
+
+impl<T: Poolable> Reservation<T> {
+    pub fn checkout(sender: oneshot::Sender<Managed<T>>) -> Self {
+        Reservation::Checkout(sender, Instant::now())
+    }
+
+    pub fn reduce_pool_size() -> Self {
+        Reservation::ReducePoolSize
+    }
+}
+
+impl<T: Poolable> Reservation<T> {
+    pub fn try_fulfill(self, mut managed: Managed<T>) -> Fulfillment<T> {
+        match self {
+            Reservation::Checkout(sender, waiting_since) => {
+                managed.checked_out_at = Some(Instant::now());
+                if let Err(mut managed) = sender.send(managed) {
+                    managed.checked_out_at = None;
+                    Fulfillment::NotFulfilled(managed, waiting_since.elapsed())
+                } else {
+                    Fulfillment::Reservation(waiting_since.elapsed())
+                }
+            }
+            Reservation::ReducePoolSize => {
+                managed.checked_out_at = None;
+                managed.marked_for_kill = true;
+                Fulfillment::Killed
+            }
         }
     }
 }
