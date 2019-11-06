@@ -95,7 +95,7 @@ impl Inner {
                             as Box<dyn Future<Item = _, Error = CheckoutError> + Send>;
                     }
 
-                    let idx = count % pools.len();
+                    let idx = (count + attempts_left) % pools.len();
 
                     Box::new(pools[idx].check_out(timeout).then(move |r| match r {
                         Ok(managed_conn) => Ok(Loop::Break(managed_conn)),

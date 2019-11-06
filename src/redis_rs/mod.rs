@@ -165,12 +165,11 @@ mod multi_node {
 
             let loop_f = loop_fn(
                 (
-                    count,
                     self.clients.len(),
                     Arc::clone(&self.clients),
                     Arc::clone(&self.connects_to),
                 ),
-                move |(count, attempts_left, clients, connects_to)| {
+                move |(attempts_left, clients, connects_to)| {
                     if attempts_left == 0 {
                         return Box::new(future::err(NewConnectionError::new(
                             AllConnectAttemptsFailedError,
@@ -178,18 +177,13 @@ mod multi_node {
                             as Box<dyn Future<Item = _, Error = _> + Send>;
                     }
 
-                    let idx = count % clients.len();
+                    let idx = (count + attempts_left) % clients.len();
                     let f = get_async_connection(&clients[idx], Arc::clone(&connects_to[idx]))
                         .then(move |r| match r {
                             Ok(conn) => Ok(Loop::Break(conn)),
                             Err(err) => {
                                 warn!("failed to connect to {}: {}", connects_to[idx], err);
-                                Ok(Loop::Continue((
-                                    count + 1,
-                                    attempts_left - 1,
-                                    clients,
-                                    connects_to,
-                                )))
+                                Ok(Loop::Continue((attempts_left - 1, clients, connects_to)))
                             }
                         });
 

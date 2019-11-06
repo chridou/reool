@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.2
+
+    * fix bug in selecting connection(was always the same)
+
 ## 0.16.1
 
     * log created pool type as info
