@@ -1,5 +1,5 @@
 //! Pluggable instrumentation
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::info;
 
@@ -50,6 +50,12 @@ pub trait Instrumentation {
 
     /// Statistics from the pool
     fn stats(&self, stats: PoolStats);
+
+    fn contention(&self, count: usize);
+
+    fn lock_wait_duration(&self, since: Instant);
+
+    fn lock_duration(&self, since: Instant);
 }
 
 impl Instrumentation for NoInstrumentation {
@@ -65,6 +71,9 @@ impl Instrumentation for NoInstrumentation {
     fn reservation_limit_reached(&self) {}
     fn connection_factory_failed(&self) {}
     fn stats(&self, _stats: PoolStats) {}
+    fn contention(&self, count: usize) {}
+    fn lock_wait_duration(&self, since: Instant) {}
+    fn lock_duration(&self, since: Instant) {}
 }
 
 /// Simply logs every `PoolStats` sent by the pool
@@ -85,6 +94,9 @@ impl Instrumentation for StatsLogger {
     fn stats(&self, stats: PoolStats) {
         info!("{:#?}", stats);
     }
+    fn contention(&self, count: usize) {}
+    fn lock_wait_duration(&self, since: Instant) {}
+    fn lock_duration(&self, since: Instant) {}
 }
 
 #[cfg(feature = "metrix")]
@@ -219,6 +231,9 @@ pub(crate) mod metrix {
         ReservationsChangedMax,
         NodeCount,
         PoolCount,
+        Contention,
+        LockWaitDuration,
+        LockDuration,
     }
 
     fn create<A: AggregatesProcessors>(
@@ -383,6 +398,26 @@ pub(crate) mod metrix {
         panel.set_gauge(gauge);
         cockpit.add_panel(panel);
 
+        let mut panel = Panel::with_name(Metric::Contention, "contention");
+        let mut gauge = Gauge::new_with_defaults("count");
+        config.configure_gauge(&mut gauge);
+        panel.set_gauge(gauge);
+        cockpit.add_panel(panel);
+
+        let mut panel = Panel::with_name(Metric::LockWaitDuration, "lock_wait");
+        panel.set_meter(Meter::new_with_defaults("per_second"));
+        let mut histogram = Histogram::new_with_defaults("wait_time_ns");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
+        cockpit.add_panel(panel);
+
+        let mut panel = Panel::with_name(Metric::LockDuration, "lock_duration");
+        panel.set_meter(Meter::new_with_defaults("per_second"));
+        let mut histogram = Histogram::new_with_defaults("time_ns");
+        config.configure_histogram(&mut histogram);
+        panel.set_histogram(histogram);
+        cockpit.add_panel(panel);
+
         let (tx, mut rx) = TelemetryProcessor::new_pair_without_name();
         rx.add_cockpit(cockpit);
 
@@ -487,6 +522,19 @@ pub(crate) mod metrix {
                     Metric::ReservationsChangedMax,
                     stats.reservations.max() as u64,
                 );
+        }
+
+        fn contention(&self, count: usize) {
+            self.transmitter.observed_one_value_now(Metric::Contention, count);
+        }
+
+        fn lock_wait_duration(&self, since: Instant) {
+            self.transmitter.measure_time(Metric::LockWaitDuration, since);
+
+        }
+
+        fn lock_duration(&self, since: Instant) {
+             self.transmitter.measure_time(Metric::LockDuration, since);
         }
     }
 }
