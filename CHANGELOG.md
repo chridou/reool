@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.2 (BREAKING CHANGE)
+
+    * added instrumentation for lock contention
+
 ## 0.16.2
 
     * fix bug in selecting connection(was always the same)

@@ -71,9 +71,9 @@ impl Instrumentation for NoInstrumentation {
     fn reservation_limit_reached(&self) {}
     fn connection_factory_failed(&self) {}
     fn stats(&self, _stats: PoolStats) {}
-    fn contention(&self, count: usize) {}
-    fn lock_wait_duration(&self, since: Instant) {}
-    fn lock_duration(&self, since: Instant) {}
+    fn contention(&self, _count: usize) {}
+    fn lock_wait_duration(&self, _since: Instant) {}
+    fn lock_duration(&self, _since: Instant) {}
 }
 
 /// Simply logs every `PoolStats` sent by the pool
@@ -94,9 +94,9 @@ impl Instrumentation for StatsLogger {
     fn stats(&self, stats: PoolStats) {
         info!("{:#?}", stats);
     }
-    fn contention(&self, count: usize) {}
-    fn lock_wait_duration(&self, since: Instant) {}
-    fn lock_duration(&self, since: Instant) {}
+    fn contention(&self, _count: usize) {}
+    fn lock_wait_duration(&self, _since: Instant) {}
+    fn lock_duration(&self, _since: Instant) {}
 }
 
 #[cfg(feature = "metrix")]
