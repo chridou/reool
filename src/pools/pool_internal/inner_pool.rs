@@ -7,7 +7,6 @@ use futures::{
     sync::{mpsc, oneshot},
 };
 use log::{debug, error, trace};
-use parking_lot::{Mutex, MutexGuard};
 use tokio_timer::Timeout;
 
 use super::{CheckoutManaged, Config, Managed, NewConnMessage};
@@ -18,13 +17,83 @@ use crate::{
     stats::{MinMax, PoolStats},
     Poolable,
 };
+use instrumented_mutex::{InstrumentedMutex as Mutex, InstrumentedMutexGuard as MutexGuard};
 
 pub(crate) struct InnerPool<T: Poolable> {
-    core: Mutex<SyncCore<T>>,
+    core: Mutex<T>,
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
     config: Config,
-    instrumentation: Option<Box<dyn Instrumentation + Send + Sync>>,
+    instrumentation: Option<Arc<dyn Instrumentation + Send + Sync>>,
     connected_to: Arc<Vec<String>>,
+}
+
+mod instrumented_mutex {
+    use std::ops;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use parking_lot::{Mutex, MutexGuard};
+    use crate::instrumentation::Instrumentation;
+    use crate::Poolable;
+    use super::SyncCore;
+
+    pub(super) struct InstrumentedMutex<T: Poolable> {
+        mutex: Mutex<SyncCore<T>>,
+        instrumentation: Option<Arc<dyn Instrumentation + Send + Sync>>,
+        contention_count: AtomicUsize,
+    }
+
+    impl<T: Poolable> InstrumentedMutex<T> {
+        pub(super) fn new(core: SyncCore<T>, instrumentation: Option<Arc<dyn Instrumentation + Send + Sync>>) -> Self {
+            Self {
+                mutex: Mutex::new(core),
+                instrumentation,
+                contention_count: AtomicUsize::new(0),
+            }
+        }
+
+        pub(super) fn lock(&self) -> InstrumentedMutexGuard<T> {
+
+            let contention_count = self.contention_count.fetch_add(1, Ordering::SeqCst) + 1;
+            self.instrumentation.as_ref().map(|instrumentation| instrumentation.contention(contention_count));
+            let enter_lock_instant = Instant::now();
+            let guard = self.mutex.lock();
+            self.instrumentation.as_ref().map(|instrumentation| instrumentation.lock_wait_duration(enter_lock_instant));
+            self.contention_count.fetch_sub(1, Ordering::SeqCst);
+
+
+            InstrumentedMutexGuard {
+                inner: guard,
+                created_instant: Instant::now(),
+                instrumentation: self.instrumentation.as_ref().map(Arc::clone),
+            }
+        }
+    }
+
+    pub(super) struct InstrumentedMutexGuard<'a, T: Poolable> {
+        inner: MutexGuard<'a, SyncCore<T>>,
+        created_instant: Instant,
+        instrumentation: Option<Arc<dyn Instrumentation + Send + Sync>>,
+    }
+
+    impl<'a, T: Poolable> ops::Deref for InstrumentedMutexGuard<'a, T> {
+        type Target = SyncCore<T>;
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
+    }
+
+    impl<'a, T: Poolable> ops::DerefMut for InstrumentedMutexGuard<'a, T> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
+        }
+    }
+
+    impl<'a, T: Poolable> Drop for InstrumentedMutexGuard<'a, T> {
+        fn drop(&mut self) {
+            self.instrumentation.as_ref().map(|instrumentation| instrumentation.lock_duration(self.created_instant));
+        }
+    }
 }
 
 impl<T> InnerPool<T>
@@ -40,19 +109,20 @@ where
     where
         I: Instrumentation + Send + Sync + 'static,
     {
+        let instrumentation = instrumentation
+                .map(|i| Arc::new(i) as Arc<dyn Instrumentation + Send + Sync>);
         let core = Mutex::new(SyncCore::new(
             config.desired_pool_size,
             config.stats_interval,
             config.activation_order,
             connected_to.len(),
-        ));
+        ), instrumentation.clone());
 
         Self {
             core,
             request_new_conn,
             config,
-            instrumentation: instrumentation
-                .map(|i| Box::new(i) as Box<dyn Instrumentation + Send + Sync>),
+            instrumentation,
             connected_to: Arc::new(connected_to),
         }
     }
@@ -230,7 +300,7 @@ where
 
     fn create_reservation(
         timeout: Option<Duration>,
-        mut core: MutexGuard<SyncCore<T>>,
+        mut core: MutexGuard<T>,
         instrumentation: Option<&(dyn Instrumentation + Send + Sync)>,
     ) -> CheckoutManaged<T> {
         let (tx, rx) = oneshot::channel();
@@ -515,7 +585,7 @@ impl ValueTracker {
 }
 
 fn unlock_then_publish_stats<T: Poolable>(
-    mut core_guard: MutexGuard<SyncCore<T>>,
+    mut core_guard: MutexGuard<T>,
     instrumentation: Option<&(dyn Instrumentation + Send + Sync)>,
 ) {
     let snapshot = core_guard.try_flush();

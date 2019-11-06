@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::stats::{MinMax, PoolStats};
 use parking_lot::Mutex;
@@ -111,6 +111,16 @@ where
 
         self.outbound.stats(stats)
     }
+    fn contention(&self, count: usize, _pool_idx: usize) {
+        self.outbound.contention(count);
+    }
+    fn lock_wait_duration(&self, since: Instant, _pool_idx: usize) {
+        self.outbound.lock_wait_duration(since);
+
+    }
+    fn lock_duration(&self, since: Instant, _pool_idx: usize) {
+        self.outbound.lock_duration(since);
+    }
 }
 
 struct SumTracker {
@@ -221,5 +231,15 @@ where
     }
     fn stats(&self, stats: PoolStats) {
         self.aggregator.stats(stats, self.index)
+    }
+    fn contention(&self, count: usize) {
+        self.aggregator.contention(count, self.index);
+    }
+    fn lock_wait_duration(&self, since: Instant) {
+        self.aggregator.lock_wait_duration(since, self.index);
+
+    }
+    fn lock_duration(&self, since: Instant) {
+        self.aggregator.lock_duration(since, self.index);
     }
 }
