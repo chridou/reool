@@ -44,6 +44,7 @@ fn given_a_runtime_the_pool_can_be_created() {
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
+/*
 #[test]
 fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     let _ = pretty_env_logger::try_init();
@@ -67,6 +68,9 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
+*/
+
+/*
 #[test]
 fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     let _ = pretty_env_logger::try_init();
@@ -95,6 +99,8 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
 }
+
+*/
 
 #[test]
 fn checkout_one() {

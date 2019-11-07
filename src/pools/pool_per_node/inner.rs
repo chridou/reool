@@ -10,12 +10,11 @@ use crate::connection_factory::ConnectionFactory;
 use crate::error::InitializationResult;
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::ExecutorFlavour;
-use crate::instrumentation::Instrumentation;
+use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
+use crate::pools::pool_internal::instrumentation::PoolInstrumentation;
 use crate::pools::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
 use crate::{Checkout, Ping};
-
-use super::instrumentation::*;
 
 pub struct Inner {
     count: AtomicUsize,
@@ -23,50 +22,43 @@ pub struct Inner {
 }
 
 impl Inner {
-    pub(crate) fn new<I, F, CF>(
+    pub(crate) fn new<F, CF>(
         config: Config,
         create_connection_factory: F,
         executor_flavour: ExecutorFlavour,
-        instrumentation: Option<I>,
+        instrumentation: InstrumentationFlavour,
     ) -> InitializationResult<Self>
     where
-        I: Instrumentation + Send + Sync + 'static,
         CF: ConnectionFactory<Connection = ConnectionFlavour> + Send + Sync + 'static,
         F: Fn(Vec<String>) -> InitializationResult<CF>,
     {
         let mut pools = Vec::new();
 
-        let instrumentation_aggregator = instrumentation
-            .map(InstrumentationAggregator::new)
-            .map(Arc::new);
-
-        let mut pool_idx = 0;
+        let mut pool_index = 0;
         for connect_to in config.connect_to_nodes {
             let connection_factory = create_connection_factory(vec![connect_to])?;
             let pool_conf = PoolConfig {
                 desired_pool_size: config.desired_pool_size,
                 backoff_strategy: config.backoff_strategy,
                 reservation_limit: config.reservation_limit,
-                stats_interval: config.stats_interval,
                 activation_order: config.activation_order,
             };
 
-            let indexed_instrumentation = instrumentation_aggregator.as_ref().map(|agg| {
-                let instr = IndexedInstrumentation::new(agg.clone(), pool_idx);
-                agg.add_new_pool();
-                instr
-            });
+            let pool_instrumentation = PoolInstrumentation {
+                pool_index,
+                flavour: instrumentation.clone(),
+            };
 
             let pool = PoolInternal::new(
                 pool_conf,
                 connection_factory,
                 executor_flavour.clone(),
-                indexed_instrumentation,
+                pool_instrumentation,
             );
 
             pools.push(pool);
 
-            pool_idx += 1;
+            pool_index += 1;
         }
 
         debug!("pool per node has {} nodes", pools.len());

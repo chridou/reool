@@ -30,7 +30,7 @@ fn main() {
         .checkout_timeout(Some(Duration::from_secs(10)))
         .activation_order(ActivationOrder::LiFo)
         .task_executor(runtime.executor())
-        .instrumented_with_metrix(&mut driver, Default::default())
+        .mount_metrix_instrumentation(&mut driver, Default::default())
         .finish_redis_rs()
         .unwrap();
 
@@ -64,23 +64,15 @@ fn main() {
     runtime.block_on(fut).unwrap();
     info!("PINGED 20000 times concurrently in {:?}", start.elapsed());
 
-    let stats = pool.stats();
-
     let metrics_snapshot = driver.snapshot(false).unwrap();
 
     println!("{}", metrics_snapshot.to_default_json());
-
-    println!("{:#?}", stats);
 
     std::thread::sleep(Duration::from_millis(1500));
 
     runtime
         .block_on(pool.check_out().from_err().and_then(Commands::ping))
         .unwrap();
-
-    let stats = pool.stats();
-
-    println!("{:#?}", stats);
 
     drop(pool);
     info!("pool dropped");

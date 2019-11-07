@@ -17,20 +17,22 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{ConnectionFactory, NewConnectionError};
 use crate::error::CheckoutError;
 use crate::executor_flavour::*;
-use crate::instrumentation::Instrumentation;
+use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{stats::PoolStats, Ping, PingState, Poolable};
+use crate::{Ping, PingState, Poolable};
 
 use inner_pool::{CheckInParcel, InnerPool};
 
 mod inner_pool;
+pub(crate) mod instrumentation;
+
+use instrumentation::PoolInstrumentation;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
     pub desired_pool_size: usize,
     pub backoff_strategy: BackoffStrategy,
     pub reservation_limit: Option<usize>,
-    pub stats_interval: Duration,
     pub activation_order: ActivationOrder,
 }
 
@@ -53,7 +55,6 @@ impl Default for Config {
             desired_pool_size: 20,
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(50),
-            stats_interval: Duration::from_millis(100),
             activation_order: ActivationOrder::default(),
         }
     }
@@ -67,15 +68,14 @@ impl<T> PoolInternal<T>
 where
     T: Poolable,
 {
-    pub fn new<C, I>(
+    pub fn new<C>(
         config: Config,
         connection_factory: C,
         executor: ExecutorFlavour,
-        instrumentation: Option<I>,
+        instrumentation: PoolInstrumentation,
     ) -> Self
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
-        I: Instrumentation + Send + Sync + 'static,
     {
         let (new_con_tx, new_conn_rx) = mpsc::unbounded();
 
@@ -117,7 +117,15 @@ where
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
     {
-        Self::new::<_, ()>(config, connection_factory, executor, None)
+        Self::new(
+            config,
+            connection_factory,
+            executor,
+            PoolInstrumentation {
+                pool_index: 0,
+                flavour: InstrumentationFlavour::NoInstrumentation,
+            },
+        )
     }
 
     pub fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
@@ -131,14 +139,6 @@ where
 
     pub fn remove_connection(&self) {
         self.inner_pool.remove_conn()
-    }
-
-    pub fn stats(&self) -> PoolStats {
-        self.inner_pool.stats()
-    }
-
-    pub fn trigger_stats(&self) {
-        self.inner_pool.trigger_stats()
     }
 
     pub fn connected_to(&self) -> &[String] {

@@ -33,7 +33,7 @@ fn main() {
         .reservation_limit(None) // No limit
         .checkout_timeout(None) // No timeout
         .task_executor(runtime.executor())
-        .instrumented_with_metrix(&mut driver, Default::default())
+        .mount_metrix_instrumentation(&mut driver, Default::default())
         .finish_redis_rs()
         .unwrap();
 

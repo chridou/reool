@@ -82,27 +82,6 @@ where
     }
 }
 
-pub fn set_stats_interval<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
-where
-    F: FnMut(Duration) -> (),
-    T: Into<String>,
-{
-    let prefix = make_prefix(prefix);
-
-    let key = format!("{}_{}", prefix, "STATS_INTERVAL_MS");
-    match env::var(&key) {
-        Ok(s) => {
-            let ms: u64 = s
-                .parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?;
-            f(Duration::from_millis(ms));
-            Ok(())
-        }
-        Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
-    }
-}
-
 pub fn set_min_required_nodes<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
     F: FnMut(usize) -> (),

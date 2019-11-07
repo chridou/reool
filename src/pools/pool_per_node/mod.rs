@@ -9,15 +9,13 @@ use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
 use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
-use crate::instrumentation::Instrumentation;
+use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
-use crate::stats::PoolStats;
 use crate::{Checkout, Ping};
 
 use super::pool_internal::PoolInternal;
 
 mod inner;
-mod instrumentation;
 
 use self::inner::*;
 
@@ -33,20 +31,19 @@ use self::inner::*;
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
-pub struct PoolPerNode {
+pub(crate) struct PoolPerNode {
     inner: Arc<Inner>,
     checkout_timeout: Option<Duration>,
 }
 
 impl PoolPerNode {
-    pub fn new<I, F, CF>(
+    pub fn new<F, CF>(
         config: Config,
         create_connection_factory: F,
         executor_flavour: ExecutorFlavour,
-        instrumentation: Option<I>,
+        instrumentation: InstrumentationFlavour,
     ) -> InitializationResult<PoolPerNode>
     where
-        I: Instrumentation + Send + Sync + 'static,
         CF: ConnectionFactory<Connection = ConnectionFlavour> + Send + Sync + 'static,
         F: Fn(Vec<String>) -> InitializationResult<CF>,
     {
@@ -75,23 +72,6 @@ impl PoolPerNode {
 
     pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
         self.inner.check_out_explicit_timeout(timeout)
-    }
-
-    /// Get some statistics from each of the pools.
-    ///
-    /// This locks the underlying pool.
-    pub fn stats(&self) -> Vec<PoolStats> {
-        self.inner.pools.iter().map(PoolInternal::stats).collect()
-    }
-
-    /// Triggers the pool to emit statistics if `stats_interval` has elapsed.
-    ///
-    /// This locks the underlying pool.
-    pub fn trigger_stats(&self) {
-        self.inner
-            .pools
-            .iter()
-            .for_each(PoolInternal::trigger_stats)
     }
 
     pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {

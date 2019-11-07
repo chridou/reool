@@ -33,7 +33,6 @@ use futures::{
 };
 
 use crate::config::Builder;
-use crate::instrumentation::NoInstrumentation;
 use crate::pooled_connection::ConnectionFlavour;
 use crate::pools::pool_internal::{CheckoutManaged, Managed};
 
@@ -96,8 +95,8 @@ impl Future for Checkout {
 #[derive(Clone)]
 enum RedisPoolFlavour {
     Empty,
-    Shared(pools::SharedPool),
-    PerNode(pools::PoolPerNode),
+    Shared(pools::shared_pool::SharedPool),
+    PerNode(pools::pool_per_node::PoolPerNode),
 }
 
 /// A pool to one or more Redis instances.
@@ -105,7 +104,7 @@ enum RedisPoolFlavour {
 pub struct RedisPool(RedisPoolFlavour);
 
 impl RedisPool {
-    pub fn builder() -> Builder<NoInstrumentation> {
+    pub fn builder() -> Builder {
         Builder::default()
     }
 
@@ -136,28 +135,6 @@ impl RedisPool {
         }
     }
 
-    /// Get some statistics from the pool.
-    ///
-    /// This locks the pool.
-    pub fn stats(&self) -> Vec<self::stats::PoolStats> {
-        match self.0 {
-            RedisPoolFlavour::Shared(ref pool) => vec![pool.stats()],
-            RedisPoolFlavour::PerNode(ref pool) => pool.stats(),
-            RedisPoolFlavour::Empty => Vec::new(),
-        }
-    }
-
-    /// Triggers the pool to emit statistics if `stats_interval` has elapsed.
-    ///
-    /// This locks the pool.
-    pub fn trigger_stats(&self) {
-        match self.0 {
-            RedisPoolFlavour::Shared(ref pool) => pool.trigger_stats(),
-            RedisPoolFlavour::PerNode(ref pool) => pool.trigger_stats(),
-            RedisPoolFlavour::Empty => {}
-        }
-    }
-
     /// Ping all the nodes which this pool is connected to.
     ///
     /// `timeout` is the maximum time allowed for a ping.
@@ -175,71 +152,6 @@ impl RedisPool {
             RedisPoolFlavour::Shared(ref pool) => Cow::Borrowed(pool.connected_to()),
             RedisPoolFlavour::PerNode(ref pool) => Cow::Owned(pool.connected_to()),
             RedisPoolFlavour::Empty => Cow::Owned(vec![]),
-        }
-    }
-}
-
-pub mod stats {
-    /// Simple statistics on the internals of the pool.
-    ///
-    /// The values are not very accurate since they
-    /// are only the minimum and maximum values
-    /// observed during a configurable interval.
-    #[derive(Debug, Clone)]
-    pub struct PoolStats {
-        /// The amount of connections currently established
-        pub connections: MinMax,
-        /// The number of connections that are currently checked out
-        pub in_flight: MinMax,
-        /// The number of pending requests for connections
-        pub reservations: MinMax,
-        /// The number of idle connections which are available for
-        /// immediate checkout
-        pub idle: MinMax,
-        /// The number of accessible nodes.
-        ///
-        /// Unless connected to multiple nodes this value will be 1.
-        pub node_count: usize,
-        /// The number of effective connection pools created.
-        ///
-        /// Unless connected to multiple nodes this value will be 1.
-        pub pool_count: usize,
-    }
-
-    impl Default for PoolStats {
-        fn default() -> Self {
-            Self {
-                connections: MinMax::default(),
-                in_flight: MinMax::default(),
-                reservations: MinMax::default(),
-                idle: MinMax::default(),
-                node_count: 0,
-                pool_count: 0,
-            }
-        }
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub struct MinMax<T = usize>(pub T, pub T);
-
-    impl<T> MinMax<T>
-    where
-        T: Copy,
-    {
-        pub fn min(&self) -> T {
-            self.0
-        }
-        pub fn max(&self) -> T {
-            self.1
-        }
-    }
-
-    impl<T> Default for MinMax<T>
-    where
-        T: Default,
-    {
-        fn default() -> Self {
-            Self(T::default(), T::default())
         }
     }
 }

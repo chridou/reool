@@ -13,6 +13,7 @@
 //! See `NodePoolStrategy` to read on how to configure a pool with multiple
 //! nodes.
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, warn};
@@ -20,8 +21,8 @@ use log::{debug, warn};
 use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
-use crate::instrumentation::{Instrumentation, NoInstrumentation};
-use crate::pools::{PoolPerNode, SharedPool};
+use crate::instrumentation::{Instrumentation, InstrumentationFlavour};
+use crate::pools::{pool_per_node::PoolPerNode, shared_pool::SharedPool};
 use crate::redis_rs::RedisRsFactory;
 
 pub use crate::activation_order::ActivationOrder;
@@ -47,9 +48,6 @@ pub struct Config {
     /// The maximum length of the queue for waiting checkouts
     /// when no idle connections are available
     pub reservation_limit: Option<usize>,
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub stats_interval: Duration,
     /// Defines the `ActivationOrder` in which idle connections are
     /// activated.
     ///
@@ -89,13 +87,6 @@ impl Config {
     /// when no idle connections are available
     pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
         self.reservation_limit = v;
-        self
-    }
-
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub fn stats_interval(mut self, v: Duration) -> Self {
-        self.stats_interval = v;
         self
     }
 
@@ -159,10 +150,6 @@ impl Config {
             self.reservation_limit = v;
         })?;
 
-        helpers::set_stats_interval(prefix, |v| {
-            self.stats_interval = v;
-        })?;
-
         helpers::set_activation_order(prefix, |v| {
             self.activation_order = v;
         })?;
@@ -183,13 +170,12 @@ impl Config {
     }
 
     /// Create a `Builder` initialized with the values from this `Config`
-    pub fn builder(&self) -> Builder<NoInstrumentation> {
+    pub fn builder(&self) -> Builder {
         Builder::default()
             .desired_pool_size(self.desired_pool_size)
             .checkout_timeout(self.checkout_timeout)
             .backoff_strategy(self.backoff_strategy)
             .reservation_limit(self.reservation_limit)
-            .stats_interval(self.stats_interval)
             .min_required_nodes(self.min_required_nodes)
             .connect_to_nodes(self.connect_to_nodes.clone())
             .node_pool_strategy(self.node_pool_strategy)
@@ -203,7 +189,6 @@ impl Default for Config {
             checkout_timeout: Some(Duration::from_millis(20)),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
-            stats_interval: Duration::from_millis(100),
             activation_order: ActivationOrder::default(),
             min_required_nodes: 1,
             connect_to_nodes: Vec::new(),
@@ -213,23 +198,23 @@ impl Default for Config {
 }
 
 /// A builder for a `MultiNodePool`
-pub struct Builder<I> {
+pub struct Builder {
     config: Config,
     executor_flavour: ExecutorFlavour,
-    instrumentation: Option<I>,
+    instrumentation: InstrumentationFlavour,
 }
 
-impl Default for Builder<NoInstrumentation> {
+impl Default for Builder {
     fn default() -> Self {
         Self {
             config: Config::default(),
             executor_flavour: ExecutorFlavour::Runtime,
-            instrumentation: None,
+            instrumentation: InstrumentationFlavour::NoInstrumentation,
         }
     }
 }
 
-impl<I> Builder<I> {
+impl Builder {
     /// The number of connections the pool should initially have
     /// and try to maintain
     pub fn desired_pool_size(mut self, v: usize) -> Self {
@@ -255,13 +240,6 @@ impl<I> Builder<I> {
     /// when no idle connections are available
     pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
         self.config.reservation_limit = v;
-        self
-    }
-
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub fn stats_interval(mut self, v: Duration) -> Self {
-        self.config.stats_interval = v;
         self
     }
 
@@ -302,30 +280,33 @@ impl<I> Builder<I> {
     }
 
     /// Adds instrumentation to the pool
-    pub fn instrumented<II>(self, instrumentation: II) -> Builder<II>
+    pub fn instrumented<I>(mut self, instrumentation: I) -> Self
     where
-        II: Instrumentation + Send + Sync + 'static,
+        I: Instrumentation + Send + Sync + 'static,
     {
-        Builder {
-            config: self.config,
-            executor_flavour: self.executor_flavour,
-            instrumentation: Some(instrumentation),
-        }
+        self.instrumentation = InstrumentationFlavour::Custom(Arc::new(instrumentation));
+        self
     }
 
     #[cfg(feature = "metrix")]
-    pub fn instrumented_with_metrix<A: metrix::processor::AggregatesProcessors>(
-        self,
+    pub fn mount_metrix_instrumentation<A: metrix::processor::AggregatesProcessors>(
+        mut self,
         aggregates_processors: &mut A,
         config: crate::instrumentation::MetrixConfig,
-    ) -> Builder<crate::instrumentation::metrix::MetrixInstrumentation> {
-        let instrumentation =
+    ) -> Self {
+        let metrix_instrumentation =
             crate::instrumentation::MetrixInstrumentation::new(aggregates_processors, config);
-        Builder {
-            config: self.config,
-            executor_flavour: self.executor_flavour,
-            instrumentation: Some(instrumentation),
-        }
+        self.instrumentation = InstrumentationFlavour::Custom(Arc::new(metrix_instrumentation));
+        self
+    }
+
+    #[cfg(feature = "metrix")]
+    pub fn instrumented_with_metrix(
+        mut self,
+        instrumentation: crate::instrumentation::MetrixInstrumentation,
+    ) -> Self {
+        self.instrumentation = InstrumentationFlavour::Metrix(instrumentation);
+        self
     }
 
     /// Sets values in this builder from the environment.
@@ -363,12 +344,7 @@ impl<I> Builder<I> {
         self.config.update_from_environment(prefix)?;
         Ok(self)
     }
-}
 
-impl<I> Builder<I>
-where
-    I: Instrumentation + Send + Sync + 'static,
-{
     /// Build a new `RedisPool`
     pub fn finish_redis_rs(self) -> InitializationResult<RedisPool> {
         let config = self.config;
@@ -511,12 +487,6 @@ impl std::error::Error for ParseNodesStrategyError {
     }
 }
 
-fn create_no_pool<I>(instrumentation: Option<I>) -> RedisPool
-where
-    I: Instrumentation,
-{
-    instrumentation
-        .iter()
-        .for_each(|instr| instr.stats(crate::stats::PoolStats::default()));
+fn create_no_pool(instrumentation: InstrumentationFlavour) -> RedisPool {
     RedisPool(RedisPoolFlavour::Empty)
 }

@@ -23,12 +23,6 @@ fn main() {
         .finish_redis_rs()
         .unwrap();
 
-    info!("{:#?}", pool.stats());
-
-    thread::sleep(Duration::from_secs(1));
-
-    info!("{:#?}", pool.stats());
-
     drop(pool);
     info!("DROPPED single node pool POOL");
 
@@ -41,12 +35,6 @@ fn main() {
         .task_executor(runtime.executor())
         .finish_redis_rs()
         .unwrap();
-
-    info!("{:#?}", pool.stats());
-
-    thread::sleep(Duration::from_secs(1));
-
-    info!("{:#?}", pool.stats());
 
     drop(pool);
     info!("DROPPED multi node pool POOL");

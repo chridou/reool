@@ -8,33 +8,33 @@ use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
-use crate::instrumentation::Instrumentation;
+use crate::instrumentation::InstrumentationFlavour;
 
 use crate::pooled_connection::ConnectionFlavour;
-use crate::stats::PoolStats;
 use crate::{Checkout, Ping};
 
-use super::pool_internal::{Config as PoolConfig, PoolInternal};
+use super::pool_internal::{
+    instrumentation::PoolInstrumentation, Config as PoolConfig, PoolInternal,
+};
 
 /// A connection pool that maintains multiple connections
 /// to possibly multiple Redis instances.
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
-pub struct SharedPool {
+pub(crate) struct SharedPool {
     pool: PoolInternal<ConnectionFlavour>,
     checkout_timeout: Option<Duration>,
 }
 
 impl SharedPool {
-    pub fn new<I, F, CF>(
+    pub fn new<F, CF>(
         config: Config,
         create_connection_factory: F,
         executor_flavour: ExecutorFlavour,
-        instrumentation: Option<I>,
+        instrumentation: InstrumentationFlavour,
     ) -> InitializationResult<SharedPool>
     where
-        I: Instrumentation + Send + Sync + 'static,
         CF: ConnectionFactory<Connection = ConnectionFlavour> + Send + Sync + 'static,
         F: Fn(Vec<String>) -> InitializationResult<CF>,
     {
@@ -53,7 +53,6 @@ impl SharedPool {
             desired_pool_size: config.desired_pool_size,
             backoff_strategy: config.backoff_strategy,
             reservation_limit: config.reservation_limit,
-            stats_interval: config.stats_interval,
             activation_order: config.activation_order,
         };
 
@@ -65,11 +64,16 @@ impl SharedPool {
             ));
         };
 
+        let pool_instrumentation = PoolInstrumentation {
+            pool_index: 0,
+            flavour: instrumentation.clone(),
+        };
+
         let pool = PoolInternal::new(
             pool_conf,
             connection_factory,
             executor_flavour,
-            instrumentation,
+            pool_instrumentation,
         );
 
         Ok(SharedPool {
@@ -107,20 +111,6 @@ impl SharedPool {
         self.pool.remove_connection();
     }
     */
-
-    /// Get some statistics from the pool.
-    ///
-    /// This locks the underlying pool.
-    pub fn stats(&self) -> PoolStats {
-        self.pool.stats()
-    }
-
-    /// Triggers the pool to emit statistics if `stats_interval` has elapsed.
-    ///
-    /// This locks the underlying pool.
-    pub fn trigger_stats(&self) {
-        self.pool.trigger_stats()
-    }
 
     pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
         self.pool.ping(timeout)

@@ -1,82 +1,27 @@
 use parking_lot::{Mutex, MutexGuard};
 use std::collections::VecDeque;
 use std::ops;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
 use std::time::{Duration, Instant};
 
 use futures::sync::oneshot;
 
 use super::Managed;
 use crate::activation_order::ActivationOrder;
-use crate::instrumentation::Instrumentation;
-use crate::{
-    stats::{MinMax, PoolStats},
-    Poolable,
-};
+use crate::Poolable;
+
+use super::super::instrumentation::PoolInstrumentation;
 
 /// Used to ensure there is no race between checkouts and puts
 pub(super) struct Core<T: Poolable> {
     pub idle: IdleConnections<Managed<T>>,
     pub reservations: VecDeque<Reservation<T>>,
-    pub idle_tracker: ValueTracker,
-    pub in_flight_tracker: ValueTracker,
-    pub reservations_tracker: ValueTracker,
-    pub total_connections_tracker: ValueTracker,
-    pub stats_interval: Duration,
-    pub last_flushed: Instant,
-    pub num_nodes_connected_to: usize,
 }
 
 impl<T: Poolable> Core<T> {
-    pub fn new(
-        desired_pool_size: usize,
-        stats_interval: Duration,
-        activation_order: ActivationOrder,
-        num_nodes_connected_to: usize,
-    ) -> Self {
+    pub fn new(desired_pool_size: usize, activation_order: ActivationOrder) -> Self {
         Self {
             idle: IdleConnections::new(desired_pool_size, activation_order),
             reservations: VecDeque::default(),
-            idle_tracker: ValueTracker::default(),
-            in_flight_tracker: ValueTracker::default(),
-            reservations_tracker: ValueTracker::default(),
-            total_connections_tracker: ValueTracker::default(),
-            stats_interval,
-            last_flushed: Instant::now() - stats_interval,
-            num_nodes_connected_to,
-        }
-    }
-}
-
-impl<T: Poolable> Core<T> {
-    pub fn stats(&self) -> PoolStats {
-        PoolStats {
-            connections: self.total_connections_tracker.get(),
-            in_flight: self.in_flight_tracker.get(),
-            reservations: self.reservations_tracker.get(),
-            idle: self.idle_tracker.get(),
-            node_count: self.num_nodes_connected_to,
-            pool_count: 1,
-        }
-    }
-
-    pub fn try_flush(&mut self) -> Option<PoolStats> {
-        let now = Instant::now();
-        if self.last_flushed + self.stats_interval >= now {
-            None
-        } else {
-            self.last_flushed = now;
-            let current = self.stats();
-
-            self.total_connections_tracker.apply_flush();
-            self.in_flight_tracker.apply_flush();
-            self.reservations_tracker.apply_flush();
-            self.idle_tracker.apply_flush();
-
-            Some(current)
         }
     }
 }
@@ -85,40 +30,29 @@ impl<T: Poolable> Core<T> {
 
 pub(super) struct SyncCore<T: Poolable> {
     mutex: Mutex<Core<T>>,
-    instrumentation: Option<Arc<dyn Instrumentation + Send + Sync>>,
-    contention_count: AtomicUsize,
+    instrumentation: PoolInstrumentation,
 }
 
 impl<T: Poolable> SyncCore<T> {
-    pub fn new(
-        core: Core<T>,
-        instrumentation: Option<Arc<dyn Instrumentation + Send + Sync>>,
-    ) -> Self {
+    pub fn new(core: Core<T>, instrumentation: PoolInstrumentation) -> Self {
         Self {
             mutex: Mutex::new(core),
             instrumentation,
-            contention_count: AtomicUsize::new(0),
         }
     }
 
     pub fn lock(&self) -> CoreGuard<T> {
-        let contention_count = self.contention_count.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Some(ref instrumentation) = self.instrumentation {
-            instrumentation.contention(contention_count);
-        }
-        let enter_lock_at = Instant::now();
+        self.instrumentation.reached_lock();
+        let reached_lock_at = Instant::now();
         let guard = self.mutex.lock();
         let lock_released_at = Instant::now();
 
-        if let Some(ref instrumentation) = self.instrumentation {
-            instrumentation.lock_wait_duration(enter_lock_at);
-        }
-        self.contention_count.fetch_sub(1, Ordering::SeqCst);
+        self.instrumentation.passed_lock(reached_lock_at.elapsed());
 
         CoreGuard {
             inner: guard,
             lock_released_at,
-            instrumentation: self.instrumentation.as_ref().map(Arc::clone),
+            instrumentation: self.instrumentation.clone(),
         }
     }
 }
@@ -126,7 +60,7 @@ impl<T: Poolable> SyncCore<T> {
 pub(super) struct CoreGuard<'a, T: Poolable> {
     inner: MutexGuard<'a, Core<T>>,
     lock_released_at: Instant,
-    instrumentation: Option<Arc<dyn Instrumentation + Send + Sync>>,
+    instrumentation: PoolInstrumentation,
 }
 
 impl<'a, T: Poolable> ops::Deref for CoreGuard<'a, T> {
@@ -144,9 +78,8 @@ impl<'a, T: Poolable> ops::DerefMut for CoreGuard<'a, T> {
 
 impl<'a, T: Poolable> Drop for CoreGuard<'a, T> {
     fn drop(&mut self) {
-        if let Some(ref instrumentation) = self.instrumentation {
-            instrumentation.lock_duration(self.lock_released_at);
-        }
+        self.instrumentation
+            .lock_released(self.lock_released_at.elapsed());
     }
 }
 
@@ -197,13 +130,13 @@ impl<T> IdleConnections<T> {
 
 pub(super) enum Reservation<T: Poolable> {
     Checkout(oneshot::Sender<Managed<T>>, Instant),
-    ReducePoolSize,
+    ReducePoolSize(Instant),
 }
 
 pub(super) enum Fulfillment<T: Poolable> {
     NotFulfilled(Managed<T>, Duration),
     Reservation(Duration),
-    Killed,
+    Killed(Duration),
 }
 
 impl<T: Poolable> Reservation<T> {
@@ -212,7 +145,7 @@ impl<T: Poolable> Reservation<T> {
     }
 
     pub fn reduce_pool_size() -> Self {
-        Reservation::ReducePoolSize
+        Reservation::ReducePoolSize(Instant::now())
     }
 }
 
@@ -228,72 +161,11 @@ impl<T: Poolable> Reservation<T> {
                     Fulfillment::Reservation(waiting_since.elapsed())
                 }
             }
-            Reservation::ReducePoolSize => {
+            Reservation::ReducePoolSize(waiting_since) => {
                 managed.checked_out_at = None;
                 managed.marked_for_kill = true;
-                Fulfillment::Killed
+                Fulfillment::Killed(waiting_since.elapsed())
             }
         }
-    }
-}
-
-// ===== VALUE TRACKER ======
-
-pub struct ValueTracker {
-    last: usize,
-    min_max: Option<MinMax>,
-}
-
-impl Default for ValueTracker {
-    fn default() -> Self {
-        Self {
-            last: 0,
-            min_max: None,
-        }
-    }
-}
-
-impl ValueTracker {
-    #[inline]
-    pub fn set(&mut self, v: usize) {
-        self.last = v;
-        let new_min_max = if let Some(mut min_max) = self.min_max.take() {
-            if v < min_max.0 {
-                min_max.0 = v;
-            }
-            if v > min_max.1 {
-                min_max.1 = v;
-            }
-            min_max
-        } else {
-            MinMax(v, v)
-        };
-        self.min_max = Some(new_min_max)
-    }
-
-    pub fn inc(&mut self) {
-        self.set(self.last + 1);
-    }
-
-    pub fn dec(&mut self) {
-        self.set(self.last - 1);
-    }
-
-    #[inline]
-    pub fn get(&self) -> MinMax {
-        if let Some(min_max) = self.min_max.as_ref() {
-            *min_max
-        } else {
-            MinMax(self.last, self.last)
-        }
-    }
-
-    #[inline]
-    pub fn current(&self) -> usize {
-        self.last
-    }
-
-    pub fn apply_flush(&mut self) {
-        self.min_max = None;
     }
 }
