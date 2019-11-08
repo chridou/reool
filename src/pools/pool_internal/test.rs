@@ -58,11 +58,6 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
 
     thread::sleep(Duration::from_millis(20));
 
-    assert_eq!(1, pool.stats().connections.0, "connections");
-    assert_eq!(1, pool.stats().idle.0, "idle");
-    assert_eq!(0, pool.stats().in_flight.0, "in_flight");
-    assert_eq!(0, pool.stats().reservations.0, "reservations");
-
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
 }
@@ -85,11 +80,6 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     );
 
     thread::sleep(Duration::from_millis(10));
-
-    assert_eq!(0, pool.stats().connections.0, "connections");
-    assert_eq!(0, pool.stats().idle.0, "idle");
-    assert_eq!(0, pool.stats().in_flight.0, "in_flight");
-    assert_eq!(0, pool.stats().reservations.0, "reservations");
 
     debug!("drop pool");
     drop(pool);

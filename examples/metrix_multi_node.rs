@@ -9,7 +9,7 @@ use tokio::runtime::Runtime;
 
 use reool::{config::NodePoolStrategy, Commands, RedisPool};
 
-/// Do many ping commands where many will faile because either
+/// Do many ping commands where many will fail because either
 /// the checkout ties out or the checkout queue is full
 fn main() {
     env::set_var("RUST_LOG", "reool=debug,metrix_multi_node=info");
@@ -33,7 +33,7 @@ fn main() {
         .reservation_limit(None) // No limit
         .checkout_timeout(None) // No timeout
         .task_executor(runtime.executor())
-        .instrumented_with_metrix(&mut driver, Default::default())
+        .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish_redis_rs()
         .unwrap();
 
