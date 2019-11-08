@@ -68,10 +68,8 @@ impl Inner {
                     activation_order: config.activation_order,
                 };
 
-                let indexed_instrumentation = PoolInstrumentation {
-                    pool_index,
-                    flavour: instrumentation.clone(),
-                };
+                let indexed_instrumentation =
+                    PoolInstrumentation::new(instrumentation.clone(), pool_index);
 
                 let pool = PoolInternal::new(
                     pool_conf,

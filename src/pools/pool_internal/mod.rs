@@ -10,7 +10,7 @@ use futures::{
     Poll,
 };
 use log::{debug, trace, warn};
-use tokio_timer::Delay;
+use tokio::{self, timer::Delay};
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
@@ -123,10 +123,7 @@ where
             config,
             connection_factory,
             executor,
-            PoolInstrumentation {
-                pool_index: 0,
-                flavour: InstrumentationFlavour::NoInstrumentation,
-            },
+            PoolInstrumentation::new(InstrumentationFlavour::NoInstrumentation, 0),
         )
     }
 
@@ -332,25 +329,29 @@ impl<T: Poolable> Managed<T> {
 
 impl<T: Poolable> Drop for Managed<T> {
     fn drop(&mut self) {
-        if let Some(inner_pool) = self.inner_pool.upgrade() {
-            if let Some(value) = self.value.take() {
-                inner_pool.check_in(CheckInParcel::Alive(Managed {
-                    inner_pool: Arc::downgrade(&inner_pool),
-                    value: Some(value),
-                    created_at: self.created_at,
-                    checked_out_at: self.checked_out_at,
-                }));
-            } else {
-                debug!("no value - drop connection and request new one");
-                // No connection. Create a new one.
-                inner_pool.check_in(CheckInParcel::Dropped(
-                    self.checked_out_at.as_ref().map(Instant::elapsed),
-                    self.created_at.elapsed(),
-                ));
-                inner_pool.request_new_conn();
+        let inner_pool = match self.inner_pool.upgrade() {
+            Some(inner_pool) => inner_pool,
+            None => {
+                trace!("terminating connection because the pool is gone");
+                return;
             }
+        };
+
+        if let Some(value) = self.value.take() {
+            tokio::spawn(inner_pool.check_in(CheckInParcel::Alive(Managed {
+                inner_pool: Arc::downgrade(&inner_pool),
+                value: Some(value),
+                created_at: self.created_at,
+                checked_out_at: self.checked_out_at,
+            })));
         } else {
-            trace!("terminating connection because the pool is gone")
+            debug!("no value - drop connection and request new one");
+            // No connection. Create a new one.
+            tokio::spawn(inner_pool.check_in(CheckInParcel::Dropped(
+                self.checked_out_at.as_ref().map(Instant::elapsed),
+                self.created_at.elapsed(),
+            )));
+            inner_pool.request_new_conn();
         }
     }
 }
