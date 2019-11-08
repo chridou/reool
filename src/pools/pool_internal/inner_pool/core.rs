@@ -1,95 +1,124 @@
-use parking_lot::{Mutex, MutexGuard};
 use std::collections::VecDeque;
 use std::ops;
 use std::time::{Duration, Instant};
 
-use futures::sync::oneshot;
+use futures::{future::Future, Async, Poll};
+use tokio::sync::lock::{Lock, LockGuard};
 
-use super::Managed;
 use crate::activation_order::ActivationOrder;
 use crate::Poolable;
 
 use super::super::instrumentation::PoolInstrumentation;
 
+use super::{Managed, Reservation};
+
 /// Used to ensure there is no race between checkouts and puts
 pub(super) struct Core<T: Poolable> {
     pub idle: IdleConnections<Managed<T>>,
     pub reservations: VecDeque<Reservation<T>>,
+    pub instrumentation: PoolInstrumentation,
 }
 
 impl<T: Poolable> Core<T> {
-    pub fn new(desired_pool_size: usize, activation_order: ActivationOrder) -> Self {
+    pub fn new(
+        desired_pool_size: usize,
+        activation_order: ActivationOrder,
+        instrumentation: PoolInstrumentation,
+    ) -> Self {
         Self {
             idle: IdleConnections::new(desired_pool_size, activation_order),
             reservations: VecDeque::default(),
+            instrumentation,
         }
+    }
+}
+
+impl<T: Poolable> Drop for Core<T> {
+    fn drop(&mut self) {
+        let instrumentation = self.instrumentation.clone();
+        self.idle.drain().for_each(|c| {
+            instrumentation.connection_dropped(None, c.0.created_at.elapsed());
+        })
     }
 }
 
 // ===== SYNC CORE ======
 
 pub(super) struct SyncCore<T: Poolable> {
-    mutex: Mutex<Core<T>>,
+    lock: Lock<Core<T>>,
     instrumentation: PoolInstrumentation,
 }
 
 impl<T: Poolable> SyncCore<T> {
-    pub fn new(core: Core<T>, instrumentation: PoolInstrumentation) -> Self {
+    pub fn new(core: Core<T>) -> Self {
+        let instrumentation = core.instrumentation.clone();
         Self {
-            mutex: Mutex::new(core),
+            lock: Lock::new(core),
             instrumentation,
         }
     }
 
-    pub fn lock(&self) -> CoreGuard<T> {
+    pub fn lock(&self) -> Waiting<T> {
         self.instrumentation.reached_lock();
-        let reached_lock_at = Instant::now();
-        let guard = self.mutex.lock();
-        let lock_released_at = Instant::now();
-
-        self.instrumentation.passed_lock(reached_lock_at.elapsed());
-
-        CoreGuard {
-            inner: guard,
-            lock_released_at,
-            instrumentation: self.instrumentation.clone(),
+        Waiting {
+            lock: self.lock.clone(),
+            waiting_since: Instant::now(),
         }
     }
 }
 
-impl<T: Poolable> Drop for SyncCore<T> {
-    fn drop(&mut self) {
-        let instrumentation = self.instrumentation.clone();
-        let core = self.mutex.get_mut();
-        core.idle.drain().for_each(|c| {
-            instrumentation.connection_dropped(None, c.0.created_at.elapsed());
-        })
+pub(super) struct Waiting<T: Poolable> {
+    lock: Lock<Core<T>>,
+    waiting_since: Instant,
+}
+
+impl<T> Future for Waiting<T>
+where
+    T: Poolable,
+{
+    type Item = CoreGuard<T>;
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self.lock.poll_lock() {
+            Async::Ready(guard) => {
+                guard
+                    .instrumentation
+                    .passed_lock(self.waiting_since.elapsed());
+
+                Ok(Async::Ready(CoreGuard {
+                    guard,
+                    lock_entered_at: Instant::now(),
+                }))
+            }
+            Async::NotReady => Ok(Async::NotReady),
+        }
     }
 }
 
-pub(super) struct CoreGuard<'a, T: Poolable> {
-    inner: MutexGuard<'a, Core<T>>,
-    lock_released_at: Instant,
-    instrumentation: PoolInstrumentation,
+pub(super) struct CoreGuard<T: Poolable> {
+    guard: LockGuard<Core<T>>,
+    lock_entered_at: Instant,
 }
 
-impl<'a, T: Poolable> ops::Deref for CoreGuard<'a, T> {
+impl<T: Poolable> ops::Deref for CoreGuard<T> {
     type Target = Core<T>;
     fn deref(&self) -> &Self::Target {
-        &self.inner
+        &self.guard
     }
 }
 
-impl<'a, T: Poolable> ops::DerefMut for CoreGuard<'a, T> {
+impl<T: Poolable> ops::DerefMut for CoreGuard<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
+        &mut self.guard
     }
 }
 
-impl<'a, T: Poolable> Drop for CoreGuard<'a, T> {
+impl<T: Poolable> Drop for CoreGuard<T> {
     fn drop(&mut self) {
-        self.instrumentation
-            .lock_released(self.lock_released_at.elapsed());
+        self.guard
+            .instrumentation
+            .lock_released(self.lock_entered_at.elapsed());
     }
 }
 
@@ -140,39 +169,6 @@ impl<T> IdleConnections<T> {
             IdleConnections::FiFo(ref mut idle) => Box::new(idle.drain(..)),
             IdleConnections::LiFo(ref mut idle) => {
                 Box::new(idle.drain(..)) as Box<dyn Iterator<Item = IdleSlot<T>>>
-            }
-        }
-    }
-}
-
-// ===== RESERVATION =====
-
-pub(super) enum Reservation<T: Poolable> {
-    Checkout(oneshot::Sender<Managed<T>>, Instant),
-}
-
-pub(super) enum Fulfillment<T: Poolable> {
-    NotFulfilled(Managed<T>, Duration),
-    Reservation(Duration),
-}
-
-impl<T: Poolable> Reservation<T> {
-    pub fn checkout(sender: oneshot::Sender<Managed<T>>) -> Self {
-        Reservation::Checkout(sender, Instant::now())
-    }
-}
-
-impl<T: Poolable> Reservation<T> {
-    pub fn try_fulfill(self, mut managed: Managed<T>) -> Fulfillment<T> {
-        match self {
-            Reservation::Checkout(sender, waiting_since) => {
-                managed.checked_out_at = Some(Instant::now());
-                if let Err(mut managed) = sender.send(managed) {
-                    managed.checked_out_at = None;
-                    Fulfillment::NotFulfilled(managed, waiting_since.elapsed())
-                } else {
-                    Fulfillment::Reservation(waiting_since.elapsed())
-                }
             }
         }
     }

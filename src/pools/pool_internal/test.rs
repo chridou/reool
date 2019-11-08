@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use futures::future::{self, Future};
 use log::debug;
 use pretty_env_logger;
-use tokio::runtime::Runtime;
+use tokio::{self, runtime::Runtime};
 use tokio_timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
@@ -89,14 +89,18 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 #[test]
 fn checkout_one() {
     let _ = pretty_env_logger::try_init();
-    let runtime = Runtime::new().unwrap();
-    let executor = runtime.executor().into();
+    let mut runtime = Runtime::new().unwrap();
+    let executor = runtime.executor();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = PoolInternal::no_instrumentation(config.clone(), U32Factory::default(), executor);
+    let pool = PoolInternal::no_instrumentation(
+        config.clone(),
+        U32Factory::default(),
+        executor.clone().into(),
+    );
 
     let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
-    let v = checked_out.wait().unwrap();
+    let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
@@ -109,7 +113,7 @@ fn checkout_one() {
 #[test]
 fn checkout_twice_with_one_not_reusable() {
     let _ = pretty_env_logger::try_init();
-    let runtime = Runtime::new().unwrap();
+    let mut runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
@@ -117,12 +121,12 @@ fn checkout_twice_with_one_not_reusable() {
 
     // We do not return the con with managed
     let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
-    let v = checked_out.wait().unwrap();
+    let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
     let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
-    let v = checked_out.wait().unwrap();
+    let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
 
@@ -133,7 +137,7 @@ fn checkout_twice_with_one_not_reusable() {
 #[test]
 fn checkout_twice_with_delay_factory_with_one_not_reusable() {
     let _ = pretty_env_logger::try_init();
-    let runtime = Runtime::new().unwrap();
+    let mut runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
@@ -142,12 +146,12 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
 
     // We do not return the con with managed
     let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
-    let v = checked_out.wait().unwrap();
+    let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
     let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
-    let v = checked_out.wait().unwrap();
+    let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
 
@@ -158,18 +162,18 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
 #[test]
 fn with_empty_pool_checkout_returns_timeout() {
     let _ = pretty_env_logger::try_init();
-    let runtime = Runtime::new().unwrap();
+    let mut runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(0);
 
     let pool = PoolInternal::no_instrumentation(config.clone(), UnitFactory, executor);
 
     let checked_out = pool.check_out(Some(Duration::from_millis(10)));
-    let err = checked_out.wait().err().unwrap();
+    let err = runtime.block_on(checked_out).err().unwrap();
     assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
     let checked_out = pool.check_out(Some(Duration::from_millis(10)));
-    let err = checked_out.wait().err().unwrap();
+    let err = runtime.block_on(checked_out).err().unwrap();
     assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
     drop(pool);
@@ -179,7 +183,7 @@ fn with_empty_pool_checkout_returns_timeout() {
 #[test]
 fn create_connection_fails_some_times() {
     let _ = pretty_env_logger::try_init();
-    let runtime = Runtime::new().unwrap();
+    let mut runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
@@ -190,12 +194,12 @@ fn create_connection_fails_some_times() {
     );
 
     let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
-    let v = checked_out.wait().unwrap();
+    let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 4);
 
     let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
-    let v = checked_out.wait().unwrap();
+    let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 8);
 

@@ -69,10 +69,7 @@ impl SharedPool {
             pool_conf,
             connection_factory,
             executor_flavour,
-            PoolInstrumentation {
-                pool_index: 0,
-                flavour: instrumentation,
-            },
+            PoolInstrumentation::new(instrumentation, 0),
         );
 
         Ok(SharedPool {

@@ -1,4 +1,8 @@
 //! Pluggable instrumentation
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use crate::instrumentation::{Instrumentation, InstrumentationFlavour};
@@ -7,9 +11,22 @@ use crate::instrumentation::{Instrumentation, InstrumentationFlavour};
 pub(crate) struct PoolInstrumentation {
     pub pool_index: usize,
     pub flavour: InstrumentationFlavour,
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl PoolInstrumentation {
+    pub fn new(flavour: InstrumentationFlavour, pool_index: usize) -> Self {
+        Self {
+            pool_index,
+            flavour,
+            in_flight: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+
     pub fn pool_added(&self) {
         self.flavour.pool_added(self.pool_index)
     }
@@ -47,9 +64,11 @@ impl PoolInstrumentation {
     }
 
     pub fn in_flight_inc(&self) {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
         self.flavour.in_flight_inc(self.pool_index)
     }
     pub fn in_flight_dec(&self) {
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
         self.flavour.in_flight_dec(self.pool_index)
     }
 
