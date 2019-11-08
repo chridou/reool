@@ -197,6 +197,25 @@ where
     }
 }
 
+pub fn set_pool_per_node_multiplier<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+where
+    F: FnMut(u32) -> (),
+    T: Into<String>,
+{
+    let prefix = make_prefix(prefix);
+
+    let key = format!("{}_{}", prefix, "POOL_PER_NODE_MULTIPLIER");
+    match env::var(&key) {
+        Ok(s) => {
+            f(s.parse()
+                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            Ok(())
+        }
+        Err(env::VarError::NotPresent) => Ok(()),
+        Err(err) => Err(InitializationError::new(key, Some(err))),
+    }
+}
+
 fn parse_connect_to(what: &str) -> Vec<String> {
     what.split(';')
         .filter(|s| !s.is_empty())

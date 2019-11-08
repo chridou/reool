@@ -10,20 +10,23 @@ use futures::{
     Poll,
 };
 use log::{debug, trace, warn};
-use tokio_timer::{Delay, Timeout};
+use tokio_timer::Delay;
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{ConnectionFactory, NewConnectionError};
 use crate::error::CheckoutError;
 use crate::executor_flavour::*;
-use crate::instrumentation::Instrumentation;
+use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{stats::PoolStats, Ping, PingState, Poolable};
+use crate::{Ping, Poolable};
 
 use inner_pool::{CheckInParcel, InnerPool};
 
 mod inner_pool;
+pub(crate) mod instrumentation;
+
+use self::instrumentation::PoolInstrumentation;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
@@ -67,15 +70,14 @@ impl<T> PoolInternal<T>
 where
     T: Poolable,
 {
-    pub fn new<C, I>(
+    pub fn new<C>(
         config: Config,
         connection_factory: C,
         executor: ExecutorFlavour,
-        instrumentation: Option<I>,
+        instrumentation: PoolInstrumentation,
     ) -> Self
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
-        I: Instrumentation + Send + Sync + 'static,
     {
         let (new_con_tx, new_conn_rx) = mpsc::unbounded();
 
@@ -117,32 +119,19 @@ where
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
     {
-        Self::new::<_, ()>(config, connection_factory, executor, None)
+        Self::new(
+            config,
+            connection_factory,
+            executor,
+            PoolInstrumentation {
+                pool_index: 0,
+                flavour: InstrumentationFlavour::NoInstrumentation,
+            },
+        )
     }
 
     pub fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
         self.inner_pool.check_out(timeout)
-    }
-
-    pub fn add_new_connection(&self) {
-        trace!("add new connection request");
-        self.inner_pool.request_new_conn();
-    }
-
-    pub fn remove_connection(&self) {
-        self.inner_pool.remove_conn()
-    }
-
-    pub fn stats(&self) -> PoolStats {
-        self.inner_pool.stats()
-    }
-
-    pub fn trigger_stats(&self) {
-        self.inner_pool.trigger_stats()
-    }
-
-    pub fn connected_to(&self) -> &[String] {
-        self.inner_pool.connected_to()
     }
 
     #[cfg(test)]
@@ -150,84 +139,20 @@ where
     fn inner_pool(&self) -> &Arc<InnerPool<T>> {
         &self.inner_pool
     }
+
+    pub fn connected_to(&self) -> &[String] {
+        self.inner_pool.connected_to()
+    }
+
+    fn add_new_connection(&self) {
+        trace!("add new connection request");
+        self.inner_pool.request_new_conn();
+    }
 }
 
 impl PoolInternal<ConnectionFlavour> {
     pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
-        use crate::commands::Commands;
-
-        #[derive(Debug)]
-        struct PingError(String);
-
-        impl fmt::Display for PingError {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}", self.0)
-            }
-        }
-
-        impl StdError for PingError {
-            fn description(&self) -> &str {
-                "ping failed"
-            }
-
-            fn cause(&self) -> Option<&dyn StdError> {
-                None
-            }
-        }
-
-        let started_at = Instant::now();
-
-        let known_connected_to = if self.inner_pool.connected_to().len() == 1 {
-            Some(self.inner_pool.connected_to()[0].to_owned())
-        } else {
-            None
-        };
-
-        let f = crate::Checkout(self.inner_pool.check_out(Some(timeout)))
-            .map_err(|err| (Box::new(err) as Box<dyn StdError + Send>, None))
-            .and_then(|conn| {
-                let connected_to = conn.connected_to().to_owned();
-                conn.ping().then(|r| match r {
-                    Ok(_) => Ok(connected_to),
-                    Err(err) => Err((
-                        Box::new(err) as Box<dyn StdError + Send>,
-                        Some(connected_to),
-                    )),
-                })
-            });
-
-        Timeout::new(f, timeout).then(move |r| {
-            let (uri, state) = match r {
-                Ok(uri) => (Some(uri), PingState::Ok),
-                Err(err) => {
-                    if err.is_inner() {
-                        let (err, uri) = err.into_inner().unwrap();
-                        (uri, PingState::Failed(err))
-                    } else if err.is_elapsed() {
-                        (
-                            known_connected_to,
-                            PingState::Failed(Box::new(PingError(format!(
-                                "ping time out of {:?} reached",
-                                timeout
-                            )))),
-                        )
-                    } else {
-                        (
-                            known_connected_to,
-                            PingState::Failed(Box::new(PingError(
-                                "a timer error occurred".to_string(),
-                            ))),
-                        )
-                    }
-                }
-            };
-
-            Ok(Ping {
-                uri,
-                latency: started_at.elapsed(),
-                state,
-            })
-        })
+        self.inner_pool.ping(timeout)
     }
 }
 
@@ -385,7 +310,6 @@ pub(crate) struct Managed<T: Poolable> {
     checked_out_at: Option<Instant>,
     pub value: Option<T>,
     inner_pool: Weak<InnerPool<T>>,
-    marked_for_kill: bool,
 }
 
 impl<T: Poolable> Managed<T> {
@@ -393,7 +317,6 @@ impl<T: Poolable> Managed<T> {
         Managed {
             value: Some(value),
             inner_pool,
-            marked_for_kill: false,
             created_at: Instant::now(),
             checked_out_at: None,
         }
@@ -410,13 +333,10 @@ impl<T: Poolable> Managed<T> {
 impl<T: Poolable> Drop for Managed<T> {
     fn drop(&mut self) {
         if let Some(inner_pool) = self.inner_pool.upgrade() {
-            if self.marked_for_kill {
-                inner_pool.check_in(CheckInParcel::Killed(self.created_at.elapsed()))
-            } else if let Some(value) = self.value.take() {
+            if let Some(value) = self.value.take() {
                 inner_pool.check_in(CheckInParcel::Alive(Managed {
                     inner_pool: Arc::downgrade(&inner_pool),
                     value: Some(value),
-                    marked_for_kill: false,
                     created_at: self.created_at,
                     checked_out_at: self.checked_out_at,
                 }));

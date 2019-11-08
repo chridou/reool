@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.18.0 (BREAKING CHANGE)
+
+    * Removed pool stats
+    * Instrumentation trait changed
+    * Metrix output changed
+    * PoolPerNode can create more sub pools to reduce contention
+
+## 0.17.2 (BREAKING CHANGE)
+
+    * added instrumentation for lock contention
+
 ## 0.16.2
 
     * fix bug in selecting connection(was always the same)

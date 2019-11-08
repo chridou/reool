@@ -13,6 +13,7 @@
 //! See `NodePoolStrategy` to read on how to configure a pool with multiple
 //! nodes.
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, warn};
@@ -20,7 +21,7 @@ use log::{debug, warn};
 use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
-use crate::instrumentation::{Instrumentation, NoInstrumentation};
+use crate::instrumentation::{Instrumentation, InstrumentationFlavour};
 use crate::pools::{PoolPerNode, SharedPool};
 use crate::redis_rs::RedisRsFactory;
 
@@ -61,6 +62,14 @@ pub struct Config {
     pub connect_to_nodes: Vec<String>,
     /// Sets the `NodePoolStrategy` to be used when creating the pool.
     pub node_pool_strategy: NodePoolStrategy,
+    /// When pool per node is created, sets a multiplier
+    /// for the amount of pools per node to be created.
+    ///
+    /// Other values will be adjusted if the multiplier is > 1:
+    ///
+    /// * `reservation_limit`: Stays zero if zero, otherwise (`reservation_limit`/multiplier) +1
+    /// * `desired_pool_size`: (`desired_pool_size`/multiplier) +1
+    pub pool_per_node_multiplier: u32,
 }
 
 impl Config {
@@ -133,6 +142,18 @@ impl Config {
         self
     }
 
+    /// When pool per node is created, sets a multiplier
+    /// for the amount of pools per node to be created.
+    ///
+    /// Other values will be adjusted if the multiplier is > 1:
+    ///
+    /// * `reservation_limit`: Stays zero if zero, otherwise (`reservation_limit`/multiplier) +1
+    /// * `desired_pool_size`: (`desired_pool_size`/multiplier) +1
+    pub fn pool_per_node_multiplier(mut self, v: u32) -> Self {
+        self.pool_per_node_multiplier = v;
+        self
+    }
+
     /// Updates this configuration from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
@@ -146,6 +167,7 @@ impl Config {
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `NODE_POOL_STRATEGY`: Omit if you do not want to update the value
+    /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -179,11 +201,15 @@ impl Config {
             self.node_pool_strategy = v;
         })?;
 
+        helpers::set_pool_per_node_multiplier(prefix, |v| {
+            self.pool_per_node_multiplier = v;
+        })?;
+
         Ok(())
     }
 
     /// Create a `Builder` initialized with the values from this `Config`
-    pub fn builder(&self) -> Builder<NoInstrumentation> {
+    pub fn builder(&self) -> Builder {
         Builder::default()
             .desired_pool_size(self.desired_pool_size)
             .checkout_timeout(self.checkout_timeout)
@@ -193,6 +219,7 @@ impl Config {
             .min_required_nodes(self.min_required_nodes)
             .connect_to_nodes(self.connect_to_nodes.clone())
             .node_pool_strategy(self.node_pool_strategy)
+            .pool_per_node_multiplier(self.pool_per_node_multiplier)
     }
 }
 
@@ -208,28 +235,29 @@ impl Default for Config {
             min_required_nodes: 1,
             connect_to_nodes: Vec::new(),
             node_pool_strategy: NodePoolStrategy::default(),
+            pool_per_node_multiplier: 1,
         }
     }
 }
 
 /// A builder for a `MultiNodePool`
-pub struct Builder<I> {
+pub struct Builder {
     config: Config,
     executor_flavour: ExecutorFlavour,
-    instrumentation: Option<I>,
+    instrumentation: InstrumentationFlavour,
 }
 
-impl Default for Builder<NoInstrumentation> {
+impl Default for Builder {
     fn default() -> Self {
         Self {
             config: Config::default(),
             executor_flavour: ExecutorFlavour::Runtime,
-            instrumentation: None,
+            instrumentation: InstrumentationFlavour::NoInstrumentation,
         }
     }
 }
 
-impl<I> Builder<I> {
+impl Builder {
     /// The number of connections the pool should initially have
     /// and try to maintain
     pub fn desired_pool_size(mut self, v: usize) -> Self {
@@ -294,6 +322,18 @@ impl<I> Builder<I> {
         self
     }
 
+    /// When pool per node is created, sets a multiplier
+    /// for the amount of pools per node to be created.
+    ///
+    /// Other values will be adjusted if the multiplier is > 1:
+    ///
+    /// * `reservation_limit`: Stays zero if zero, otherwise (`reservation_limit`/multiplier) +1
+    /// * `desired_pool_size`: (`desired_pool_size`/multiplier) +1
+    pub fn pool_per_node_multiplier(mut self, v: u32) -> Self {
+        self.config.pool_per_node_multiplier = v;
+        self
+    }
+
     /// The executor to use for spawning tasks. If not set it is assumed
     /// that the pool is created on the default runtime.
     pub fn task_executor(mut self, executor: ::tokio::runtime::TaskExecutor) -> Self {
@@ -302,30 +342,33 @@ impl<I> Builder<I> {
     }
 
     /// Adds instrumentation to the pool
-    pub fn instrumented<II>(self, instrumentation: II) -> Builder<II>
+    pub fn instrumented<I>(mut self, instrumentation: I) -> Self
     where
-        II: Instrumentation + Send + Sync + 'static,
+        I: Instrumentation + Send + Sync + 'static,
     {
-        Builder {
-            config: self.config,
-            executor_flavour: self.executor_flavour,
-            instrumentation: Some(instrumentation),
-        }
+        self.instrumentation = InstrumentationFlavour::Custom(Arc::new(instrumentation));
+        self
     }
 
     #[cfg(feature = "metrix")]
-    pub fn instrumented_with_metrix<A: metrix::processor::AggregatesProcessors>(
-        self,
+    pub fn with_mounted_metrix_instrumentation<A: metrix::processor::AggregatesProcessors>(
+        mut self,
         aggregates_processors: &mut A,
         config: crate::instrumentation::MetrixConfig,
-    ) -> Builder<crate::instrumentation::metrix::MetrixInstrumentation> {
+    ) -> Self {
         let instrumentation =
             crate::instrumentation::MetrixInstrumentation::new(aggregates_processors, config);
-        Builder {
-            config: self.config,
-            executor_flavour: self.executor_flavour,
-            instrumentation: Some(instrumentation),
-        }
+        self.instrumentation = InstrumentationFlavour::Metrix(instrumentation);
+        self
+    }
+
+    #[cfg(feature = "metrix")]
+    pub fn with_metrix_instrumentation(
+        mut self,
+        instrumentation: crate::instrumentation::MetrixInstrumentation,
+    ) -> Self {
+        self.instrumentation = InstrumentationFlavour::Metrix(instrumentation);
+        self
     }
 
     /// Sets values in this builder from the environment.
@@ -341,6 +384,7 @@ impl<I> Builder<I> {
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `NODE_POOL_STRATEGY`: ` Omit if you do not want to update the value
+    /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         self.config.update_from_environment(prefix)?;
         Ok(())
@@ -359,19 +403,21 @@ impl<I> Builder<I> {
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `NODE_POOL_STRATEGY`: ` Omit if you do not want to update the value
+    /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
     pub fn updated_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         self.config.update_from_environment(prefix)?;
         Ok(self)
     }
-}
 
-impl<I> Builder<I>
-where
-    I: Instrumentation + Send + Sync + 'static,
-{
     /// Build a new `RedisPool`
     pub fn finish_redis_rs(self) -> InitializationResult<RedisPool> {
         let config = self.config;
+
+        if config.pool_per_node_multiplier == 0 {
+            return Err(InitializationError::message_only(
+                "pool_per_node_multiplier must not be zero",
+            ));
+        }
 
         if config.connect_to_nodes.len() < config.min_required_nodes {
             return Err(InitializationError::message_only(format!(
@@ -511,12 +557,6 @@ impl std::error::Error for ParseNodesStrategyError {
     }
 }
 
-fn create_no_pool<I>(instrumentation: Option<I>) -> RedisPool
-where
-    I: Instrumentation,
-{
-    instrumentation
-        .iter()
-        .for_each(|instr| instr.stats(crate::stats::PoolStats::default()));
+fn create_no_pool(_instrumentation: InstrumentationFlavour) -> RedisPool {
     RedisPool(RedisPoolFlavour::Empty)
 }
