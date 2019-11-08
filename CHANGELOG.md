@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.1
+
+    * Bugfix: recalculation of connections for pool-per-node-multiplier was not done
+
 ## 0.18.0 (BREAKING CHANGE)
 
     * Removed pool stats

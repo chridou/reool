@@ -65,6 +65,8 @@ pub struct Config {
     /// When pool per node is created, sets a multiplier
     /// for the amount of pools per node to be created.
     ///
+    /// Increasing this values reduces the contention on each created pool
+    ///
     /// Other values will be adjusted if the multiplier is > 1:
     ///
     /// * `reservation_limit`: Stays zero if zero, otherwise (`reservation_limit`/multiplier) +1
@@ -144,6 +146,8 @@ impl Config {
 
     /// When pool per node is created, sets a multiplier
     /// for the amount of pools per node to be created.
+    ///
+    /// Increasing this values reduces the contention on each created pool
     ///
     /// Other values will be adjusted if the multiplier is > 1:
     ///
@@ -324,6 +328,8 @@ impl Builder {
 
     /// When pool per node is created, sets a multiplier
     /// for the amount of pools per node to be created.
+    ///
+    /// Increasing this values reduces the contention on each created pool
     ///
     /// Other values will be adjusted if the multiplier is > 1:
     ///

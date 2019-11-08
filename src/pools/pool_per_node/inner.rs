@@ -49,6 +49,10 @@ impl Inner {
                 info!("new reservation limit is is {}", new_limit);
                 *limit = new_limit;
             }
+
+            let new_connections_per_pool = config.desired_pool_size / multiplier + 1;
+            info!("connections per pool is {}", new_connections_per_pool);
+            config.desired_pool_size = new_connections_per_pool;
         }
 
         let mut pools = Vec::new();
