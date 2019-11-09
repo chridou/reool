@@ -2,8 +2,7 @@ use std::collections::VecDeque;
 use std::ops;
 use std::time::{Duration, Instant};
 
-use futures::{future::Future, Async, Poll};
-use tokio::sync::lock::{Lock, LockGuard};
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::activation_order::ActivationOrder;
 use crate::Poolable;
@@ -45,7 +44,7 @@ impl<T: Poolable> Drop for Core<T> {
 // ===== SYNC CORE ======
 
 pub(super) struct SyncCore<T: Poolable> {
-    lock: Lock<Core<T>>,
+    core: Mutex<Core<T>>,
     instrumentation: PoolInstrumentation,
 }
 
@@ -53,70 +52,49 @@ impl<T: Poolable> SyncCore<T> {
     pub fn new(core: Core<T>) -> Self {
         let instrumentation = core.instrumentation.clone();
         Self {
-            lock: Lock::new(core),
+            core: Mutex::new(core),
             instrumentation,
         }
     }
 
-    pub fn lock(&self) -> Waiting<T> {
+    pub async fn lock(&self) -> CoreGuard<'_, T> {
         self.instrumentation.reached_lock();
-        Waiting {
-            lock: self.lock.clone(),
-            waiting_since: Instant::now(),
+
+        let waiting_since = Instant::now();
+        let core = self.core.lock().await;
+        let lock_entered_at = Instant::now();
+        let wait_duration = lock_entered_at.duration_since(waiting_since); 
+
+        self.instrumentation.passed_lock(wait_duration);
+
+        CoreGuard {
+            core,
+            lock_entered_at,
         }
     }
 }
 
-pub(super) struct Waiting<T: Poolable> {
-    lock: Lock<Core<T>>,
-    waiting_since: Instant,
-}
-
-impl<T> Future for Waiting<T>
-where
-    T: Poolable,
-{
-    type Item = CoreGuard<T>;
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self.lock.poll_lock() {
-            Async::Ready(guard) => {
-                guard
-                    .instrumentation
-                    .passed_lock(self.waiting_since.elapsed());
-
-                Ok(Async::Ready(CoreGuard {
-                    guard,
-                    lock_entered_at: Instant::now(),
-                }))
-            }
-            Async::NotReady => Ok(Async::NotReady),
-        }
-    }
-}
-
-pub(super) struct CoreGuard<T: Poolable> {
-    guard: LockGuard<Core<T>>,
+pub(super) struct CoreGuard<'a, T: Poolable> {
+    core: MutexGuard<'a, Core<T>>,
     lock_entered_at: Instant,
 }
 
-impl<T: Poolable> ops::Deref for CoreGuard<T> {
+impl<'a, T: Poolable> ops::Deref for CoreGuard<'a, T> {
     type Target = Core<T>;
     fn deref(&self) -> &Self::Target {
-        &self.guard
+        &self.core
     }
 }
 
-impl<T: Poolable> ops::DerefMut for CoreGuard<T> {
+impl<'a, T: Poolable> ops::DerefMut for CoreGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.guard
+        &mut self.core
     }
 }
 
-impl<T: Poolable> Drop for CoreGuard<T> {
+impl<'a, T: Poolable> Drop for CoreGuard<'a, T> {
     fn drop(&mut self) {
-        self.guard
+        self.core
             .instrumentation
             .lock_released(self.lock_entered_at.elapsed());
     }
