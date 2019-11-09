@@ -15,7 +15,7 @@ edition = "2018"
 log = "0.4"
 parking_lot = "0.9"
 futures = "0.1"
-tokio = "0.1"
+tokio = "0.2.0-alpha.6"
 redis = "0.13"
 rand = "0.7"
 metrix = { version = "0.9", optional = true }
