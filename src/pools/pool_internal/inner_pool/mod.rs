@@ -3,17 +3,17 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use futures::{
-    future::{self, Future},
-    sync::{mpsc, oneshot},
+    future::{Future, FutureExt, TryFutureExt},
+    channel::{mpsc, oneshot},
 };
 use log::{debug, error, trace, warn};
-use tokio::timer::Timeout;
+use tokio::future::FutureExt as _;
 
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{Ping, PingState, Poolable};
+use crate::{Ping, PingState, Poolable, RedisConnection};
 
-use super::{CheckoutManaged, Config, Managed, NewConnMessage};
+use super::{Config, Managed, NewConnMessage};
 
 use self::core::{Core, CoreGuard, SyncCore};
 use super::instrumentation::PoolInstrumentation;
@@ -54,12 +54,12 @@ where
         }
     }
 
-    pub(super) fn check_in(
+    pub(super) async fn check_in(
         &self,
         parcel: CheckInParcel<T>,
-    ) -> impl Future<Item = (), Error = ()> + Send {
+    ) {
         match parcel {
-            CheckInParcel::Alive(managed) => Box::new(self.check_in_alive(managed)),
+            CheckInParcel::Alive(managed) => self.check_in_alive(managed).await,
             CheckInParcel::Dropped(in_flight_time, life_time) => {
                 if let Some(in_flight_time) = in_flight_time {
                     self.instrumentation
@@ -68,13 +68,11 @@ where
                 } else {
                     warn!("no in flight time for dropped connection - this is a bug");
                 }
-
-                Box::new(future::ok(())) as Box<dyn Future<Item = _, Error = _> + Send>
             }
         }
     }
 
-    fn check_in_alive(&self, mut managed: Managed<T>) -> impl Future<Item = (), Error = ()> + Send {
+    async fn check_in_alive(&self, mut managed: Managed<T>) {
         let checked_out_at = managed.checked_out_at.take();
 
         if let Some(checked_out_at) = checked_out_at {
@@ -87,113 +85,110 @@ where
             self.instrumentation.checked_in_new_connection();
         }
 
-        self.sync_core.lock().map(|mut core| {
-            if core.reservations.is_empty() {
-                core.idle.put(managed);
-                trace!(
-                    "check in - no reservations - added to idle - ide: {}",
-                    core.idle.len()
-                );
-                core.instrumentation.idle_inc();
-            } else {
-                // Do not let this one get dropped!
-                let mut to_fulfill = managed;
-                while let Some(one_waiting) = core.reservations.pop_front() {
-                    match one_waiting.try_fulfill(to_fulfill) {
-                        Fulfillment::Reservation(waited_for) => {
-                            trace!("fulfill reservation - fulfilled - in-flight");
+        let core = self.sync_core.lock().await;
 
-                            core.instrumentation
-                                .checked_out_connection(Duration::from_secs(0));
-                            core.instrumentation.reservation_fulfilled(waited_for);
-                            core.instrumentation.in_flight_inc();
+        if core.reservations.is_empty() {
+            core.idle.put(managed);
+            trace!(
+                "check in - no reservations - added to idle - ide: {}",
+                core.idle.len()
+            );
+            core.instrumentation.idle_inc();
+        } else {
+            // Do not let this one get dropped!
+            let mut to_fulfill = managed;
+            while let Some(one_waiting) = core.reservations.pop_front() {
+                match one_waiting.try_fulfill(to_fulfill) {
+                    Fulfillment::Reservation(waited_for) => {
+                        trace!("fulfill reservation - fulfilled - in-flight");
 
-                            return;
-                        }
-                        Fulfillment::NotFulfilled(not_fulfilled, waited_for) => {
-                            trace!("fulfill reservation - not fulfilled");
-                            core.instrumentation.reservation_not_fulfilled(waited_for);
-
-                            to_fulfill = not_fulfilled;
-                        }
-                    }
-                }
-
-                core.idle.put(to_fulfill);
-                let num_idle = core.idle.len();
-                core.instrumentation.idle_inc();
-                trace!("check in - none fulfilled - added to idle {}", num_idle);
-            }
-        })
-    }
-
-    pub(super) fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
-        let reservation_limit = self.config.reservation_limit;
-        CheckoutManaged::new(
-            self.sync_core
-                .lock()
-                .map_err(|()| CheckoutError::from(CheckoutErrorKind::TaskExecution))
-                .and_then(move |mut core| {
-                    if let Some((mut managed, idle_since)) = { core.idle.get() } {
-                        trace!("check out - checking out idle connection");
-                        managed.checked_out_at = Some(Instant::now());
-
-                        core.instrumentation.checked_out_connection(idle_since);
-                        core.instrumentation.idle_dec();
+                        core.instrumentation
+                            .checked_out_connection(Duration::from_secs(0));
+                        core.instrumentation.reservation_fulfilled(waited_for);
                         core.instrumentation.in_flight_inc();
 
-                        CheckoutManaged::new(future::ok(managed))
-                    } else {
-                        if let Some(reservation_limit) = reservation_limit {
-                            if core.reservations.len() == reservation_limit {
-                                trace!(
-                                    "check out - reservation limit reached \
-                                     - returning error"
-                                );
-
-                                if reservation_limit == 0 {
-                                    return CheckoutManaged::new(future::err(CheckoutError::new(
-                                        CheckoutErrorKind::NoConnection,
-                                    )));
-                                } else {
-                                    core.instrumentation.reservation_limit_reached();
-                                    return CheckoutManaged::new(future::err(CheckoutError::new(
-                                        CheckoutErrorKind::QueueLimitReached,
-                                    )));
-                                }
-                            }
-                        }
-                        trace!(
-                            "check out - no idle connection - \
-                             enqueue reservation"
-                        );
-                        Self::create_reservation(timeout, core)
+                        return;
                     }
-                }),
-        )
+                    Fulfillment::NotFulfilled(not_fulfilled, waited_for) => {
+                        trace!("fulfill reservation - not fulfilled");
+                        core.instrumentation.reservation_not_fulfilled(waited_for);
+
+                        to_fulfill = not_fulfilled;
+                    }
+                }
+            }
+
+            core.idle.put(to_fulfill);
+            let num_idle = core.idle.len();
+            core.instrumentation.idle_inc();
+            trace!("check in - none fulfilled - added to idle {}", num_idle);
+        }
     }
 
-    fn create_reservation(timeout: Option<Duration>, mut core: CoreGuard<T>) -> CheckoutManaged<T> {
-        let (tx, rx) = oneshot::channel();
-        let waiting = Reservation::checkout(tx);
-        core.reservations.push_back(waiting);
+    pub(super) async fn check_out(&self, timeout: Option<Duration>) -> Result<Managed<T>, CheckoutError> {
+        let reservation_limit = self.config.reservation_limit;
 
-        let fut = rx
-            .map(From::from)
-            .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::NoConnection, err));
-        let fut = if let Some(timeout) = timeout {
-            let timeout_fut = Timeout::new(fut, timeout)
-                .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::CheckoutTimeout, err));
-            CheckoutManaged::new(timeout_fut)
+        let core = self.sync_core.lock().await;
+
+        if let Some((mut managed, idle_since)) = { core.idle.get() } {
+            trace!("check out - checking out idle connection");
+            managed.checked_out_at = Some(Instant::now());
+
+            core.instrumentation.checked_out_connection(idle_since);
+            core.instrumentation.idle_dec();
+            core.instrumentation.in_flight_inc();
+
+            Ok(managed)
         } else {
-            CheckoutManaged::new(fut)
-        };
+            if let Some(reservation_limit) = reservation_limit {
+                if core.reservations.len() == reservation_limit {
+                    trace!(
+                        "check out - reservation limit reached \
+                            - returning error"
+                    );
 
+                    let err = if reservation_limit == 0 {
+                        CheckoutError::new(CheckoutErrorKind::NoConnection)
+                    } else {
+                        core.instrumentation.reservation_limit_reached();
+                        CheckoutError::new(CheckoutErrorKind::QueueLimitReached)
+                    };
+
+                    return Err(err);
+                }
+            }
+
+            trace!(
+                "check out - no idle connection - \
+                    enqueue reservation"
+            );
+
+            Self::create_reservation(timeout, core).await
+        }
+    }
+
+    fn create_reservation(timeout: Option<Duration>, mut core: CoreGuard<'_, T>) -> impl Future<Output = Result<Managed<T>, CheckoutError>> {
+        let (tx, rx) = oneshot::channel::<Managed<T>>();
+        let waiting = Reservation::checkout(tx);
+
+        core.reservations.push_back(waiting);
         core.instrumentation.reservation_added();
 
         drop(core);
 
-        fut
+        async {
+            let managed = rx
+                .map_ok(Managed::<T>::from)
+                .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::NoConnection, err));
+
+            if let Some(timeout) = timeout {
+                managed.timeout(timeout)
+                    .await
+                    .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::CheckoutTimeout, err))?
+            } else {
+                managed.await
+            }
+        }
     }
 
     pub(super) fn request_new_conn(&self) {
@@ -231,7 +226,7 @@ where
 }
 
 impl InnerPool<ConnectionFlavour> {
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
+    pub async fn ping(&self, timeout: Duration) -> Result<Ping, ()> {
         use crate::commands::Commands;
 
         #[derive(Debug)]
@@ -261,50 +256,41 @@ impl InnerPool<ConnectionFlavour> {
             None
         };
 
-        let f = crate::Checkout(self.check_out(Some(timeout)))
-            .map_err(|err| (Box::new(err) as Box<dyn StdError + Send>, None))
-            .and_then(|conn| {
+        let result =
+            async {
+                let conn = self.check_out(Some(timeout)).await
+                    .map(RedisConnection::from_ok_managed)
+                    .map_err(|err| (Box::new(err) as Box<dyn StdError + Send>, None))?;
+
                 let connected_to = conn.connected_to().to_owned();
-                conn.ping().then(|r| match r {
+
+                match conn.ping().await {
                     Ok(_) => Ok(connected_to),
                     Err(err) => Err((
                         Box::new(err) as Box<dyn StdError + Send>,
                         Some(connected_to),
                     )),
-                })
-            });
-
-        Timeout::new(f, timeout).then(move |r| {
-            let (uri, state) = match r {
-                Ok(uri) => (Some(uri), PingState::Ok),
-                Err(err) => {
-                    if err.is_inner() {
-                        let (err, uri) = err.into_inner().unwrap();
-                        (uri, PingState::Failed(err))
-                    } else if err.is_elapsed() {
-                        (
-                            single_connected_to,
-                            PingState::Failed(Box::new(PingError(format!(
-                                "ping time out of {:?} reached",
-                                timeout
-                            )))),
-                        )
-                    } else {
-                        (
-                            single_connected_to,
-                            PingState::Failed(Box::new(PingError(
-                                "a timer error occurred".to_string(),
-                            ))),
-                        )
-                    }
                 }
-            };
+            }
+            .timeout(timeout)
+            .await;
 
-            Ok(Ping {
-                uri,
-                latency: started_at.elapsed(),
-                state,
-            })
+        let (uri, state) = match result {
+            Ok(Ok(uri)) => (Some(uri), PingState::Ok),
+            Ok(Err((err, uri))) => (uri, PingState::Failed(err)),
+            Err(err) => (
+                single_connected_to,
+                PingState::Failed(Box::new(PingError(format!(
+                    "ping time out of {:?} reached",
+                    timeout
+                )))),
+            ),
+        };
+
+        Ok(Ping {
+            uri,
+            latency: started_at.elapsed(),
+            state,
         })
     }
 }

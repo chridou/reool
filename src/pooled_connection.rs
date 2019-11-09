@@ -23,6 +23,13 @@ pub struct RedisConnection {
 }
 
 impl RedisConnection {
+    pub(crate) fn from_ok_managed(managed: Managed<ConnectionFlavour>) -> Self {
+        Self {
+            managed,
+            connection_state_ok: true,
+        }
+    }
+
     pub fn connected_to(&self) -> &str {
         self.managed.connected_to()
     }
