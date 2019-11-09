@@ -3,13 +3,15 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
 
-use futures::{future::Future, Poll};
+use futures::future::BoxFuture;
 
 use crate::Poolable;
 
+pub type NewConnection<'a, C> = BoxFuture<'a, Result<C, NewConnectionError>>;
+
 pub trait ConnectionFactory {
     type Connection: Poolable;
-    fn create_connection(&self) -> NewConnection<Self::Connection>;
+    fn create_connection(&self) -> NewConnection<'_, Self::Connection>;
     fn connecting_to(&self) -> Cow<[Arc<String>]>;
 }
 
@@ -42,27 +44,5 @@ impl StdError for NewConnectionError {
 
     fn cause(&self) -> Option<&dyn StdError> {
         Some(&*self.cause)
-    }
-}
-
-pub struct NewConnection<T: Poolable> {
-    inner: Box<dyn Future<Item = T, Error = NewConnectionError> + Send + 'static>,
-}
-
-impl<T: Poolable> NewConnection<T> {
-    pub fn new<F>(f: F) -> Self
-    where
-        F: Future<Item = T, Error = NewConnectionError> + Send + 'static,
-    {
-        Self { inner: Box::new(f) }
-    }
-}
-
-impl<T: Poolable> Future for NewConnection<T> {
-    type Item = T;
-    type Error = NewConnectionError;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.inner.poll()
     }
 }
