@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.19.0 (BREAKING CHANGE)
+    * Use a struct to configure the reservation behaviour and the pool default behaviour
+    in checkout methods.
+    * Remove `stats_interval` from the config
+    * Add configuration parameter for the default pool checkout behaviour
+    to the config. The enum is `PoolCheckoutMode`
+    * `PoolPerNode` will only use the given `CheckoutMode` on the first attempt to checkout
+    a connection. On subsequent attempts `CheckoutMode::Immediately` will be used.
+
+## 0.18.2
+
+    * use tokio async `Lock` instead of a blocking mutex.
+
 ## 0.18.1
 
     * Bugfix: recalculation of connections for pool-per-node-multiplier was not done

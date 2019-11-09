@@ -14,12 +14,13 @@ use tokio::{self, timer::Delay};
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
+use crate::config::PoolCheckoutMode;
 use crate::connection_factory::{ConnectionFactory, NewConnectionError};
 use crate::error::CheckoutError;
 use crate::executor_flavour::*;
 use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{Ping, Poolable};
+use crate::{CheckoutMode, Ping, Poolable};
 
 use inner_pool::{CheckInParcel, InnerPool};
 
@@ -33,8 +34,8 @@ pub(crate) struct Config {
     pub desired_pool_size: usize,
     pub backoff_strategy: BackoffStrategy,
     pub reservation_limit: Option<usize>,
-    pub stats_interval: Duration,
     pub activation_order: ActivationOrder,
+    pub checkout_mode: PoolCheckoutMode,
 }
 
 #[cfg(test)]
@@ -56,14 +57,15 @@ impl Default for Config {
             desired_pool_size: 20,
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(50),
-            stats_interval: Duration::from_millis(100),
             activation_order: ActivationOrder::default(),
+            checkout_mode: PoolCheckoutMode::Immediately,
         }
     }
 }
 
 pub(crate) struct PoolInternal<T: Poolable> {
     inner_pool: Arc<InnerPool<T>>,
+    default_checkout_mode: PoolCheckoutMode,
 }
 
 impl<T> PoolInternal<T>
@@ -88,7 +90,7 @@ where
                 .iter()
                 .map(|c| c.as_ref().to_owned())
                 .collect(),
-            config.clone(),
+            &config,
             new_con_tx.clone(),
             instrumentation,
         ));
@@ -101,7 +103,10 @@ where
             config.backoff_strategy,
         );
 
-        let pool = Self { inner_pool };
+        let pool = Self {
+            inner_pool,
+            default_checkout_mode: config.checkout_mode,
+        };
 
         (0..num_connections).for_each(|_| {
             pool.add_new_connection();
@@ -127,8 +132,9 @@ where
         )
     }
 
-    pub fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
-        self.inner_pool.check_out(timeout)
+    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> CheckoutManaged<T> {
+        let mode = checkout_mode_to_pool_mode(mode.into(), self.default_checkout_mode);
+        self.inner_pool.check_out(mode)
     }
 
     #[cfg(test)]
@@ -206,6 +212,7 @@ impl<T: Poolable> Clone for PoolInternal<T> {
     fn clone(&self) -> Self {
         Self {
             inner_pool: self.inner_pool.clone(),
+            default_checkout_mode: self.default_checkout_mode,
         }
     }
 }
@@ -404,3 +411,12 @@ impl StdError for PoolIsGoneError {
 
 #[cfg(test)]
 mod test;
+
+fn checkout_mode_to_pool_mode(m: CheckoutMode, default: PoolCheckoutMode) -> PoolCheckoutMode {
+    match m {
+        CheckoutMode::Immediately => PoolCheckoutMode::Immediately,
+        CheckoutMode::Wait => PoolCheckoutMode::Wait,
+        CheckoutMode::WaitAtMost(d) => PoolCheckoutMode::WaitAtMost(d),
+        CheckoutMode::PoolDefault => default,
+    }
+}

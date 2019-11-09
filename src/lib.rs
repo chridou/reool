@@ -24,7 +24,7 @@
 //!
 //! See LICENSE-APACHE and LICENSE-MIT for details.
 //! License: Apache-2.0/MIT
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::{
     future::{self, Future},
@@ -91,6 +91,120 @@ impl Future for Checkout {
     }
 }
 
+/// Various options on retrieving a connection
+///
+/// ## `From` implementations
+///
+/// * `Duration`: `WaitAtMost` or `Immediately`
+/// * `Option<Duration>>`: `PoolDefault` if `None` or
+/// the mapping used for a `Duration` if `Some`
+/// * `Instant`: `WaitAtMost` upd to the `Instant` if the instant is
+/// in the future. Otherwise `Immediately`
+/// * `Option<Instant>`: `PoolDefault` if `None` or
+/// the mapping used for a `Instant` if `Some`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckoutMode {
+    /// Expect a connection to be returned immediately.
+    /// If there is none available return an error immediately.
+    Immediately,
+    /// Use the default configured for the pool
+    PoolDefault,
+    /// Wait until there is a connection even if it would take forever.
+    Wait,
+    /// Wait for at most the given `Duration`.
+    ///
+    /// The amount of time waited will in the end not be really exact.
+    WaitAtMost(Duration),
+}
+
+impl CheckoutMode {
+    /// Do a sanity adjustment. E.g. it makes no sense to use
+    /// `WaitAtMost(Duration::from_desc(0))` since this would logically be
+    /// `Immediately`.
+    pub fn adjust(self) -> Self {
+        match self {
+            CheckoutMode::WaitAtMost(d) if d == Duration::from_secs(0) => CheckoutMode::Immediately,
+            x => x,
+        }
+    }
+}
+
+/// Simply a shortcut for `CheckkoutMode::Immediately`
+#[derive(Debug, Clone, Copy)]
+pub struct Immediately;
+
+/// Simply a shortcut for `CheckkoutMode::Wait`
+#[derive(Debug, Clone, Copy)]
+pub struct Wait;
+
+/// Simply a shortcut for `CheckkoutMode::PoolDefault`
+#[derive(Debug, Clone, Copy)]
+pub struct PoolDefault;
+
+impl From<Immediately> for CheckoutMode {
+    fn from(_: Immediately) -> Self {
+        CheckoutMode::Immediately
+    }
+}
+
+impl From<Wait> for CheckoutMode {
+    fn from(_: Wait) -> Self {
+        CheckoutMode::Wait
+    }
+}
+
+impl From<PoolDefault> for CheckoutMode {
+    fn from(_: PoolDefault) -> Self {
+        CheckoutMode::PoolDefault
+    }
+}
+
+impl Default for CheckoutMode {
+    fn default() -> Self {
+        CheckoutMode::PoolDefault
+    }
+}
+
+impl From<Duration> for CheckoutMode {
+    fn from(d: Duration) -> Self {
+        if d != Duration::from_secs(0) {
+            CheckoutMode::WaitAtMost(d)
+        } else {
+            CheckoutMode::Immediately
+        }
+    }
+}
+
+impl From<Option<Duration>> for CheckoutMode {
+    fn from(d: Option<Duration>) -> Self {
+        if let Some(d) = d {
+            d.into()
+        } else {
+            Self::default()
+        }
+    }
+}
+
+impl From<Instant> for CheckoutMode {
+    fn from(in_the_future: Instant) -> Self {
+        if let Some(i) = in_the_future.checked_duration_since(Instant::now()) {
+            i.into()
+        } else {
+            CheckoutMode::Immediately
+        }
+    }
+}
+
+impl From<Option<Instant>> for CheckoutMode {
+    fn from(in_the_future: Option<Instant>) -> Self {
+        if let Some(i) = in_the_future {
+            i.into()
+        } else {
+            Self::default()
+        }
+    }
+}
+
 #[derive(Clone)]
 enum RedisPoolFlavour {
     Empty,
@@ -113,21 +227,15 @@ impl RedisPool {
 
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the pool as a default.
-    pub fn check_out(&self) -> Checkout {
-        match self.0 {
-            RedisPoolFlavour::Shared(ref pool) => pool.check_out(),
-            RedisPoolFlavour::PerNode(ref pool) => pool.check_out(),
-            RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
-                CheckoutError::new(CheckoutErrorKind::NoPool),
-            ))),
-        }
+    pub fn check_out_pool_default(&self) -> Checkout {
+        self.check_out(CheckoutMode::PoolDefault)
     }
-    /// Checkout a new connection and if the request has to be enqueued
-    /// use the given timeout or wait indefinitely if `timeout` is `None`.
-    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+    /// Checkout a new connection and choose whether to wait for a connection or not
+    /// as defined by the `CheckoutMode`.
+    pub fn check_out<M: Into<CheckoutMode> + Send + 'static>(&self, mode: M) -> Checkout {
         match self.0 {
-            RedisPoolFlavour::Shared(ref pool) => pool.check_out_explicit_timeout(timeout),
-            RedisPoolFlavour::PerNode(ref pool) => pool.check_out_explicit_timeout(timeout),
+            RedisPoolFlavour::Shared(ref pool) => pool.check_out(mode),
+            RedisPoolFlavour::PerNode(ref pool) => pool.check_out(mode),
             RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
                 CheckoutError::new(CheckoutErrorKind::NoPool),
             ))),

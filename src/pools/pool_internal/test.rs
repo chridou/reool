@@ -17,7 +17,7 @@ use crate::connection_factory::{NewConnection, NewConnectionError};
 use crate::error::CheckoutErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::pools::pool_internal::{Config, ConnectionFactory, PoolInternal};
-use crate::Poolable;
+use crate::*;
 
 #[test]
 #[should_panic]
@@ -99,7 +99,7 @@ fn checkout_one() {
         executor.clone().into(),
     );
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(PoolDefault).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
@@ -120,12 +120,16 @@ fn checkout_twice_with_one_not_reusable() {
     let pool = PoolInternal::no_instrumentation(config.clone(), U32Factory::default(), executor);
 
     // We do not return the con with managed
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool
+        .check_out(CheckoutMode::Immediately)
+        .map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool
+        .check_out(CheckoutMode::Immediately)
+        .map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
@@ -145,12 +149,16 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
         PoolInternal::no_instrumentation(config.clone(), U32DelayFactory::default(), executor);
 
     // We do not return the con with managed
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool
+        .check_out(CheckoutMode::Immediately)
+        .map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool
+        .check_out(CheckoutMode::Immediately)
+        .map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
@@ -168,11 +176,11 @@ fn with_empty_pool_checkout_returns_timeout() {
 
     let pool = PoolInternal::no_instrumentation(config.clone(), UnitFactory, executor);
 
-    let checked_out = pool.check_out(Some(Duration::from_millis(10)));
+    let checked_out = pool.check_out(Duration::from_millis(10));
     let err = runtime.block_on(checked_out).err().unwrap();
     assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
-    let checked_out = pool.check_out(Some(Duration::from_millis(10)));
+    let checked_out = pool.check_out(Duration::from_millis(10));
     let err = runtime.block_on(checked_out).err().unwrap();
     assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
@@ -193,12 +201,14 @@ fn create_connection_fails_some_times() {
         executor,
     );
 
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool
+        .check_out(CheckoutMode::Immediately)
+        .map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 4);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(CheckoutMode::Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 8);

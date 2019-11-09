@@ -14,7 +14,7 @@ use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
 use crate::pools::pool_internal::instrumentation::PoolInstrumentation;
 use crate::pools::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
-use crate::{Checkout, Ping};
+use crate::{Checkout, CheckoutMode, Ping};
 
 pub struct Inner {
     count: AtomicUsize,
@@ -62,9 +62,9 @@ impl Inner {
                 let connection_factory = create_connection_factory(vec![connect_to.to_string()])?;
                 let pool_conf = PoolConfig {
                     desired_pool_size: config.desired_pool_size,
+                    checkout_mode: config.checkout_mode,
                     backoff_strategy: config.backoff_strategy,
                     reservation_limit: config.reservation_limit,
-                    stats_interval: config.stats_interval,
                     activation_order: config.activation_order,
                 };
 
@@ -94,7 +94,7 @@ impl Inner {
         Ok(inner)
     }
 
-    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+    pub fn check_out(&self, mode: CheckoutMode) -> Checkout {
         if self.pools.is_empty() {
             Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::NoPool,
@@ -103,8 +103,8 @@ impl Inner {
             let count = self.count.fetch_add(1, Ordering::SeqCst);
 
             let loop_fut = future::loop_fn(
-                (Arc::clone(&self.pools), self.pools.len()),
-                move |(pools, attempts_left)| {
+                (Arc::clone(&self.pools), self.pools.len(), mode),
+                move |(pools, attempts_left, mode)| {
                     if attempts_left == 0 {
                         return Box::new(future::err(CheckoutErrorKind::NoConnection.into()))
                             as Box<dyn Future<Item = _, Error = CheckoutError> + Send>;
@@ -112,11 +112,15 @@ impl Inner {
 
                     let idx = (count + attempts_left) % pools.len();
 
-                    Box::new(pools[idx].check_out(timeout).then(move |r| match r {
+                    Box::new(pools[idx].check_out(mode).then(move |r| match r {
                         Ok(managed_conn) => Ok(Loop::Break(managed_conn)),
                         Err(err) => {
                             warn!("no connection from pool - trying next - {}", err);
-                            Ok(Loop::Continue((pools, attempts_left - 1)))
+                            Ok(Loop::Continue((
+                                pools,
+                                attempts_left - 1,
+                                CheckoutMode::Immediately,
+                            )))
                         }
                     }))
                 },

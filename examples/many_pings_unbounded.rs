@@ -6,8 +6,8 @@ use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::Commands;
-use reool::RedisPool;
+use reool::config::PoolCheckoutMode;
+use reool::*;
 
 /// Do many ping commands with no checkout timeout
 /// and an unbounded checkout queue
@@ -21,7 +21,7 @@ fn main() {
         .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(10)
         .reservation_limit(None) // No limit
-        .checkout_timeout(None) // No timeout
+        .checkout_mode(PoolCheckoutMode::Immediately) // No timeout
         .task_executor(runtime.executor())
         .finish_redis_rs()
         .unwrap();
@@ -29,7 +29,7 @@ fn main() {
     info!("Do one 1000 pings concurrently");
     let futs: Vec<_> = (0..1_000)
         .map(|i| {
-            pool.check_out()
+            pool.check_out(PoolDefault)
                 .from_err()
                 .and_then(Commands::ping)
                 .then(move |res| match res {

@@ -5,7 +5,7 @@ use log::info;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::{Commands, RedisConnection, RedisPool};
+use reool::*;
 
 const MY_KEY: &str = "my_key";
 
@@ -23,7 +23,7 @@ fn main() {
         .finish_redis_rs()
         .unwrap();
 
-    let fut = pool.check_out().from_err().and_then(|conn| {
+    let fut = pool.check_out(PoolDefault).from_err().and_then(|conn| {
         conn.exists(MY_KEY).and_then(|(conn, exists)| {
             if exists {
                 info!("Key already exist");

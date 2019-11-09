@@ -29,7 +29,7 @@ pub use crate::activation_order::ActivationOrder;
 pub use crate::backoff_strategy::BackoffStrategy;
 pub use crate::error::InitializationError;
 
-use super::{RedisPool, RedisPoolFlavour};
+use super::{Immediately, RedisPool, RedisPoolFlavour, Wait};
 
 /// A configuration for creating a `MultiNodePool`.
 ///
@@ -41,16 +41,13 @@ pub struct Config {
     pub desired_pool_size: usize,
     /// The timeout for a checkout if no specific timeout is given
     /// with a checkout.
-    pub checkout_timeout: Option<Duration>,
+    pub checkout_mode: PoolCheckoutMode,
     /// The `BackoffStrategy` to use when retrying on
     /// failures to create new connections
     pub backoff_strategy: BackoffStrategy,
     /// The maximum length of the queue for waiting checkouts
     /// when no idle connections are available
     pub reservation_limit: Option<usize>,
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub stats_interval: Duration,
     /// Defines the `ActivationOrder` in which idle connections are
     /// activated.
     ///
@@ -82,10 +79,10 @@ impl Config {
         self
     }
 
-    /// Sets the timeout for a checkout if no specific timeout is given
-    /// with a checkout.
-    pub fn checkout_timeout(mut self, v: Option<Duration>) -> Self {
-        self.checkout_timeout = v;
+    /// Sets the behaviour of the pool on checkouts if no specific behaviour
+    /// was requested by th euser.
+    pub fn checkout_mode<T: Into<PoolCheckoutMode>>(mut self, v: T) -> Self {
+        self.checkout_mode = v.into();
         self
     }
 
@@ -100,13 +97,6 @@ impl Config {
     /// when no idle connections are available
     pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
         self.reservation_limit = v;
-        self
-    }
-
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub fn stats_interval(mut self, v: Duration) -> Self {
-        self.stats_interval = v;
         self
     }
 
@@ -164,9 +154,8 @@ impl Config {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `CHECKOUT_MODE`: The checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
@@ -177,16 +166,12 @@ impl Config {
             self.desired_pool_size = v;
         })?;
 
-        helpers::set_checkout_timeout(prefix, |v| {
-            self.checkout_timeout = v;
+        helpers::set_pool_checkout_mode(prefix, |v| {
+            self.checkout_mode = v.adjust();
         })?;
 
         helpers::set_reservation_limit(prefix, |v| {
             self.reservation_limit = v;
-        })?;
-
-        helpers::set_stats_interval(prefix, |v| {
-            self.stats_interval = v;
         })?;
 
         helpers::set_activation_order(prefix, |v| {
@@ -216,10 +201,9 @@ impl Config {
     pub fn builder(&self) -> Builder {
         Builder::default()
             .desired_pool_size(self.desired_pool_size)
-            .checkout_timeout(self.checkout_timeout)
+            .checkout_mode(self.checkout_mode.adjust())
             .backoff_strategy(self.backoff_strategy)
             .reservation_limit(self.reservation_limit)
-            .stats_interval(self.stats_interval)
             .min_required_nodes(self.min_required_nodes)
             .connect_to_nodes(self.connect_to_nodes.clone())
             .node_pool_strategy(self.node_pool_strategy)
@@ -231,10 +215,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             desired_pool_size: 20,
-            checkout_timeout: Some(Duration::from_millis(20)),
+            checkout_mode: PoolCheckoutMode::default(),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
-            stats_interval: Duration::from_millis(100),
             activation_order: ActivationOrder::default(),
             min_required_nodes: 1,
             connect_to_nodes: Vec::new(),
@@ -269,10 +252,10 @@ impl Builder {
         self
     }
 
-    /// The timeout for a checkout if no specific timeout is given
-    /// with a checkout.
-    pub fn checkout_timeout(mut self, v: Option<Duration>) -> Self {
-        self.config.checkout_timeout = v;
+    /// Sets the behaviour of the pool on checkouts if no specific behaviour
+    /// was requested by th euser.
+    pub fn checkout_mode<T: Into<PoolCheckoutMode>>(mut self, v: T) -> Self {
+        self.config.checkout_mode = v.into().adjust();
         self
     }
 
@@ -287,13 +270,6 @@ impl Builder {
     /// when no idle connections are available
     pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
         self.config.reservation_limit = v;
-        self
-    }
-
-    /// The interval in which the pool will send statistics to
-    /// the instrumentation
-    pub fn stats_interval(mut self, v: Duration) -> Self {
-        self.config.stats_interval = v;
         self
     }
 
@@ -383,9 +359,8 @@ impl Builder {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `CHECKOUT_MODE`: The checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
@@ -402,9 +377,8 @@ impl Builder {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_TIMEOUT_MS`: `u64` or `"NONE"`. Omit if you do not want to update the value
+    /// * `CHECKOUT_MODE`: The checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
-    /// * `STATS_INTERVAL_MS`: `u64`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
@@ -556,6 +530,118 @@ impl fmt::Display for ParseNodesStrategyError {
 impl std::error::Error for ParseNodesStrategyError {
     fn description(&self) -> &str {
         "parse activation order initialization failed"
+    }
+
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        None
+    }
+}
+
+/// Various options on retrieving a connection
+/// that can be applied if a user wants to use the pool defaults
+/// for retrieving a connection.
+///
+/// The default is to wait for 30ms.
+///
+/// This struct only only slightly differs from `CheckoutMode`: It lacks
+/// the variant `PoolDefault` since that variant would make no sense
+/// as this enum describes the default behaviour of the pool.
+///
+/// This struct has the same behaviour as `CheckoutMode` regarding its
+/// `From` implementations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolCheckoutMode {
+    /// Expect a connection to be returned immediately.
+    /// If there is none available return an error immediately.
+    Immediately,
+    /// Wait until there is a connection even if it would take forever.
+    Wait,
+    /// Wait for at most the given `Duration`.
+    ///
+    /// The amount of time waited will in the end not be really exact.
+    WaitAtMost(Duration),
+}
+
+impl PoolCheckoutMode {
+    /// Do a sanity adjustment. E.g. it makes no sense to use
+    /// `WaitAtMost(Duration::from_desc(0))` since this would logically be
+    /// `Immediately`.
+    pub fn adjust(self) -> Self {
+        match self {
+            PoolCheckoutMode::WaitAtMost(d) if d == Duration::from_secs(0) => {
+                PoolCheckoutMode::Immediately
+            }
+            x => x,
+        }
+    }
+}
+
+impl Default for PoolCheckoutMode {
+    fn default() -> Self {
+        Self::WaitAtMost(Duration::from_millis(30))
+    }
+}
+
+impl std::str::FromStr for PoolCheckoutMode {
+    type Err = ParsePoolCheckoutModeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &*s.to_lowercase() {
+            "immediately" => Ok(PoolCheckoutMode::Immediately),
+            "wait" => Ok(PoolCheckoutMode::Wait),
+            milliseconds => Ok(PoolCheckoutMode::WaitAtMost(Duration::from_millis(
+                milliseconds
+                    .parse::<u64>()
+                    .map_err(|err| ParsePoolCheckoutModeError(err.to_string()))?,
+            ))),
+        }
+    }
+}
+
+impl From<Immediately> for PoolCheckoutMode {
+    fn from(_: Immediately) -> Self {
+        PoolCheckoutMode::Immediately
+    }
+}
+
+impl From<Wait> for PoolCheckoutMode {
+    fn from(_: Wait) -> Self {
+        PoolCheckoutMode::Wait
+    }
+}
+
+impl From<Duration> for PoolCheckoutMode {
+    fn from(d: Duration) -> Self {
+        if d != Duration::from_secs(0) {
+            PoolCheckoutMode::WaitAtMost(d)
+        } else {
+            PoolCheckoutMode::Immediately
+        }
+    }
+}
+
+impl From<Option<Duration>> for PoolCheckoutMode {
+    fn from(d: Option<Duration>) -> Self {
+        if let Some(d) = d {
+            d.into()
+        } else {
+            Self::default()
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ParsePoolCheckoutModeError(String);
+
+impl fmt::Display for ParsePoolCheckoutModeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Could not parse PoolCheckoutMode: {}", self.0)
+    }
+}
+
+impl std::error::Error for ParsePoolCheckoutModeError {
+    fn description(&self) -> &str {
+        "parse checkout mode failed"
     }
 
     fn cause(&self) -> Option<&dyn std::error::Error> {

@@ -11,7 +11,7 @@ use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::InstrumentationFlavour;
 
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{Checkout, Ping};
+use crate::{Checkout, CheckoutMode, Ping};
 
 use super::pool_internal::{
     instrumentation::PoolInstrumentation, Config as PoolConfig, PoolInternal,
@@ -24,7 +24,6 @@ use super::pool_internal::{
 /// Once the last instance drops the shared connections will be dropped.
 pub(crate) struct SharedPool {
     pool: PoolInternal<ConnectionFlavour>,
-    checkout_timeout: Option<Duration>,
 }
 
 impl SharedPool {
@@ -53,8 +52,8 @@ impl SharedPool {
             desired_pool_size: config.desired_pool_size,
             backoff_strategy: config.backoff_strategy,
             reservation_limit: config.reservation_limit,
-            stats_interval: config.stats_interval,
             activation_order: config.activation_order,
+            checkout_mode: config.checkout_mode,
         };
 
         let connection_factory = if !config.connect_to_nodes.is_empty() {
@@ -72,18 +71,11 @@ impl SharedPool {
             PoolInstrumentation::new(instrumentation, 0),
         );
 
-        Ok(SharedPool {
-            pool,
-            checkout_timeout: config.checkout_timeout,
-        })
+        Ok(SharedPool { pool })
     }
 
-    pub fn check_out(&self) -> Checkout {
-        Checkout(self.pool.check_out(self.checkout_timeout))
-    }
-
-    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
-        Checkout(self.pool.check_out(timeout))
+    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> Checkout {
+        Checkout(self.pool.check_out(mode.into()))
     }
 
     pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
@@ -99,7 +91,6 @@ impl Clone for SharedPool {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
-            checkout_timeout: self.checkout_timeout,
         }
     }
 }
