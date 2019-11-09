@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use futures::future::{self, Future};
-use redis::{aio::ConnectionLike, ErrorKind, RedisFuture, Value};
+use futures::FutureExt;
+use redis::{aio::ConnectionLike, ErrorKind, RedisFuture, Value, Cmd, Pipeline};
 
 use crate::pools::pool_internal::Managed;
 use crate::Poolable;
@@ -29,42 +29,43 @@ impl RedisConnection {
 }
 
 impl ConnectionLike for RedisConnection {
-    fn req_packed_command(mut self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
-        if let Some(conn) = self.managed.value.take() {
-            self.connection_state_ok = false;
-            Box::new(conn.req_packed_command(cmd).map(|(conn, value)| {
+    fn req_packed_command(mut self, cmd: &Cmd) -> RedisFuture<(Self, Value)> {
+        async {
+            if let Some(conn) = self.managed.value.take() {
+                self.connection_state_ok = false;
+
+                let value = conn.req_packed_command(cmd).await?;
+
                 self.managed.value = Some(conn);
                 self.connection_state_ok = true;
-                (self, value)
-            }))
-        } else {
-            Box::new(future::err(
-                (ErrorKind::IoError, "no connection - this is a bug of reool").into(),
-            ))
-        }
+
+                Ok((self, value))
+            } else {
+                Err((ErrorKind::IoError, "no connection - this is a bug of reool").into())
+            }
+        }.boxed()
     }
 
     fn req_packed_commands(
         mut self,
-        cmd: Vec<u8>,
+        cmds: &Pipeline,
         offset: usize,
         count: usize,
     ) -> RedisFuture<(Self, Vec<Value>)> {
-        if let Some(conn) = self.managed.value.take() {
-            self.connection_state_ok = false;
-            Box::new(
-                conn.req_packed_commands(cmd, offset, count)
-                    .map(|(conn, values)| {
-                        self.managed.value = Some(conn);
-                        self.connection_state_ok = true;
-                        (self, values)
-                    }),
-            )
-        } else {
-            Box::new(future::err(
-                (ErrorKind::IoError, "no connection - this is a bug of reool").into(),
-            ))
-        }
+        async {
+            if let Some(conn) = self.managed.value.take() {
+                self.connection_state_ok = false;
+
+                let values = conn.req_packed_commands(cmds, offset, count).await?;
+
+                self.managed.value = Some(conn);
+                self.connection_state_ok = true;
+
+                Ok((self, values))
+            } else {
+                Err((ErrorKind::IoError, "no connection - this is a bug of reool").into())
+            }
+        }.boxed()
     }
 
     fn get_db(&self) -> i64 {
@@ -98,27 +99,31 @@ impl Poolable for ConnectionFlavour {
 }
 
 impl ConnectionLike for ConnectionFlavour {
-    fn req_packed_command(self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
-        match self {
-            ConnectionFlavour::RedisRs(conn, c) => Box::new(
-                conn.req_packed_command(cmd)
-                    .map(|(conn, v)| (ConnectionFlavour::RedisRs(conn, c), v)),
-            ),
-        }
+    fn req_packed_command(self, cmd: &Cmd) -> RedisFuture<(Self, Value)> {
+        async {
+            match self {
+                ConnectionFlavour::RedisRs(conn, c) => {
+                    let value = conn.req_packed_command(cmd).await?;
+                    Ok((ConnectionFlavour::RedisRs(conn, c), value))
+                },
+            }
+        }.boxed()
     }
 
     fn req_packed_commands(
         self,
-        cmd: Vec<u8>,
+        cmds: &Pipeline,
         offset: usize,
         count: usize,
     ) -> RedisFuture<(Self, Vec<Value>)> {
-        match self {
-            ConnectionFlavour::RedisRs(conn, c) => Box::new(
-                conn.req_packed_commands(cmd, offset, count)
-                    .map(|(conn, v)| (ConnectionFlavour::RedisRs(conn, c), v)),
-            ),
-        }
+        async {
+            match self {
+                ConnectionFlavour::RedisRs(conn, c) => {
+                    let values = conn.req_packed_commands(cmds, offset, count).await?;
+                    Ok((ConnectionFlavour::RedisRs(conn, c), values))
+                },
+            }
+        }.boxed()
     }
 
     fn get_db(&self) -> i64 {
