@@ -121,15 +121,13 @@ fn checkout_twice_with_one_not_reusable() {
 
     // We do not return the con with managed
     let checked_out = pool
-        .check_out(CheckoutMode::Immediately)
+        .check_out(CheckoutMode::Wait)
         .map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool
-        .check_out(CheckoutMode::Immediately)
-        .map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(CheckoutMode::Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
@@ -150,15 +148,14 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
 
     // We do not return the con with managed
     let checked_out = pool
-        .check_out(CheckoutMode::Immediately)
+        .check_out(CheckoutMode::Wait)
         .map(|mut c| c.value.take().unwrap());
+
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool
-        .check_out(CheckoutMode::Immediately)
-        .map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(CheckoutMode::Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
@@ -202,7 +199,7 @@ fn create_connection_fails_some_times() {
     );
 
     let checked_out = pool
-        .check_out(CheckoutMode::Immediately)
+        .check_out(CheckoutMode::Wait)
         .map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 

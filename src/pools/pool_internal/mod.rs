@@ -58,7 +58,7 @@ impl Default for Config {
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(50),
             activation_order: ActivationOrder::default(),
-            checkout_mode: PoolCheckoutMode::Immediately,
+            checkout_mode: PoolCheckoutMode::Wait,
         }
     }
 }
