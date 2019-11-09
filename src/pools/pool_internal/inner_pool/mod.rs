@@ -7,7 +7,7 @@ use futures::{
     sync::{mpsc, oneshot},
 };
 use log::{debug, error, trace, warn};
-use tokio_timer::Timeout;
+use tokio::timer::Timeout;
 
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::pooled_connection::ConnectionFlavour;

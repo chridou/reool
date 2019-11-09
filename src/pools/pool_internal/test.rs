@@ -10,7 +10,7 @@ use futures::future::{self, Future};
 use log::debug;
 use pretty_env_logger;
 use tokio::{self, runtime::Runtime};
-use tokio_timer::Delay;
+use tokio::timer::Delay;
 
 use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{NewConnection, NewConnectionError};
