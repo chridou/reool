@@ -116,6 +116,25 @@ where
     }
 
     #[cfg(test)]
+    pub fn custom_instrumentation<C, I>(
+        config: Config,
+        connection_factory: C,
+        executor: ExecutorFlavour,
+        instrumentation: I,
+    ) -> Self
+    where
+        I: crate::instrumentation::Instrumentation + Send + Sync + 'static,
+        C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
+    {
+        Self::new(
+            config,
+            connection_factory,
+            executor,
+            PoolInstrumentation::new(InstrumentationFlavour::Custom(Arc::new(instrumentation)), 0),
+        )
+    }
+
+    #[cfg(test)]
     pub fn no_instrumentation<C>(
         config: Config,
         connection_factory: C,

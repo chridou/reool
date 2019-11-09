@@ -7,7 +7,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use futures::future::{self, Future};
-use log::debug;
 use pretty_env_logger;
 use tokio::{self, runtime::Runtime};
 use tokio_timer::Delay;
@@ -16,6 +15,7 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{NewConnection, NewConnectionError};
 use crate::error::CheckoutErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
+use crate::instrumentation::StateCounters;
 use crate::pools::pool_internal::{Config, ConnectionFactory, PoolInternal};
 use crate::*;
 
@@ -50,15 +50,33 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
 
-    let pool = PoolInternal::no_instrumentation(
+    let counters = StateCounters::new();
+    let pool = PoolInternal::custom_instrumentation(
         Config::default().desired_pool_size(1),
         UnitFactory,
         executor,
+        counters.clone(),
     );
 
-    thread::sleep(Duration::from_millis(20));
+    thread::sleep(Duration::from_millis(10));
+
+    assert_eq!(counters.pools(), 1, "pools");
+    assert_eq!(counters.connections(), 1, "connections");
+    assert_eq!(counters.idle(), 1, "idle");
+    assert_eq!(counters.in_flight(), 0, "in_flight");
+    assert_eq!(counters.reservations(), 0, "reservations");
+    assert_eq!(counters.contentions(), 0, "contentions");
 
     drop(pool);
+    thread::sleep(Duration::from_millis(10));
+
+    assert_eq!(counters.pools(), 0, "pools");
+    assert_eq!(counters.connections(), 0, "connections");
+    assert_eq!(counters.idle(), 0, "idle");
+    assert_eq!(counters.in_flight(), 0, "in_flight");
+    assert_eq!(counters.reservations(), 0, "reservations");
+    assert_eq!(counters.contentions(), 0, "contentions");
+
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
@@ -68,7 +86,8 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
 
-    let pool = PoolInternal::no_instrumentation(
+    let counters = StateCounters::new();
+    let pool = PoolInternal::custom_instrumentation(
         Config::default()
             .desired_pool_size(5)
             .backoff_strategy(BackoffStrategy::Constant {
@@ -77,12 +96,25 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
             }),
         UnitFactoryAlwaysFails,
         executor,
+        counters.clone(),
     );
 
     thread::sleep(Duration::from_millis(10));
+    assert_eq!(counters.pools(), 1, "pools");
+    assert_eq!(counters.connections(), 0, "connections");
+    assert_eq!(counters.idle(), 0, "idle");
+    assert_eq!(counters.in_flight(), 0, "in_flight");
+    assert_eq!(counters.reservations(), 0, "reservations");
+    assert_eq!(counters.contentions(), 0, "contentions");
 
-    debug!("drop pool");
     drop(pool);
+    thread::sleep(Duration::from_millis(10));
+    assert_eq!(counters.pools(), 0, "pools");
+    assert_eq!(counters.connections(), 0, "connections");
+    assert_eq!(counters.idle(), 0, "idle");
+    assert_eq!(counters.in_flight(), 0, "in_flight");
+    assert_eq!(counters.reservations(), 0, "reservations");
+    assert_eq!(counters.contentions(), 0, "contentions");
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
@@ -93,10 +125,12 @@ fn checkout_one() {
     let executor = runtime.executor();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = PoolInternal::no_instrumentation(
+    let counters = StateCounters::new();
+    let pool = PoolInternal::custom_instrumentation(
         config.clone(),
         U32Factory::default(),
         executor.clone().into(),
+        counters.clone(),
     );
 
     let checked_out = pool.check_out(PoolDefault).map(|c| c.value.unwrap());
