@@ -29,7 +29,7 @@ fn given_no_runtime_the_pool_can_not_be_created() {
 #[test]
 fn given_a_runtime_the_pool_can_be_created() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
 
     let fut = async {
         Ok::<_, ()>(PoolInternal::no_instrumentation(
@@ -89,7 +89,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 #[test]
 fn checkout_one() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let executor = runtime.executor();
     let config = Config::default().desired_pool_size(1);
 
@@ -113,7 +113,7 @@ fn checkout_one() {
 #[test]
 fn checkout_twice_with_one_not_reusable() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
@@ -137,7 +137,7 @@ fn checkout_twice_with_one_not_reusable() {
 #[test]
 fn checkout_twice_with_delay_factory_with_one_not_reusable() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
@@ -162,7 +162,7 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
 #[test]
 fn with_empty_pool_checkout_returns_timeout() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(0);
 
@@ -183,7 +183,7 @@ fn with_empty_pool_checkout_returns_timeout() {
 #[test]
 fn create_connection_fails_some_times() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 

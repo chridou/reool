@@ -3,11 +3,12 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use futures::{
-    future::{Future, FutureExt, TryFutureExt},
+    future::{Future, TryFutureExt},
     channel::{mpsc, oneshot},
 };
 use log::{debug, error, trace, warn};
 use tokio::future::FutureExt as _;
+use tokio::timer::timeout::Elapsed;
 
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::pooled_connection::ConnectionFlavour;
@@ -278,7 +279,7 @@ impl InnerPool<ConnectionFlavour> {
         let (uri, state) = match result {
             Ok(Ok(uri)) => (Some(uri), PingState::Ok),
             Ok(Err((err, uri))) => (uri, PingState::Failed(err)),
-            Err(err) => (
+            Err(Elapsed {..}) => (
                 single_connected_to,
                 PingState::Failed(Box::new(PingError(format!(
                     "ping time out of {:?} reached",

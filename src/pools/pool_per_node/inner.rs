@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::{self, Future, FutureExt};
+use futures::future::{self, Future};
 use log::{debug, info, warn};
 
 use crate::config::Config;

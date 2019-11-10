@@ -45,7 +45,7 @@ impl ExecutorFlavour {
             .forward(tx)
             .map(|_| ());
 
-        self.execute(forward_task);
+        let _ = self.execute(forward_task);
 
         rx
     }
