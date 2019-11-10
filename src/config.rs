@@ -80,7 +80,7 @@ impl Config {
     }
 
     /// Sets the behaviour of the pool on checkouts if no specific behaviour
-    /// was requested by th euser.
+    /// was requested by the euser.
     pub fn checkout_mode<T: Into<PoolCheckoutMode>>(mut self, v: T) -> Self {
         self.checkout_mode = v.into();
         self
@@ -253,7 +253,7 @@ impl Builder {
     }
 
     /// Sets the behaviour of the pool on checkouts if no specific behaviour
-    /// was requested by th euser.
+    /// was requested by the euser.
     pub fn checkout_mode<T: Into<PoolCheckoutMode>>(mut self, v: T) -> Self {
         self.config.checkout_mode = v.into().adjust();
         self
