@@ -102,6 +102,10 @@ impl Inner {
         } else {
             let count = self.count.fetch_add(1, Ordering::SeqCst);
 
+            // If a pool fails to checkout a connection try the next one.
+            //
+            // Start with the checkout mode passed by the user. On a failure
+            // continue with CheckoutMode::Immediately.
             let loop_fut = future::loop_fn(
                 (Arc::clone(&self.pools), self.pools.len(), mode),
                 move |(pools, attempts_left, mode)| {
