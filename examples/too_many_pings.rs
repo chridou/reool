@@ -1,7 +1,7 @@
 use std::env;
 use std::time::{Duration, Instant};
 
-use futures::future::{join_all, Future};
+use futures::future::{join_all, TryFutureExt};
 use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
@@ -14,7 +14,7 @@ fn main() {
     env::set_var("RUST_LOG", "reool=debug,too_many_pings=debug");
     let _ = pretty_env_logger::try_init();
 
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
 
     let pool = RedisPool::builder()
         .connect_to_node("redis://127.0.0.1:6379")
@@ -26,33 +26,34 @@ fn main() {
         .unwrap();
 
     info!("Do 1000 pings concurrently");
-    let futs: Vec<_> = (0..1_000)
+    let futs = (0..1_000)
         .map(|i| {
-            pool.check_out()
-                .from_err()
-                .and_then(Commands::ping)
-                .then(move |res| match res {
-                    Err(err) => {
-                        error!("PING {} failed: {}", i, err);
-                        Ok(())
-                    }
-                    Ok(_) => {
-                        debug!("PING {} OK", i);
-                        Ok::<_, ()>(())
-                    }
-                })
-        })
-        .collect();
+            let pool = &pool;
 
-    let fut = join_all(futs).map(|_| {
-        info!("finished pinging");
-    });
+            async move {
+                let result = pool
+                    .check_out()
+                    .err_into()
+                    .and_then(|mut conn| async move {
+                        conn.ping().await
+                    });
+
+                match result.await {
+                    Err(err) => error!("PING {} failed: {}", i, err),
+                    Ok(_) => debug!("PING {} OK", i),
+                }
+            }
+        });
 
     let start = Instant::now();
-    runtime.block_on(fut).unwrap();
+
+    runtime.block_on(async move {
+        join_all(futs).await;
+        info!("finished pinging")
+    });
     info!("PINGED 1000 times concurrently in {:?}", start.elapsed());
 
     drop(pool);
     info!("pool dropped");
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
