@@ -40,7 +40,7 @@ fn main() {
     info!("Do 10000 pings concurrently");
     let futs: Vec<_> = (0..10_000)
         .map(|i| {
-            pool.check_out_pool_default()
+            pool.check_out_default()
                 .from_err()
                 .and_then(Commands::ping)
                 .then(move |res| match res {

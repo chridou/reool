@@ -227,7 +227,7 @@ impl RedisPool {
 
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the pool as a default.
-    pub fn check_out_pool_default(&self) -> Checkout {
+    pub fn check_out_default(&self) -> Checkout {
         self.check_out(CheckoutMode::PoolDefault)
     }
     /// Checkout a new connection and choose whether to wait for a connection or not

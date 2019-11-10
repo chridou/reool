@@ -40,7 +40,7 @@ fn main() {
     info!("Do 20000 pings concurrently");
     let futs: Vec<_> = (0..20_000)
         .map(|i| {
-            pool.check_out_pool_default()
+            pool.check_out_default()
                 .from_err()
                 .and_then(Commands::ping)
                 .then(move |res| match res {
@@ -71,11 +71,7 @@ fn main() {
     std::thread::sleep(Duration::from_millis(1500));
 
     runtime
-        .block_on(
-            pool.check_out_pool_default()
-                .from_err()
-                .and_then(Commands::ping),
-        )
+        .block_on(pool.check_out_default().from_err().and_then(Commands::ping))
         .unwrap();
 
     drop(pool);
