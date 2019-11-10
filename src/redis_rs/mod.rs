@@ -48,7 +48,7 @@ mod single_node {
     use std::borrow::Cow;
     use std::sync::Arc;
 
-    use futures::future::Future;
+    use futures::{FutureExt, TryFutureExt};
     use redis::Client;
 
     use crate::connection_factory::{ConnectionFactory, NewConnection, NewConnectionError};
@@ -81,12 +81,11 @@ mod single_node {
 
         fn create_connection(&self) -> NewConnection<Self::Connection> {
             let connected_to = Arc::clone(&self.connects_to);
-            NewConnection::new(
                 self.client
                     .get_async_connection()
-                    .map(|conn| ConnectionFlavour::RedisRs(conn, connected_to))
-                    .map_err(NewConnectionError::new),
-            )
+                    .map_ok(|conn| ConnectionFlavour::RedisRs(conn, connected_to))
+                    .map_err(NewConnectionError::new)
+                    .boxed()
         }
 
         fn connecting_to(&self) -> Cow<[Arc<String>]> {
@@ -102,7 +101,7 @@ mod multi_node {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    use futures::future::{self, loop_fn, Future, Loop};
+    use futures::{Future, FutureExt, TryFutureExt};
     use log::warn;
     use redis::Client;
 
@@ -163,35 +162,32 @@ mod multi_node {
         fn create_connection(&self) -> NewConnection<Self::Connection> {
             let count = self.conn_counter.fetch_add(1, Ordering::SeqCst);
 
-            let loop_f = loop_fn(
-                (
-                    self.clients.len(),
-                    Arc::clone(&self.clients),
-                    Arc::clone(&self.connects_to),
-                ),
-                move |(attempts_left, clients, connects_to)| {
+            let mut attempts_left = self.clients.len();
+            let clients = Arc::clone(&self.clients);
+            let connects_to = Arc::clone(&self.connects_to);
+
+            async {
+                loop {
                     if attempts_left == 0 {
-                        return Box::new(future::err(NewConnectionError::new(
+                        return Err(NewConnectionError::new(
                             AllConnectAttemptsFailedError,
-                        )))
-                            as Box<dyn Future<Item = _, Error = _> + Send>;
+                        ));
                     }
 
                     let idx = (count + attempts_left) % clients.len();
-                    let f = get_async_connection(&clients[idx], Arc::clone(&connects_to[idx]))
-                        .then(move |r| match r {
-                            Ok(conn) => Ok(Loop::Break(conn)),
-                            Err(err) => {
-                                warn!("failed to connect to {}: {}", connects_to[idx], err);
-                                Ok(Loop::Continue((attempts_left - 1, clients, connects_to)))
-                            }
-                        });
 
-                    Box::new(f)
-                },
-            );
+                    let conn = get_async_connection(&clients[idx], Arc::clone(&connects_to[idx]));
 
-            NewConnection::new(loop_f)
+                    match conn.await {
+                        Ok(conn) => return Ok(conn),
+                        Err(err) => {
+                            warn!("failed to connect to {}: {}", connects_to[idx], err);
+                            attempts_left -= 1;
+                            continue;
+                        }
+                    }
+                }
+            }.boxed()
         }
 
         fn connecting_to(&self) -> Cow<[Arc<String>]> {
@@ -202,12 +198,10 @@ mod multi_node {
     fn get_async_connection(
         client: &Client,
         connects_to: Arc<String>,
-    ) -> NewConnection<ConnectionFlavour> {
-        NewConnection::new(
-            client
-                .get_async_connection()
-                .map(|conn| ConnectionFlavour::RedisRs(conn, connects_to))
-                .map_err(NewConnectionError::new),
-        )
+    ) -> impl Future<Output = Result<ConnectionFlavour, NewConnectionError>> + '_ {
+        client
+            .get_async_connection()
+            .map_ok(|conn| ConnectionFlavour::RedisRs(conn, connects_to))
+            .map_err(NewConnectionError::new)
     }
 }
