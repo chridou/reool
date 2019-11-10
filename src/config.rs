@@ -543,7 +543,7 @@ impl std::error::Error for ParseNodesStrategyError {
 ///
 /// The default is to wait for 30ms.
 ///
-/// This struct only only slightly differs from `CheckoutMode`: It lacks
+/// This struct only slightly differs from `CheckoutMode`: It lacks
 /// the variant `PoolDefault` since that variant would make no sense
 /// as this enum describes the default behaviour of the pool.
 ///
