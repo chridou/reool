@@ -641,7 +641,7 @@ impl fmt::Display for ParsePoolCheckoutModeError {
 
 impl std::error::Error for ParsePoolCheckoutModeError {
     fn description(&self) -> &str {
-        "parse checkout mode failed"
+        "parse pool checkout mode failed"
     }
 
     fn cause(&self) -> Option<&dyn std::error::Error> {

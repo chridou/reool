@@ -232,7 +232,7 @@ impl RedisPool {
     }
     /// Checkout a new connection and choose whether to wait for a connection or not
     /// as defined by the `CheckoutMode`.
-    pub fn check_out<M: Into<CheckoutMode> + Send + 'static>(&self, mode: M) -> Checkout {
+    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> Checkout {
         match self.0 {
             RedisPoolFlavour::Shared(ref pool) => pool.check_out(mode),
             RedisPoolFlavour::PerNode(ref pool) => pool.check_out(mode),
