@@ -26,14 +26,7 @@
 //! License: Apache-2.0/MIT
 use std::time::Duration;
 
-use futures::{
-    future::{self, Future},
-    try_ready, Async, Poll,
-};
-
 use crate::config::Builder;
-use crate::pooled_connection::ConnectionFlavour;
-use crate::pools::pool_internal::{CheckoutManaged, Managed};
 
 pub mod config;
 pub mod instrumentation;
@@ -58,39 +51,6 @@ pub trait Poolable: Send + Sized + 'static {
     fn connected_to(&self) -> &str;
 }
 
-/// A `Future` that represents a checkout.
-///
-/// A `Checkout` can fail for various reasons.
-///
-/// The most common ones are:
-/// * There was a timeout on the checkout and it timed out
-/// * The queue size was limited and the limit was reached
-/// * There are simply no connections available
-/// * There is no connected node
-pub struct Checkout(CheckoutManaged<ConnectionFlavour>);
-
-impl Checkout {
-    pub(crate) fn new<F>(f: F) -> Self
-    where
-        F: Future<Item = Managed<ConnectionFlavour>, Error = CheckoutError> + Send + 'static,
-    {
-        Checkout(CheckoutManaged::new(f))
-    }
-}
-
-impl Future for Checkout {
-    type Item = RedisConnection;
-    type Error = CheckoutError;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let managed = try_ready!(self.0.poll());
-        Ok(Async::Ready(RedisConnection {
-            managed,
-            connection_state_ok: true,
-        }))
-    }
-}
-
 #[derive(Clone)]
 enum RedisPoolFlavour {
     Empty,
@@ -113,36 +73,46 @@ impl RedisPool {
 
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the pool as a default.
-    pub fn check_out(&self) -> Checkout {
+    ///
+    /// A checkout can fail for various reasons.
+    ///
+    /// The most common ones are:
+    /// * There was a timeout on the checkout and it timed out
+    /// * The queue size was limited and the limit was reached
+    /// * There are simply no connections available
+    /// * There is no connected node
+    pub async fn check_out(&self) -> Result<RedisConnection, CheckoutError> {
         match self.0 {
-            RedisPoolFlavour::Shared(ref pool) => pool.check_out(),
-            RedisPoolFlavour::PerNode(ref pool) => pool.check_out(),
-            RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
+            RedisPoolFlavour::Shared(ref pool) => pool.check_out().await,
+            RedisPoolFlavour::PerNode(ref pool) => pool.check_out().await,
+            RedisPoolFlavour::Empty => Err(
                 CheckoutError::new(CheckoutErrorKind::NoPool),
-            ))),
+            )
         }
     }
     /// Checkout a new connection and if the request has to be enqueued
     /// use the given timeout or wait indefinitely if `timeout` is `None`.
-    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+    pub async fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Result<RedisConnection, CheckoutError> {
         match self.0 {
-            RedisPoolFlavour::Shared(ref pool) => pool.check_out_explicit_timeout(timeout),
-            RedisPoolFlavour::PerNode(ref pool) => pool.check_out_explicit_timeout(timeout),
-            RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
+            RedisPoolFlavour::Shared(ref pool) => pool.check_out_explicit_timeout(timeout).await,
+            RedisPoolFlavour::PerNode(ref pool) => pool.check_out_explicit_timeout(timeout).await,
+            RedisPoolFlavour::Empty => Err(
                 CheckoutError::new(CheckoutErrorKind::NoPool),
-            ))),
+            )
         }
     }
 
     /// Ping all the nodes which this pool is connected to.
     ///
     /// `timeout` is the maximum time allowed for a ping.
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub async fn ping(&self, timeout: Duration) -> Vec<Ping> {
         match self.0 {
-            RedisPoolFlavour::Shared(ref pool) => Box::new(pool.ping(timeout).map(|p| vec![p]))
-                as Box<dyn Future<Item = _, Error = ()> + Send>,
-            RedisPoolFlavour::PerNode(ref pool) => Box::new(pool.ping(timeout)),
-            RedisPoolFlavour::Empty => Box::new(future::ok(vec![])),
+            RedisPoolFlavour::Shared(ref pool) => {
+                let ping = pool.ping(timeout).await;
+                vec![ping]
+            }
+            RedisPoolFlavour::PerNode(ref pool) => pool.ping(timeout).await,
+            RedisPoolFlavour::Empty => vec![],
         }
     }
 
