@@ -1,11 +1,11 @@
 use std::env;
 
-use futures::future::{self, Future};
 use log::info;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::{Commands, RedisConnection, RedisPool};
+use reool::{Commands, RedisPool};
+use redis::RedisError;
 
 const MY_KEY: &str = "my_key";
 
@@ -14,7 +14,7 @@ fn main() {
     env::set_var("RUST_LOG", "reool=debug,write_read=info");
     let _ = pretty_env_logger::try_init();
 
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
 
     let pool = RedisPool::builder()
         .connect_to_node("redis://127.0.0.1:6379")
@@ -23,30 +23,26 @@ fn main() {
         .finish_redis_rs()
         .unwrap();
 
-    let fut = pool.check_out().from_err().and_then(|conn| {
-        conn.exists(MY_KEY).and_then(|(conn, exists)| {
-            if exists {
-                info!("Key already exist");
-                Box::new(conn.del::<_, ()>(MY_KEY).map(|(conn, _)| {
-                    info!("key deleted");
-                    conn
-                })) as Box<dyn Future<Item = RedisConnection, Error = _> + Send>
-            } else {
-                info!("Key does not exist");
-                Box::new(future::ok(conn)) as Box<dyn Future<Item = _, Error = _> + Send>
-            }
-            .and_then(|conn| {
-                conn.set::<_, _, ()>(MY_KEY, "some data")
-                    .and_then(|(conn, _)| {
-                        info!("data written");
-                        conn.get::<_, String>(MY_KEY).map(|(_, data)| {
-                            info!("read '{}'", data);
-                            data == "some data"
-                        })
-                    })
-            })
-        })
-    });
+    let fut = async {
+        let mut conn = pool.check_out().await?;
+        let exists = conn.exists(MY_KEY).await?;
+
+        if exists {
+            info!("Key already exist");
+            conn.del::<_, ()>(MY_KEY).await?;
+            info!("key deleted");
+        } else {
+            info!("Key does not exist");
+        }
+
+        conn.set::<_, _, ()>(MY_KEY, "some data").await?;
+        info!("data written");
+
+        let data = conn.get::<_, String>(MY_KEY).await?;
+        info!("read '{}'", data);
+
+        Ok::<_, RedisError>(data == "some data")
+    };
 
     if runtime.block_on(fut).unwrap() {
         info!("data is equal")
@@ -54,5 +50,5 @@ fn main() {
 
     drop(pool);
     info!("pool dropped");
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
