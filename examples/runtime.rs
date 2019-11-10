@@ -1,6 +1,6 @@
 use std::env;
 
-use futures::future::{join_all, lazy, Future};
+use futures::future::{join_all, TryFutureExt};
 use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::{self, runtime::Runtime};
@@ -13,9 +13,9 @@ fn main() {
     env::set_var("RUST_LOG", "reool=debug,runtime=debug");
     let _ = pretty_env_logger::try_init();
 
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
 
-    let fut = lazy(|| {
+    let fut = async {
         let pool = RedisPool::builder()
             .connect_to_node("redis://127.0.0.1:6379")
             .desired_pool_size(10)
@@ -26,37 +26,32 @@ fn main() {
             .unwrap();
 
         info!("Do one 1000 pings concurrently");
-        let futs: Vec<_> = (0..1_000)
+        let futs = (0..1_000)
             .map(|i| {
-                pool.check_out()
-                    .from_err()
-                    .and_then(Commands::ping)
-                    .then(move |res| match res {
-                        Err(err) => {
-                            error!("PING {} failed: {}", i, err);
-                            Ok(())
-                        }
-                        Ok(_) => {
-                            debug!("PING {} OK", i);
-                            Ok::<_, ()>(())
-                        }
-                    })
-            })
-            .collect();
+                let pool = &pool;
 
-        let fut = join_all(futs).map(|_| {
-            info!("finished pinging");
-        });
+                async move {
+                    let result = pool
+                        .check_out()
+                        .err_into()
+                        .and_then(|mut conn| async move {
+                            conn.ping().await
+                        });
 
-        fut.map(move |_| pool)
-    })
-    .map(|_| {
+                    match result.await {
+                        Err(err) => error!("PING {} failed: {}", i, err),
+                        Ok(_) => debug!("PING {} OK", i),
+                    }
+                }
+            });
+
+        join_all(futs).await;
+        info!("finished pinging");
         info!("PINGED 1000 times concurrently");
         info!("pool goes out of scope");
-    })
-    .map_err(|_| ());
+    };
 
-    runtime.block_on(fut).unwrap();
+    runtime.block_on(fut);
 
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
