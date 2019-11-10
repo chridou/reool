@@ -177,13 +177,13 @@ fn start_new_conn_stream<T, C>(
 
             match msg {
                 NewConnMessage::RequestNewConn => {
-                    if let Some(existing_inner_pool) = inner_pool.upgrade() {
+                    if inner_pool.upgrade().is_some() {
                         trace!("creating new connection");
 
                         create_new_managed(
                             Instant::now(),
                             connection_factory.clone(),
-                            Arc::downgrade(&existing_inner_pool),
+                            inner_pool,
                             back_off_strategy,
                         )
                         .await
