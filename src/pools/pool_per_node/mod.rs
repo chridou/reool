@@ -11,7 +11,7 @@ use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{Checkout, Ping};
+use crate::{CheckoutError, RedisConnection, Ping};
 
 mod inner;
 
@@ -64,15 +64,15 @@ impl PoolPerNode {
         })
     }
 
-    pub fn check_out(&self) -> Checkout {
+    pub fn check_out(&self) -> impl Future<Output = Result<RedisConnection, CheckoutError>> + '_ {
         self.inner.check_out_explicit_timeout(self.checkout_timeout)
     }
 
-    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> impl Future<Output = Result<RedisConnection, CheckoutError>> + '_ {
         self.inner.check_out_explicit_timeout(timeout)
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Vec<Result<Ping, ()>>> + Send + '_ {
         self.inner.ping(timeout)
     }
 
