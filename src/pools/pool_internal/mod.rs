@@ -206,7 +206,7 @@ fn start_new_conn_stream<T, C>(
                             Arc::downgrade(&existing_inner_pool),
                             back_off_strategy,
                         )
-                        .map(|_| ())
+                        .map(|_| ()) // Dropping the connection puts it into the pool
                         .map_err(|err| warn!("Failed to create new connection: {}", err));
                         drop(existing_inner_pool);
                         Box::new(fut)
@@ -327,10 +327,19 @@ impl<T: Poolable> Future for CheckoutManaged<T> {
     }
 }
 
+/// Contains a connection and some other data.
+///
+/// `Managed` tries to return to its pool on drop.
+///
+/// The pool the connection belongs to is referenced by
+/// a `Weak` so that the connection can track whether
+/// the pool is still there when being dropped.
 pub(crate) struct Managed<T: Poolable> {
     created_at: Instant,
     /// Is `Some` taken from the pool otherwise fresh connection
     checked_out_at: Option<Instant>,
+    /// The actual connection. If `None` this
+    /// `Managed` may not return to the pool.
     pub value: Option<T>,
     inner_pool: Weak<InnerPool<T>>,
 }

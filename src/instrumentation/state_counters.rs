@@ -15,9 +15,19 @@ use super::Instrumentation;
 /// * number of idle connections
 /// * number of in flight connections
 /// * number of reservations
-/// * then number of tasks waiting before the lock
+/// * number of tasks waiting before the lock
 ///
 /// This is mostly useful for testing purposes only.
+///
+/// Call the `instrumentation` method to create an
+/// `Instrumentation` that can be put into a pool.
+///
+/// The logged or printed output might not be accurate
+/// since there are multiple race conditions possible inside
+/// the `StateCounters`. This is desired behaviour to not
+/// block threads. So the values you see in the output
+/// might already have changed to something different when
+/// logged.
 #[derive(Clone, Default)]
 pub struct StateCounters {
     connections: Arc<AtomicUsize>,
@@ -25,7 +35,7 @@ pub struct StateCounters {
     in_flight: Arc<AtomicUsize>,
     reservations: Arc<AtomicUsize>,
     pools: Arc<AtomicUsize>,
-    contentions: Arc<AtomicUsize>,
+    contention: Arc<AtomicUsize>,
     log: bool,
     print: bool,
 }
@@ -84,8 +94,54 @@ impl StateCounters {
     pub fn pools(&self) -> usize {
         self.pools.load(Ordering::SeqCst)
     }
-    pub fn contentions(&self) -> usize {
-        self.contentions.load(Ordering::SeqCst)
+    pub fn contention(&self) -> usize {
+        self.contention.load(Ordering::SeqCst)
+    }
+
+    /// Create the `Instrumentation` to be put into the pool to instrument.
+    pub fn instrumentation(&self) -> StateCountersInstrumentation {
+        StateCountersInstrumentation {
+            connections: Arc::clone(&self.connections),
+            idle: Arc::clone(&self.idle),
+            in_flight: Arc::clone(&self.in_flight),
+            reservations: Arc::clone(&self.reservations),
+            pools: Arc::clone(&self.pools),
+            contention: Arc::clone(&self.contention),
+            log: self.log,
+            print: self.print,
+        }
+    }
+}
+
+pub struct StateCountersInstrumentation {
+    connections: Arc<AtomicUsize>,
+    idle: Arc<AtomicUsize>,
+    in_flight: Arc<AtomicUsize>,
+    reservations: Arc<AtomicUsize>,
+    pools: Arc<AtomicUsize>,
+    contention: Arc<AtomicUsize>,
+    log: bool,
+    print: bool,
+}
+
+impl StateCountersInstrumentation {
+    pub fn connections(&self) -> usize {
+        self.connections.load(Ordering::SeqCst)
+    }
+    pub fn idle(&self) -> usize {
+        self.idle.load(Ordering::SeqCst)
+    }
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+    pub fn reservations(&self) -> usize {
+        self.reservations.load(Ordering::SeqCst)
+    }
+    pub fn pools(&self) -> usize {
+        self.pools.load(Ordering::SeqCst)
+    }
+    pub fn contention(&self) -> usize {
+        self.contention.load(Ordering::SeqCst)
     }
 
     fn output_required(&self) -> bool {
@@ -106,7 +162,7 @@ impl StateCounters {
     }
 }
 
-impl Instrumentation for StateCounters {
+impl Instrumentation for StateCountersInstrumentation {
     fn pool_added(&self, pool_index: usize) {
         self.pools.fetch_add(1, Ordering::SeqCst);
         if self.output_required() {
@@ -247,34 +303,34 @@ impl Instrumentation for StateCounters {
 
     fn reservation_limit_reached(&self, pool_index: usize) {
         if self.output_required() {
-            self.output(&format!("[{}] reservation limit reached", pool_index));
+            self.output(&format!("[{:02}] reservation limit reached", pool_index));
         }
     }
 
     fn connection_factory_failed(&self, pool_index: usize) {
         if self.output_required() {
-            self.output(&format!("[{}] connection factory failed", pool_index));
+            self.output(&format!("[{:02}] connection factory failed", pool_index));
         }
     }
 
     fn reached_lock(&self, pool_index: usize) {
-        self.contentions.fetch_add(1, Ordering::SeqCst);
+        self.contention.fetch_add(1, Ordering::SeqCst);
         if self.output_required() {
             self.output(&format!(
                 "[{:02}] contention +1: {}",
                 pool_index,
-                self.contentions()
+                self.contention()
             ));
         }
     }
 
     fn passed_lock(&self, _wait_time: Duration, pool_index: usize) {
-        self.contentions.fetch_sub(1, Ordering::SeqCst);
+        self.contention.fetch_sub(1, Ordering::SeqCst);
         if self.output_required() {
             self.output(&format!(
                 "[{:02}] contention -1: {}",
                 pool_index,
-                self.contentions()
+                self.contention()
             ));
         }
     }

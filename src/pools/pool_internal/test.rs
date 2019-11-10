@@ -55,7 +55,7 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
         Config::default().desired_pool_size(1),
         UnitFactory,
         executor,
-        counters.clone(),
+        counters.instrumentation(),
     );
 
     thread::sleep(Duration::from_millis(10));
@@ -65,7 +65,7 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     assert_eq!(counters.idle(), 1, "idle");
     assert_eq!(counters.in_flight(), 0, "in_flight");
     assert_eq!(counters.reservations(), 0, "reservations");
-    assert_eq!(counters.contentions(), 0, "contentions");
+    assert_eq!(counters.contention(), 0, "contention");
 
     drop(pool);
     thread::sleep(Duration::from_millis(10));
@@ -75,7 +75,7 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     assert_eq!(counters.idle(), 0, "idle");
     assert_eq!(counters.in_flight(), 0, "in_flight");
     assert_eq!(counters.reservations(), 0, "reservations");
-    assert_eq!(counters.contentions(), 0, "contentions");
+    assert_eq!(counters.contention(), 0, "contention");
 
     runtime.shutdown_on_idle().wait().unwrap();
 }
@@ -96,7 +96,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
             }),
         UnitFactoryAlwaysFails,
         executor,
-        counters.clone(),
+        counters.instrumentation(),
     );
 
     thread::sleep(Duration::from_millis(10));
@@ -105,7 +105,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     assert_eq!(counters.idle(), 0, "idle");
     assert_eq!(counters.in_flight(), 0, "in_flight");
     assert_eq!(counters.reservations(), 0, "reservations");
-    assert_eq!(counters.contentions(), 0, "contentions");
+    assert_eq!(counters.contention(), 0, "contention");
 
     drop(pool);
     thread::sleep(Duration::from_millis(10));
@@ -114,7 +114,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     assert_eq!(counters.idle(), 0, "idle");
     assert_eq!(counters.in_flight(), 0, "in_flight");
     assert_eq!(counters.reservations(), 0, "reservations");
-    assert_eq!(counters.contentions(), 0, "contentions");
+    assert_eq!(counters.contention(), 0, "contention");
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
@@ -130,7 +130,7 @@ fn checkout_one() {
         config.clone(),
         U32Factory::default(),
         executor.clone().into(),
-        counters.clone(),
+        counters.instrumentation(),
     );
 
     let checked_out = pool.check_out(PoolDefault).map(|c| c.value.unwrap());
@@ -153,7 +153,7 @@ fn checkout_twice_with_one_not_reusable() {
 
     let pool = PoolInternal::no_instrumentation(config.clone(), U32Factory::default(), executor);
 
-    // We do not return the con with managed
+    // We do not return the conn with managed by taking it
     let checked_out = pool
         .check_out(CheckoutMode::Wait)
         .map(|mut c| c.value.take().unwrap());
@@ -206,10 +206,6 @@ fn with_empty_pool_checkout_returns_timeout() {
     let config = Config::default().desired_pool_size(0);
 
     let pool = PoolInternal::no_instrumentation(config.clone(), UnitFactory, executor);
-
-    let checked_out = pool.check_out(Duration::from_millis(10));
-    let err = runtime.block_on(checked_out).err().unwrap();
-    assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
     let checked_out = pool.check_out(Duration::from_millis(10));
     let err = runtime.block_on(checked_out).err().unwrap();
