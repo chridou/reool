@@ -1,7 +1,7 @@
 //! A connection pool for connecting to a single node
 use std::time::Duration;
 
-use futures::prelude::Future;
+use futures::{Future, TryFutureExt};
 use log::info;
 
 use crate::config::Config;
@@ -11,7 +11,7 @@ use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::InstrumentationFlavour;
 
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{Checkout, Ping};
+use crate::{RedisConnection, Ping, CheckoutError};
 
 use super::pool_internal::{
     instrumentation::PoolInstrumentation, Config as PoolConfig, PoolInternal,
@@ -78,15 +78,15 @@ impl SharedPool {
         })
     }
 
-    pub fn check_out(&self) -> Checkout {
-        Checkout(self.pool.check_out(self.checkout_timeout))
+    pub fn check_out(&self) -> impl Future<Output = Result<RedisConnection, CheckoutError>> + '_ {
+        self.pool.check_out(self.checkout_timeout).map_ok(RedisConnection::from_ok_managed)
     }
 
-    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
-        Checkout(self.pool.check_out(timeout))
+    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> impl Future<Output = Result<RedisConnection, CheckoutError>> + '_ {
+        self.pool.check_out(timeout).map_ok(RedisConnection::from_ok_managed)
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Result<Ping, ()>> + Send + '_ {
         self.pool.ping(timeout)
     }
 
