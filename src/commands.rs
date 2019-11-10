@@ -26,7 +26,7 @@ pub trait Commands: Sized + ConnectionLike + Send + 'static {
 
     /// Send a ping command.
     fn ping(&mut self) -> RedisFuture<'_, ()> {
-        async {
+        async move {
             let response = Cmd::new()
                 .arg("PING")
                 .query_async::<_, String>(self)
@@ -41,79 +41,137 @@ pub trait Commands: Sized + ConnectionLike + Send + 'static {
     }
 
     /// Gets all keys matching pattern
-    fn keys<K: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
-        &mut self,
-        key: K,
-    ) -> RedisFuture<RV> {
-        cmd("KEYS").arg(key).query_async(self).boxed()
+    fn keys<K, RV>(&mut self, key: K) -> RedisFuture<RV>
+    where
+        K: ToRedisArgs + Send + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd("KEYS").arg(key).query_async(self).await
+        }.boxed()
     }
 
     /// Get the value of a key.  If key is a vec this becomes an `MGET`.
-    fn get<K: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
-        &mut self,
-        key: K,
-    ) -> RedisFuture<RV> {
-        cmd(if key.is_single_arg() { "GET" } else { "MGET" })
-            .arg(key)
-            .query_async(self)
-            .boxed()
+    fn get<K, RV>(&mut self, key: K) -> RedisFuture<RV>
+    where
+        K: ToRedisArgs + Send + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd(if key.is_single_arg() { "GET" } else { "MGET" })
+                .arg(key)
+                .query_async(self)
+                .await
+        }.boxed()
     }
 
     /// Set the string value of a key.
-    fn set<K: ToRedisArgs, V: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
-        &mut self,
-        key: K,
-        value: V,
-    ) -> RedisFuture<RV> {
-        cmd("SET").arg(key).arg(value).query_async(self).boxed()
+    fn set<K, V, RV>(&mut self, key: K, value: V) -> RedisFuture<RV>
+    where
+        K: ToRedisArgs + Send + 'static,
+        V: ToRedisArgs + Send + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd("SET")
+                .arg(key)
+                .arg(value)
+                .query_async(self)
+                .await
+        }.boxed()
     }
 
     /// Set the value of a key, only if the key does not exist
-    fn set_nx<K: ToRedisArgs, V: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
-        &mut self,
-        key: K,
-        value: V,
-    ) -> RedisFuture<RV> {
-        cmd("SETNX").arg(key).arg(value).query_async(self).boxed()
+    fn set_nx<K, V, RV>(&mut self, key: K, value: V) -> RedisFuture<RV>
+    where
+        K: ToRedisArgs + Send + 'static,
+        V: ToRedisArgs + Send + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd("SETNX")
+                .arg(key)
+                .arg(value)
+                .query_async(self)
+                .await
+        }.boxed()
     }
 
     /// Sets multiple keys to their values.
-    fn set_multiple<K: ToRedisArgs, V: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
-        &mut self,
-        items: &[(K, V)],
-    ) -> RedisFuture<RV> {
-        cmd("MSET").arg(items).query_async(self).boxed()
+    fn set_multiple<'a, K, V, RV>(&'a mut self, items: &'a [(K, V)]) -> RedisFuture<'a, RV>
+    where
+        K: ToRedisArgs + Send + Sync + 'static,
+        V: ToRedisArgs + Send + Sync + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd("MSET")
+                .arg(items)
+                .query_async(self)
+                .await
+        }.boxed()
     }
 
     /// Sets multiple keys to their values failing if at least one already exists.
-    fn set_multiple_nx<K: ToRedisArgs, V: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
-        &mut self,
-        items: &[(K, V)],
-    ) -> RedisFuture<RV> {
-        cmd("MSETNX").arg(items).query_async(self).boxed()
+    fn set_multiple_nx<'a, K, V, RV>(&'a mut self, items: &'a [(K, V)]) -> RedisFuture<'a, RV>
+    where
+        K: ToRedisArgs + Send + Sync + 'static,
+        V: ToRedisArgs + Send + Sync + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd("MSETNX")
+                .arg(items)
+                .query_async(self)
+                .await
+        }.boxed()
     }
 
     /// Delete one or more keys.
-    fn del<K: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
-        &mut self,
-        key: K,
-    ) -> RedisFuture<RV> {
-        cmd("DEL").arg(key).query_async(self).boxed()
+    fn del<'a, K, RV>(&'a mut self, key: K) -> RedisFuture<'a, RV>
+    where
+        K: ToRedisArgs + Send + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd("DEL")
+                .arg(key)
+                .query_async(self)
+                .await
+        }.boxed()
     }
 
     /// Determine if one or more keys exist.
-    fn exists<K: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
+    fn exists<K, RV>(
         &mut self,
         key: K,
-    ) -> RedisFuture<RV> {
-        cmd("EXISTS").arg(key).query_async(self).boxed()
+    ) -> RedisFuture<RV>
+    where
+        K: ToRedisArgs + Send + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd("EXISTS").
+                arg(key)
+                .query_async(self)
+                .await
+        }.boxed()
     }
 
     /// Determine the number of keys.
-    fn db_size<K: ToRedisArgs, RV: FromRedisValue + Send + 'static>(
+    fn db_size<K, RV>(
         &mut self,
         key: K,
-    ) -> RedisFuture<RV> {
-        cmd("DBSIZE").arg(key).query_async(self).boxed()
+    ) -> RedisFuture<RV>
+    where
+        K: ToRedisArgs + Send + 'static,
+        RV: FromRedisValue + Send + 'static,
+    {
+        async move {
+            cmd("DBSIZE").
+                arg(key)
+                .query_async(self)
+                .await
+        }.boxed()
     }
 }

@@ -36,9 +36,9 @@ impl RedisConnection {
 }
 
 impl ConnectionLike for RedisConnection {
-    fn req_packed_command(mut self, cmd: &Cmd) -> RedisFuture<(Self, Value)> {
-        async {
-            if let Some(conn) = self.managed.value.take() {
+    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
+        async move {
+            if let Some(mut conn) = self.managed.value.take() {
                 self.connection_state_ok = false;
 
                 let value = conn.req_packed_command(cmd).await?;
@@ -46,21 +46,21 @@ impl ConnectionLike for RedisConnection {
                 self.managed.value = Some(conn);
                 self.connection_state_ok = true;
 
-                Ok((self, value))
+                Ok(value)
             } else {
                 Err((ErrorKind::IoError, "no connection - this is a bug of reool").into())
             }
         }.boxed()
     }
 
-    fn req_packed_commands(
-        mut self,
-        cmds: &Pipeline,
+    fn req_packed_commands<'a> (
+        &'a mut self,
+        cmds: &'a Pipeline,
         offset: usize,
         count: usize,
-    ) -> RedisFuture<(Self, Vec<Value>)> {
-        async {
-            if let Some(conn) = self.managed.value.take() {
+    ) -> RedisFuture<'a, Vec<Value>> {
+        async move {
+            if let Some(mut conn) = self.managed.value.take() {
                 self.connection_state_ok = false;
 
                 let values = conn.req_packed_commands(cmds, offset, count).await?;
@@ -68,7 +68,7 @@ impl ConnectionLike for RedisConnection {
                 self.managed.value = Some(conn);
                 self.connection_state_ok = true;
 
-                Ok((self, values))
+                Ok(values)
             } else {
                 Err((ErrorKind::IoError, "no connection - this is a bug of reool").into())
             }
@@ -106,28 +106,28 @@ impl Poolable for ConnectionFlavour {
 }
 
 impl ConnectionLike for ConnectionFlavour {
-    fn req_packed_command(self, cmd: &Cmd) -> RedisFuture<(Self, Value)> {
-        async {
+    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
+        async move {
             match self {
-                ConnectionFlavour::RedisRs(conn, c) => {
+                ConnectionFlavour::RedisRs(conn, _) => {
                     let value = conn.req_packed_command(cmd).await?;
-                    Ok((ConnectionFlavour::RedisRs(conn, c), value))
+                    Ok(value)
                 },
             }
         }.boxed()
     }
 
-    fn req_packed_commands(
-        self,
-        cmds: &Pipeline,
+    fn req_packed_commands<'a>(
+        &'a mut self,
+        cmds: &'a Pipeline,
         offset: usize,
         count: usize,
-    ) -> RedisFuture<(Self, Vec<Value>)> {
-        async {
+    ) -> RedisFuture<'a, Vec<Value>> {
+        async move {
             match self {
-                ConnectionFlavour::RedisRs(conn, c) => {
+                ConnectionFlavour::RedisRs(conn, _) => {
                     let values = conn.req_packed_commands(cmds, offset, count).await?;
-                    Ok((ConnectionFlavour::RedisRs(conn, c), values))
+                    Ok(values)
                 },
             }
         }.boxed()

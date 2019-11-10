@@ -104,7 +104,7 @@ impl Inner {
         let count = self.count.fetch_add(1, Ordering::SeqCst);
 
         let pools = Arc::clone(&self.pools);
-        let attempts_left = self.pools.len();
+        let mut attempts_left = self.pools.len();
 
         loop {
             if attempts_left == 0 {

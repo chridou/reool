@@ -166,7 +166,7 @@ mod multi_node {
             let clients = Arc::clone(&self.clients);
             let connects_to = Arc::clone(&self.connects_to);
 
-            async {
+            async move {
                 loop {
                     if attempts_left == 0 {
                         return Err(NewConnectionError::new(

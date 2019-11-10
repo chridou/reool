@@ -85,7 +85,7 @@ where
             self.instrumentation.checked_in_new_connection();
         }
 
-        let core = self.sync_core.lock().await;
+        let mut core = self.sync_core.lock().await;
 
         if core.reservations.is_empty() {
             core.idle.put(managed);
@@ -128,9 +128,9 @@ where
     pub(super) async fn check_out(&self, timeout: Option<Duration>) -> Result<Managed<T>, CheckoutError> {
         let reservation_limit = self.config.reservation_limit;
 
-        let core = self.sync_core.lock().await;
+        let mut core = self.sync_core.lock().await;
 
-        if let Some((mut managed, idle_since)) = { core.idle.get() } {
+        if let Some((mut managed, idle_since)) = core.idle.get() {
             trace!("check out - checking out idle connection");
             managed.checked_out_at = Some(Instant::now());
 
@@ -176,7 +176,7 @@ where
 
         drop(core);
 
-        async {
+        async move {
             let managed = rx
                 .map_ok(Managed::<T>::from)
                 .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::NoConnection, err));
@@ -258,7 +258,7 @@ impl InnerPool<ConnectionFlavour> {
 
         let result =
             async {
-                let conn = self.check_out(Some(timeout)).await
+                let mut conn = self.check_out(Some(timeout)).await
                     .map(RedisConnection::from_ok_managed)
                     .map_err(|err| (Box::new(err) as Box<dyn StdError + Send>, None))?;
 

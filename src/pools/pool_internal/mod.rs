@@ -165,18 +165,21 @@ fn start_new_conn_stream<T, C>(
     let spawn_handle = executor.spawn_unbounded(receiver);
 
     let mut is_shut_down = false;
-    let fut = spawn_handle.map(Ok).try_for_each(move |msg| async {
-        if is_shut_down {
-            trace!("new connection requested on finished stream");
-            return Err(());
-        }
+    let fut = spawn_handle.map(Ok).try_for_each(move |msg| {
+        let connection_factory = Arc::clone(&connection_factory);
+        let inner_pool = Weak::clone(&inner_pool);
 
-        match msg {
-            NewConnMessage::RequestNewConn => {
-                if let Some(existing_inner_pool) = inner_pool.upgrade() {
-                    trace!("creating new connection");
+        async move {
+            if is_shut_down {
+                trace!("new connection requested on finished stream");
+                return Err(());
+            }
 
-                    let managed =
+            match msg {
+                NewConnMessage::RequestNewConn => {
+                    if let Some(existing_inner_pool) = inner_pool.upgrade() {
+                        trace!("creating new connection");
+
                         create_new_managed(
                             Instant::now(),
                             connection_factory.clone(),
@@ -186,16 +189,17 @@ fn start_new_conn_stream<T, C>(
                         .await
                         .map_err(|_| ())?;
 
-                    Ok(())
-                } else {
-                    warn!("attempt to create new connection even though the pool is gone");
+                        Ok(())
+                    } else {
+                        warn!("attempt to create new connection even though the pool is gone");
+                        Err(())
+                    }
+                }
+                NewConnMessage::Shutdown => {
+                    debug!("shutdown new conn stream");
+                    is_shut_down = true;
                     Err(())
                 }
-            }
-            NewConnMessage::Shutdown => {
-                debug!("shutdown new conn stream");
-                is_shut_down = true;
-                Err(())
             }
         }
     })
@@ -310,20 +314,30 @@ impl<T: Poolable> Drop for Managed<T> {
         };
 
         if let Some(value) = self.value.take() {
-            tokio::spawn(inner_pool.check_in(CheckInParcel::Alive(Managed {
+            let managed = Managed {
                 inner_pool: Arc::downgrade(&inner_pool),
                 value: Some(value),
                 created_at: self.created_at,
                 checked_out_at: self.checked_out_at,
-            })));
+            };
+            let parcel = CheckInParcel::Alive(managed);
+
+            tokio::spawn(async move {
+                inner_pool.check_in(parcel).await
+            });
         } else {
-            debug!("no value - drop connection and request new one");
             // No connection. Create a new one.
-            tokio::spawn(inner_pool.check_in(CheckInParcel::Dropped(
+            debug!("no value - drop connection and request new one");
+            let parcel = CheckInParcel::Dropped(
                 self.checked_out_at.as_ref().map(Instant::elapsed),
                 self.created_at.elapsed(),
-            )));
+            );
+
             inner_pool.request_new_conn();
+
+            tokio::spawn(async move {
+                inner_pool.check_in(parcel).await;
+            });
         }
     }
 }
