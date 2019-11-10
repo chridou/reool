@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use futures::future::{self, Future};
+use futures::future::{self, FutureExt, TryFutureExt};
 use log::debug;
 use pretty_env_logger;
 use tokio::{self, runtime::Runtime};
-use tokio::timer::Delay;
+use tokio::timer;
 
 use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{NewConnection, NewConnectionError};
@@ -31,17 +31,17 @@ fn given_a_runtime_the_pool_can_be_created() {
     let _ = pretty_env_logger::try_init();
     let mut runtime = Runtime::new().unwrap();
 
-    let fut = future::lazy(|| {
+    let fut = async {
         Ok::<_, ()>(PoolInternal::no_instrumentation(
             Config::default().desired_pool_size(1),
             UnitFactory,
             ExecutorFlavour::Runtime,
         ))
-    });
+    };
 
     runtime.block_on(fut).unwrap();
 
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     thread::sleep(Duration::from_millis(20));
 
     drop(pool);
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 
     debug!("drop pool");
     drop(pool);
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn checkout_one() {
         executor.clone().into(),
     );
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(None).map_ok(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
@@ -107,7 +107,7 @@ fn checkout_one() {
     thread::sleep(Duration::from_millis(50));
 
     drop(pool);
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 
 #[test]
@@ -120,18 +120,18 @@ fn checkout_twice_with_one_not_reusable() {
     let pool = PoolInternal::no_instrumentation(config.clone(), U32Factory::default(), executor);
 
     // We do not return the con with managed
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool.check_out(None).map_ok(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(None).map_ok(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
 
     drop(pool);
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 
 #[test]
@@ -145,18 +145,18 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
         PoolInternal::no_instrumentation(config.clone(), U32DelayFactory::default(), executor);
 
     // We do not return the con with managed
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool.check_out(None).map_ok(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(None).map_ok(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
 
     drop(pool);
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn with_empty_pool_checkout_returns_timeout() {
     assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
     drop(pool);
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 
 #[test]
@@ -193,18 +193,18 @@ fn create_connection_fails_some_times() {
         executor,
     );
 
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool.check_out(None).map_ok(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 4);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(None).map_ok(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 8);
 
     drop(pool);
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 
 /*
@@ -239,7 +239,7 @@ fn put_and_checkout_do_not_race() {
 
         drop(pool);
     }
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
 */
 
@@ -253,7 +253,7 @@ struct UnitFactory;
 impl ConnectionFactory for UnitFactory {
     type Connection = ();
     fn create_connection(&self) -> NewConnection<Self::Connection> {
-        NewConnection::new(future::ok(()))
+        future::ok(()).boxed()
     }
     fn connecting_to(&self) -> Cow<[Arc<String>]> {
         Cow::Owned(Vec::new())
@@ -281,7 +281,7 @@ impl Default for U32Factory {
 impl ConnectionFactory for U32Factory {
     type Connection = u32;
     fn create_connection(&self) -> NewConnection<Self::Connection> {
-        NewConnection::new(future::ok(self.counter.fetch_add(1, Ordering::SeqCst)))
+        future::ok(self.counter.fetch_add(1, Ordering::SeqCst)).boxed()
     }
     fn connecting_to(&self) -> Cow<[Arc<String>]> {
         Cow::Owned(Vec::new())
@@ -313,9 +313,9 @@ impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
 
         let current_count = self.0.fetch_add(1, Ordering::SeqCst);
         if current_count % 4 == 0 {
-            NewConnection::new(future::ok(current_count))
+            future::ok(current_count).boxed()
         } else {
-            NewConnection::new(future::err(NewConnectionError::new(MyError)))
+            future::err(NewConnectionError::new(MyError)).boxed()
         }
     }
     fn connecting_to(&self) -> Cow<[Arc<String>]> {
@@ -351,7 +351,7 @@ impl ConnectionFactory for UnitFactoryAlwaysFails {
             }
         }
 
-        NewConnection::new(future::err(NewConnectionError::new(MyError)))
+        future::err(NewConnectionError::new(MyError)).boxed()
     }
     fn connecting_to(&self) -> Cow<[Arc<String>]> {
         Cow::Owned(Vec::new())
@@ -375,13 +375,11 @@ impl Default for U32DelayFactory {
 impl ConnectionFactory for U32DelayFactory {
     type Connection = u32;
     fn create_connection(&self) -> NewConnection<Self::Connection> {
-        let delay = Delay::new(Instant::now() + self.delay);
+        let delay = timer::delay(Instant::now() + self.delay);
         let next = self.counter.fetch_add(1, Ordering::SeqCst);
-        NewConnection::new(
-            delay
-                .map_err(NewConnectionError::new)
-                .and_then(move |()| future::ok(next)),
-        )
+        delay
+            .map(move |_| Ok(next))
+            .boxed()
     }
     fn connecting_to(&self) -> Cow<[Arc<String>]> {
         Cow::Owned(Vec::new())
