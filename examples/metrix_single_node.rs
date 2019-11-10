@@ -1,7 +1,7 @@
 use std::env;
 use std::time::{Duration, Instant};
 
-use futures::future::{join_all, Future};
+use futures::future::{join_all, TryFutureExt};
 use log::{debug, error, info};
 use metrix::driver::DriverBuilder;
 use pretty_env_logger;
@@ -21,7 +21,7 @@ fn main() {
         .set_driver_metrics(false)
         .build();
 
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
 
     let pool = RedisPool::builder()
         .connect_to_node("redis://127.0.0.1:6379")
@@ -38,30 +38,30 @@ fn main() {
     std::thread::sleep(Duration::from_secs(1));
 
     info!("Do 20000 pings concurrently");
-    let futs: Vec<_> = (0..20_000)
+    let futs = (0..20_000)
         .map(|i| {
-            pool.check_out()
-                .from_err()
-                .and_then(Commands::ping)
-                .then(move |res| match res {
-                    Err(err) => {
-                        error!("PING {} failed: {}", i, err);
-                        Ok(())
-                    }
-                    Ok(_) => {
-                        debug!("PING {} OK", i);
-                        Ok::<_, ()>(())
-                    }
-                })
-        })
-        .collect();
+            let pool = &pool;
 
-    let fut = join_all(futs).map(|_| {
-        info!("finished pinging");
-    });
+            async move {
+                let result = pool
+                    .check_out()
+                    .err_into()
+                    .and_then(|mut conn| async move {
+                        conn.ping().await
+                    });
+
+                match result.await {
+                    Err(err) => error!("PING {} failed: {}", i, err),
+                    Ok(_) => debug!("PING {} OK", i),
+                }
+            }
+        });
 
     let start = Instant::now();
-    runtime.block_on(fut).unwrap();
+    runtime.block_on(async {
+        join_all(futs).await;
+        info!("finished pinging");
+    });
     info!("PINGED 20000 times concurrently in {:?}", start.elapsed());
 
     let metrics_snapshot = driver.snapshot(false).unwrap();
@@ -71,10 +71,13 @@ fn main() {
     std::thread::sleep(Duration::from_millis(1500));
 
     runtime
-        .block_on(pool.check_out().from_err().and_then(Commands::ping))
+        .block_on(async {
+            let mut conn = pool.check_out().await?;
+            conn.ping().await
+        })
         .unwrap();
 
     drop(pool);
     info!("pool dropped");
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
