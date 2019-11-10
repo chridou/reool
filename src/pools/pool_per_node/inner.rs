@@ -104,11 +104,11 @@ impl Inner {
 
             // If a pool fails to checkout a connection try the next one.
             //
-            // Start with the checkout mode passed by the user. On a failure
-            // continue with CheckoutMode::Immediately.
+            // Use CheckoutMode::Immediately to quickly return a connection and
+            // use the user supplied mode on the last attempt only.
             let loop_fut = future::loop_fn(
-                (Arc::clone(&self.pools), self.pools.len(), mode),
-                move |(pools, attempts_left, mode)| {
+                (Arc::clone(&self.pools), self.pools.len()),
+                move |(pools, attempts_left)| {
                     if attempts_left == 0 {
                         return Box::new(future::err(CheckoutErrorKind::NoConnection.into()))
                             as Box<dyn Future<Item = _, Error = CheckoutError> + Send>;
@@ -116,15 +116,17 @@ impl Inner {
 
                     let idx = (count + attempts_left) % pools.len();
 
-                    Box::new(pools[idx].check_out(mode).then(move |r| match r {
+                    let mode_to_use = if attempts_left == 1 {
+                        mode
+                    } else {
+                        CheckoutMode::Immediately
+                    };
+
+                    Box::new(pools[idx].check_out(mode_to_use).then(move |r| match r {
                         Ok(managed_conn) => Ok(Loop::Break(managed_conn)),
                         Err(err) => {
                             warn!("no connection from pool - trying next - {}", err);
-                            Ok(Loop::Continue((
-                                pools,
-                                attempts_left - 1,
-                                CheckoutMode::Immediately,
-                            )))
+                            Ok(Loop::Continue((pools, attempts_left - 1)))
                         }
                     }))
                 },

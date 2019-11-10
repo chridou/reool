@@ -205,6 +205,17 @@ impl From<Option<Instant>> for CheckoutMode {
     }
 }
 
+impl From<config::PoolCheckoutMode> for CheckoutMode {
+    fn from(mode: config::PoolCheckoutMode) -> Self {
+        use config::PoolCheckoutMode::*;
+        match mode {
+            Immediately => CheckoutMode::Immediately,
+            Wait => CheckoutMode::Wait,
+            WaitAtMost(d) => CheckoutMode::WaitAtMost(d),
+        }
+    }
+}
+
 #[derive(Clone)]
 enum RedisPoolFlavour {
     Empty,
