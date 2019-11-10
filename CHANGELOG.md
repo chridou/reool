@@ -6,8 +6,8 @@
     * Remove `stats_interval` from the config
     * Add configuration parameter for the default pool checkout behaviour
     to the config. The enum is `PoolCheckoutMode`
-    * `PoolPerNode` will only use the given `CheckoutMode` on the first attempt to checkout
-    a connection. On subsequent attempts `CheckoutMode::Immediately` will be used.
+    * `PoolPerNode` will only use the given `CheckoutMode` on the last attempt to checkout
+    a connection. On previous attempts `CheckoutMode::Immediately` will be used.
 
 ## 0.18.2
 
