@@ -2,7 +2,6 @@ use std::env;
 use std::thread;
 use std::time::Duration;
 
-use futures::future::Future;
 use log::info;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
@@ -43,5 +42,5 @@ fn main() {
     drop(pool);
     info!("DROPPED multi node pool POOL");
 
-    runtime.shutdown_on_idle().wait().unwrap();
+    runtime.shutdown_on_idle();
 }
