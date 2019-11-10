@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::{self, Future, Loop};
+use futures::future::{self, Future, FutureExt};
 use log::{debug, info, warn};
 
 use crate::config::Config;
@@ -13,8 +13,8 @@ use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
 use crate::pools::pool_internal::instrumentation::PoolInstrumentation;
-use crate::pools::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
-use crate::{Checkout, Ping};
+use crate::pools::pool_internal::{Config as PoolConfig, PoolInternal};
+use crate::{Ping, RedisConnection};
 
 pub struct Inner {
     count: AtomicUsize,
@@ -94,39 +94,38 @@ impl Inner {
         Ok(inner)
     }
 
-    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
+    pub async fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Result<RedisConnection, CheckoutError> {
         if self.pools.is_empty() {
-            Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
+            return Err(CheckoutError::new(
                 CheckoutErrorKind::NoPool,
-            ))))
-        } else {
-            let count = self.count.fetch_add(1, Ordering::SeqCst);
+            ));
+        }
 
-            let loop_fut = future::loop_fn(
-                (Arc::clone(&self.pools), self.pools.len()),
-                move |(pools, attempts_left)| {
-                    if attempts_left == 0 {
-                        return Box::new(future::err(CheckoutErrorKind::NoConnection.into()))
-                            as Box<dyn Future<Item = _, Error = CheckoutError> + Send>;
-                    }
+        let count = self.count.fetch_add(1, Ordering::SeqCst);
 
-                    let idx = (count + attempts_left) % pools.len();
+        let pools = Arc::clone(&self.pools);
+        let attempts_left = self.pools.len();
 
-                    Box::new(pools[idx].check_out(timeout).then(move |r| match r {
-                        Ok(managed_conn) => Ok(Loop::Break(managed_conn)),
-                        Err(err) => {
-                            warn!("no connection from pool - trying next - {}", err);
-                            Ok(Loop::Continue((pools, attempts_left - 1)))
-                        }
-                    }))
-                },
-            );
+        loop {
+            if attempts_left == 0 {
+                return Err(CheckoutErrorKind::NoConnection.into());
+            }
 
-            Checkout::new(loop_fut)
+            let idx = (count + attempts_left) % pools.len();
+            let managed_conn = pools[idx].check_out(timeout);
+
+            match managed_conn.await {
+                Ok(managed_conn) => return Ok(RedisConnection::from_ok_managed(managed_conn)),
+                Err(err) => {
+                    warn!("no connection from pool - trying next - {}", err);
+                    attempts_left -= 1;
+                    continue;
+                }
+            }
         }
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Vec<Result<Ping, ()>>> + Send + '_ {
         let futs: Vec<_> = self.pools.iter().map(|p| p.ping(timeout)).collect();
         future::join_all(futs)
     }
