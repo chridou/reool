@@ -88,7 +88,7 @@ where
                 .map(|c| c.as_ref().to_owned())
                 .collect(),
             config.clone(),
-            new_con_tx.clone(),
+            new_con_tx,
             instrumentation,
         ));
 
