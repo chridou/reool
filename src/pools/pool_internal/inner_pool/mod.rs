@@ -226,7 +226,7 @@ where
 }
 
 impl InnerPool<ConnectionFlavour> {
-    pub async fn ping(&self, timeout: Duration) -> Result<Ping, ()> {
+    pub async fn ping(&self, timeout: Duration) -> Ping {
         use crate::commands::Commands;
 
         #[derive(Debug)]
@@ -287,11 +287,11 @@ impl InnerPool<ConnectionFlavour> {
             ),
         };
 
-        Ok(Ping {
+        Ping {
             uri,
             latency: started_at.elapsed(),
             state,
-        })
+        }
     }
 }
 

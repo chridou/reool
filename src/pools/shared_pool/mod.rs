@@ -86,7 +86,7 @@ impl SharedPool {
         self.pool.check_out(timeout).map_ok(RedisConnection::from_ok_managed)
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Result<Ping, ()>> + Send + '_ {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Ping> + Send + '_ {
         self.pool.ping(timeout)
     }
 

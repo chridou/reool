@@ -72,7 +72,7 @@ impl PoolPerNode {
         self.inner.check_out_explicit_timeout(timeout)
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Vec<Result<Ping, ()>>> + Send + '_ {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Vec<Ping>> + Send + '_ {
         self.inner.ping(timeout)
     }
 

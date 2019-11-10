@@ -125,7 +125,7 @@ impl Inner {
         }
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Vec<Result<Ping, ()>>> + Send + '_ {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Vec<Ping>> + Send + '_ {
         let futs: Vec<_> = self.pools.iter().map(|p| p.ping(timeout)).collect();
         future::join_all(futs)
     }

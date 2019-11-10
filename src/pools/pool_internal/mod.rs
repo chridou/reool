@@ -147,7 +147,7 @@ where
 }
 
 impl PoolInternal<ConnectionFlavour> {
-    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Result<Ping, ()>> + '_ {
+    pub fn ping(&self, timeout: Duration) -> impl Future<Output = Ping> + '_ {
         self.inner_pool.ping(timeout)
     }
 }
