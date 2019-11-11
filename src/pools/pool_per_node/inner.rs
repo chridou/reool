@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::{self, Future, Loop};
-use log::{debug, info, warn};
+use log::{debug, info};
 
 use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
@@ -125,7 +125,7 @@ impl Inner {
                     Box::new(pools[idx].check_out(mode_to_use).then(move |r| match r {
                         Ok(managed_conn) => Ok(Loop::Break(managed_conn)),
                         Err(err) => {
-                            warn!("no connection from pool - trying next - {}", err);
+                            debug!("no connection from pool - trying next - {}", err);
                             Ok(Loop::Continue((pools, attempts_left - 1)))
                         }
                     }))

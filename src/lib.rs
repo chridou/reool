@@ -98,8 +98,8 @@ impl Future for Checkout {
 /// * `Duration`: `WaitAtMost` or `Immediately`
 /// * `Option<Duration>>`: `PoolDefault` if `None` or
 /// the mapping used for a `Duration` if `Some`
-/// * `Instant`: `WaitAtMost` upd to the `Instant` if the instant is
-/// in the future. Otherwise `Immediately`
+/// * `Instant`: `WaitAtMost` up to the `Instant` if the instant is
+/// in the future. Otherwise `Immediately`.
 /// * `Option<Instant>`: `PoolDefault` if `None` or
 /// the mapping used for a `Instant` if `Some`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,15 +129,15 @@ impl CheckoutMode {
     }
 }
 
-/// Simply a shortcut for `CheckkoutMode::Immediately`
+/// Simply a shortcut for `CheckoutMode::Immediately`
 #[derive(Debug, Clone, Copy)]
 pub struct Immediately;
 
-/// Simply a shortcut for `CheckkoutMode::Wait`
+/// Simply a shortcut for `CheckoutMode::Wait`
 #[derive(Debug, Clone, Copy)]
 pub struct Wait;
 
-/// Simply a shortcut for `CheckkoutMode::PoolDefault`
+/// Simply a shortcut for `CheckoutMode::PoolDefault`
 #[derive(Debug, Clone, Copy)]
 pub struct PoolDefault;
 

@@ -198,17 +198,16 @@ fn start_new_conn_stream<T, C>(
         } else {
             match msg {
                 NewConnMessage::RequestNewConn => {
-                    if let Some(existing_inner_pool) = inner_pool.upgrade() {
+                    if Weak::upgrade(&inner_pool).is_some() {
                         trace!("creating new connection");
                         let fut = create_new_managed(
                             Instant::now(),
                             connection_factory.clone(),
-                            Arc::downgrade(&existing_inner_pool),
+                            inner_pool.clone(),
                             back_off_strategy,
                         )
                         .map(|_| ()) // Dropping the connection puts it into the pool
                         .map_err(|err| warn!("Failed to create new connection: {}", err));
-                        drop(existing_inner_pool);
                         Box::new(fut)
                     } else {
                         warn!("attempt to create new connection even though the pool is gone");
