@@ -4,9 +4,11 @@ use std::time::Duration;
 
 #[cfg(feature = "metrix")]
 pub use self::metrix::{MetrixConfig, MetrixInstrumentation};
+pub use state_counters::*;
 
 #[cfg(feature = "metrix")]
 mod metrix;
+mod state_counters;
 
 #[derive(Clone)]
 pub(crate) enum InstrumentationFlavour {

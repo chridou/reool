@@ -27,7 +27,7 @@ fn main() {
         .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(200)
         .reservation_limit(Some(10_000))
-        .checkout_timeout(Some(Duration::from_secs(10)))
+        .checkout_mode(Duration::from_secs(10))
         .activation_order(ActivationOrder::LiFo)
         .task_executor(runtime.executor())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
@@ -40,7 +40,7 @@ fn main() {
     info!("Do 20000 pings concurrently");
     let futs: Vec<_> = (0..20_000)
         .map(|i| {
-            pool.check_out()
+            pool.check_out_default()
                 .from_err()
                 .and_then(Commands::ping)
                 .then(move |res| match res {
@@ -71,7 +71,7 @@ fn main() {
     std::thread::sleep(Duration::from_millis(1500));
 
     runtime
-        .block_on(pool.check_out().from_err().and_then(Commands::ping))
+        .block_on(pool.check_out_default().from_err().and_then(Commands::ping))
         .unwrap();
 
     drop(pool);

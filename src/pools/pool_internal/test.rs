@@ -7,7 +7,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use futures::future::{self, Future};
-use log::debug;
 use pretty_env_logger;
 use tokio::{self, runtime::Runtime};
 use tokio_timer::Delay;
@@ -16,8 +15,9 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::{NewConnection, NewConnectionError};
 use crate::error::CheckoutErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
+use crate::instrumentation::StateCounters;
 use crate::pools::pool_internal::{Config, ConnectionFactory, PoolInternal};
-use crate::Poolable;
+use crate::*;
 
 #[test]
 #[should_panic]
@@ -50,15 +50,33 @@ fn given_an_explicit_executor_a_pool_can_be_created_and_initialized() {
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
 
-    let pool = PoolInternal::no_instrumentation(
+    let counters = StateCounters::new();
+    let pool = PoolInternal::custom_instrumentation(
         Config::default().desired_pool_size(1),
         UnitFactory,
         executor,
+        counters.instrumentation(),
     );
 
-    thread::sleep(Duration::from_millis(20));
+    thread::sleep(Duration::from_millis(10));
+
+    assert_eq!(counters.pools(), 1, "pools");
+    assert_eq!(counters.connections(), 1, "connections");
+    assert_eq!(counters.idle(), 1, "idle");
+    assert_eq!(counters.in_flight(), 0, "in_flight");
+    assert_eq!(counters.reservations(), 0, "reservations");
+    assert_eq!(counters.contention(), 0, "contention");
 
     drop(pool);
+    thread::sleep(Duration::from_millis(10));
+
+    assert_eq!(counters.pools(), 0, "pools");
+    assert_eq!(counters.connections(), 0, "connections");
+    assert_eq!(counters.idle(), 0, "idle");
+    assert_eq!(counters.in_flight(), 0, "in_flight");
+    assert_eq!(counters.reservations(), 0, "reservations");
+    assert_eq!(counters.contention(), 0, "contention");
+
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
@@ -68,7 +86,8 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     let runtime = Runtime::new().unwrap();
     let executor = runtime.executor().into();
 
-    let pool = PoolInternal::no_instrumentation(
+    let counters = StateCounters::new();
+    let pool = PoolInternal::custom_instrumentation(
         Config::default()
             .desired_pool_size(5)
             .backoff_strategy(BackoffStrategy::Constant {
@@ -77,12 +96,25 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
             }),
         UnitFactoryAlwaysFails,
         executor,
+        counters.instrumentation(),
     );
 
     thread::sleep(Duration::from_millis(10));
+    assert_eq!(counters.pools(), 1, "pools");
+    assert_eq!(counters.connections(), 0, "connections");
+    assert_eq!(counters.idle(), 0, "idle");
+    assert_eq!(counters.in_flight(), 0, "in_flight");
+    assert_eq!(counters.reservations(), 0, "reservations");
+    assert_eq!(counters.contention(), 0, "contention");
 
-    debug!("drop pool");
     drop(pool);
+    thread::sleep(Duration::from_millis(10));
+    assert_eq!(counters.pools(), 0, "pools");
+    assert_eq!(counters.connections(), 0, "connections");
+    assert_eq!(counters.idle(), 0, "idle");
+    assert_eq!(counters.in_flight(), 0, "in_flight");
+    assert_eq!(counters.reservations(), 0, "reservations");
+    assert_eq!(counters.contention(), 0, "contention");
     runtime.shutdown_on_idle().wait().unwrap();
 }
 
@@ -93,13 +125,15 @@ fn checkout_one() {
     let executor = runtime.executor();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = PoolInternal::no_instrumentation(
+    let counters = StateCounters::new();
+    let pool = PoolInternal::custom_instrumentation(
         config.clone(),
         U32Factory::default(),
         executor.clone().into(),
+        counters.instrumentation(),
     );
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(PoolDefault).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
@@ -119,13 +153,15 @@ fn checkout_twice_with_one_not_reusable() {
 
     let pool = PoolInternal::no_instrumentation(config.clone(), U32Factory::default(), executor);
 
-    // We do not return the con with managed
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    // We do not return the conn with managed by taking it
+    let checked_out = pool
+        .check_out(CheckoutMode::Wait)
+        .map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(CheckoutMode::Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
@@ -145,12 +181,15 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
         PoolInternal::no_instrumentation(config.clone(), U32DelayFactory::default(), executor);
 
     // We do not return the con with managed
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool
+        .check_out(CheckoutMode::Wait)
+        .map(|mut c| c.value.take().unwrap());
+
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(CheckoutMode::Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
@@ -168,11 +207,7 @@ fn with_empty_pool_checkout_returns_timeout() {
 
     let pool = PoolInternal::no_instrumentation(config.clone(), UnitFactory, executor);
 
-    let checked_out = pool.check_out(Some(Duration::from_millis(10)));
-    let err = runtime.block_on(checked_out).err().unwrap();
-    assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
-
-    let checked_out = pool.check_out(Some(Duration::from_millis(10)));
+    let checked_out = pool.check_out(Duration::from_millis(10));
     let err = runtime.block_on(checked_out).err().unwrap();
     assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
@@ -193,12 +228,14 @@ fn create_connection_fails_some_times() {
         executor,
     );
 
-    let checked_out = pool.check_out(None).map(|mut c| c.value.take().unwrap());
+    let checked_out = pool
+        .check_out(CheckoutMode::Wait)
+        .map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 4);
 
-    let checked_out = pool.check_out(None).map(|c| c.value.unwrap());
+    let checked_out = pool.check_out(CheckoutMode::Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 8);

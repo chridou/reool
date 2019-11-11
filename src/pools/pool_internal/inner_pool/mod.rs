@@ -11,7 +11,7 @@ use tokio_timer::Timeout;
 
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{Ping, PingState, Poolable};
+use crate::{config::PoolCheckoutMode, Ping, PingState, Poolable};
 
 use super::{CheckoutManaged, Config, Managed, NewConnMessage};
 
@@ -22,7 +22,7 @@ mod core;
 pub(crate) struct InnerPool<T: Poolable> {
     sync_core: SyncCore<T>,
     request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
-    config: Config,
+    reservation_limit: Option<usize>,
     instrumentation: PoolInstrumentation,
     connected_to: Vec<String>,
 }
@@ -33,7 +33,7 @@ where
 {
     pub fn new(
         connected_to: Vec<String>,
-        config: Config,
+        config: &Config,
         request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
         instrumentation: PoolInstrumentation,
     ) -> Self {
@@ -48,7 +48,7 @@ where
         Self {
             sync_core,
             request_new_conn,
-            config,
+            reservation_limit: config.reservation_limit,
             instrumentation,
             connected_to,
         }
@@ -127,8 +127,9 @@ where
         })
     }
 
-    pub(super) fn check_out(&self, timeout: Option<Duration>) -> CheckoutManaged<T> {
-        let reservation_limit = self.config.reservation_limit;
+    pub(super) fn check_out(&self, mode: PoolCheckoutMode) -> CheckoutManaged<T> {
+        let mode = mode.adjust();
+        let reservation_limit = self.reservation_limit;
         CheckoutManaged::new(
             self.sync_core
                 .lock()
@@ -144,36 +145,51 @@ where
 
                         CheckoutManaged::new(future::ok(managed))
                     } else {
-                        if let Some(reservation_limit) = reservation_limit {
-                            if core.reservations.len() == reservation_limit {
-                                trace!(
-                                    "check out - reservation limit reached \
-                                     - returning error"
-                                );
-
-                                if reservation_limit == 0 {
-                                    return CheckoutManaged::new(future::err(CheckoutError::new(
-                                        CheckoutErrorKind::NoConnection,
-                                    )));
-                                } else {
-                                    core.instrumentation.reservation_limit_reached();
-                                    return CheckoutManaged::new(future::err(CheckoutError::new(
-                                        CheckoutErrorKind::QueueLimitReached,
-                                    )));
-                                }
+                        trace!("check out - no idle connection");
+                        match mode {
+                            PoolCheckoutMode::Immediately => {
+                                // This failed. There was no connection to delivery immediately...
+                                CheckoutManaged::new(future::err(CheckoutError::new(
+                                    CheckoutErrorKind::NoConnection,
+                                )))
+                            }
+                            PoolCheckoutMode::Wait => {
+                                Self::create_reservation(core, None, reservation_limit)
+                            }
+                            PoolCheckoutMode::WaitAtMost(d) => {
+                                Self::create_reservation(core, Some(d), reservation_limit)
                             }
                         }
-                        trace!(
-                            "check out - no idle connection - \
-                             enqueue reservation"
-                        );
-                        Self::create_reservation(timeout, core)
                     }
                 }),
         )
     }
 
-    fn create_reservation(timeout: Option<Duration>, mut core: CoreGuard<T>) -> CheckoutManaged<T> {
+    fn create_reservation(
+        mut core: CoreGuard<T>,
+        timeout: Option<Duration>,
+        reservation_limit: Option<usize>,
+    ) -> CheckoutManaged<T> {
+        if let Some(reservation_limit) = reservation_limit {
+            if core.reservations.len() == reservation_limit {
+                trace!(
+                    "check out - reservation limit reached \
+                     - returning error"
+                );
+
+                if reservation_limit == 0 {
+                    return CheckoutManaged::new(future::err(CheckoutError::new(
+                        CheckoutErrorKind::NoConnection,
+                    )));
+                } else {
+                    core.instrumentation.reservation_limit_reached();
+                    return CheckoutManaged::new(future::err(CheckoutError::new(
+                        CheckoutErrorKind::QueueLimitReached,
+                    )));
+                }
+            }
+        }
+
         let (tx, rx) = oneshot::channel();
         let waiting = Reservation::checkout(tx);
         core.reservations.push_back(waiting);
@@ -261,7 +277,7 @@ impl InnerPool<ConnectionFlavour> {
             None
         };
 
-        let f = crate::Checkout(self.check_out(Some(timeout)))
+        let f = crate::Checkout(self.check_out(PoolCheckoutMode::Wait))
             .map_err(|err| (Box::new(err) as Box<dyn StdError + Send>, None))
             .and_then(|conn| {
                 let connected_to = conn.connected_to().to_owned();

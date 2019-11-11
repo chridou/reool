@@ -37,6 +37,7 @@ impl<T: Poolable> Drop for Core<T> {
     fn drop(&mut self) {
         let instrumentation = self.instrumentation.clone();
         self.idle.drain().for_each(|c| {
+            instrumentation.idle_dec();
             instrumentation.connection_dropped(None, c.0.created_at.elapsed());
         })
     }

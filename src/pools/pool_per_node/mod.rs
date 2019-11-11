@@ -11,7 +11,7 @@ use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{Checkout, Ping};
+use crate::{Checkout, CheckoutMode, Ping};
 
 mod inner;
 
@@ -31,7 +31,6 @@ use self::inner::*;
 /// Once the last instance drops the shared connections will be dropped.
 pub(crate) struct PoolPerNode {
     inner: Arc<Inner>,
-    checkout_timeout: Option<Duration>,
 }
 
 impl PoolPerNode {
@@ -50,7 +49,6 @@ impl PoolPerNode {
             config.connect_to_nodes
         );
 
-        let checkout_timeout = config.checkout_timeout;
         let inner = Inner::new(
             config,
             create_connection_factory,
@@ -60,16 +58,11 @@ impl PoolPerNode {
 
         Ok(PoolPerNode {
             inner: Arc::new(inner),
-            checkout_timeout,
         })
     }
 
-    pub fn check_out(&self) -> Checkout {
-        self.inner.check_out_explicit_timeout(self.checkout_timeout)
-    }
-
-    pub fn check_out_explicit_timeout(&self, timeout: Option<Duration>) -> Checkout {
-        self.inner.check_out_explicit_timeout(timeout)
+    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> Checkout {
+        self.inner.check_out(mode.into())
     }
 
     pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
@@ -85,7 +78,6 @@ impl Clone for PoolPerNode {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            checkout_timeout: self.checkout_timeout,
         }
     }
 }

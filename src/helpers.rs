@@ -4,7 +4,7 @@ use std::time::Duration;
 use log::warn;
 
 use crate::activation_order::ActivationOrder;
-use crate::config::NodePoolStrategy;
+use crate::config::{NodePoolStrategy, PoolCheckoutMode};
 use crate::error::{InitializationError, InitializationResult};
 
 fn make_prefix<T: Into<String>>(prefix: Option<T>) -> String {
@@ -32,6 +32,31 @@ where
     }
 }
 
+pub fn set_pool_checkout_mode<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+where
+    F: FnMut(PoolCheckoutMode) -> (),
+    T: Into<String>,
+{
+    let prefix = make_prefix(prefix);
+
+    let key = format!("{}_{}", prefix, "POOL_CHECKOUT_MODE");
+    match env::var(&key).map(|s| s.to_uppercase()) {
+        Ok(s) => {
+            f(s.parse()
+                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            Ok(())
+        }
+        Err(env::VarError::NotPresent) => set_checkout_timeout(Some(prefix), |d| {
+            if let Some(d) = d {
+                f(PoolCheckoutMode::WaitAtMost(d))
+            } else {
+                f(PoolCheckoutMode::Immediately)
+            }
+        }),
+        Err(err) => Err(InitializationError::new(key, Some(err))),
+    }
+}
+
 pub fn set_checkout_timeout<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
     F: FnMut(Option<Duration>) -> (),
@@ -42,6 +67,7 @@ where
     let key = format!("{}_{}", prefix, "CHECKOUT_TIMEOUT_MS");
     match env::var(&key).map(|s| s.to_uppercase()) {
         Ok(s) => {
+            warn!("Found deprecated env var 'CHECKOUT_TIMEOUT_MS'. Use 'POOL_CHECKOUT_MODE'.");
             if s == "NONE" {
                 f(None);
                 Ok(())
@@ -76,27 +102,6 @@ where
                 })?));
                 Ok(())
             }
-        }
-        Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
-    }
-}
-
-pub fn set_stats_interval<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
-where
-    F: FnMut(Duration) -> (),
-    T: Into<String>,
-{
-    let prefix = make_prefix(prefix);
-
-    let key = format!("{}_{}", prefix, "STATS_INTERVAL_MS");
-    match env::var(&key) {
-        Ok(s) => {
-            let ms: u64 = s
-                .parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?;
-            f(Duration::from_millis(ms));
-            Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
         Err(err) => Err(InitializationError::new(key, Some(err))),
