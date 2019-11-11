@@ -149,9 +149,9 @@ where
                         match mode {
                             PoolCheckoutMode::Immediately => {
                                 // This failed. There was no connection to delivery immediately...
-                                return CheckoutManaged::new(future::err(CheckoutError::new(
+                                CheckoutManaged::new(future::err(CheckoutError::new(
                                     CheckoutErrorKind::NoConnection,
-                                )));
+                                )))
                             }
                             PoolCheckoutMode::Wait => {
                                 Self::create_reservation(core, None, reservation_limit)

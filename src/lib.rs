@@ -187,8 +187,10 @@ impl From<Option<Duration>> for CheckoutMode {
 
 impl From<Instant> for CheckoutMode {
     fn from(in_the_future: Instant) -> Self {
-        if let Some(i) = in_the_future.checked_duration_since(Instant::now()) {
-            i.into()
+        let now = Instant::now();
+        if now < in_the_future {
+            let d = in_the_future - now;
+            d.into()
         } else {
             CheckoutMode::Immediately
         }
