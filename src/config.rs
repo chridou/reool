@@ -80,7 +80,7 @@ impl Config {
     }
 
     /// Sets the behaviour of the pool on checkouts if no specific behaviour
-    /// was requested by the euser.
+    /// was requested by the user.
     pub fn checkout_mode<T: Into<PoolCheckoutMode>>(mut self, v: T) -> Self {
         self.checkout_mode = v.into();
         self
@@ -154,7 +154,7 @@ impl Config {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_MODE`: The checkout mode to use. Omit if you do not want to update the value
+    /// * `POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
@@ -215,7 +215,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             desired_pool_size: 20,
-            checkout_mode: PoolCheckoutMode::default(),
+            checkout_mode: PoolCheckoutMode::WaitAtMost(Duration::from_millis(30)),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
             activation_order: ActivationOrder::default(),
@@ -253,7 +253,7 @@ impl Builder {
     }
 
     /// Sets the behaviour of the pool on checkouts if no specific behaviour
-    /// was requested by the euser.
+    /// was requested by the user.
     pub fn checkout_mode<T: Into<PoolCheckoutMode>>(mut self, v: T) -> Self {
         self.config.checkout_mode = v.into().adjust();
         self
@@ -359,7 +359,7 @@ impl Builder {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_MODE`: The checkout mode to use. Omit if you do not want to update the value
+    /// * `POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
@@ -377,7 +377,7 @@ impl Builder {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `CHECKOUT_MODE`: The checkout mode to use. Omit if you do not want to update the value
+    /// * `POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
@@ -576,12 +576,6 @@ impl PoolCheckoutMode {
     }
 }
 
-impl Default for PoolCheckoutMode {
-    fn default() -> Self {
-        Self::WaitAtMost(Duration::from_millis(30))
-    }
-}
-
 impl std::str::FromStr for PoolCheckoutMode {
     type Err = ParsePoolCheckoutModeError;
 
@@ -616,16 +610,6 @@ impl From<Duration> for PoolCheckoutMode {
             PoolCheckoutMode::WaitAtMost(d)
         } else {
             PoolCheckoutMode::Immediately
-        }
-    }
-}
-
-impl From<Option<Duration>> for PoolCheckoutMode {
-    fn from(d: Option<Duration>) -> Self {
-        if let Some(d) = d {
-            d.into()
-        } else {
-            Self::default()
         }
     }
 }

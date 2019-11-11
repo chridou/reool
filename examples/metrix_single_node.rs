@@ -27,7 +27,7 @@ fn main() {
         .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(200)
         .reservation_limit(Some(10_000))
-        .checkout_mode(Some(Duration::from_secs(10)))
+        .checkout_mode(Duration::from_secs(10))
         .activation_order(ActivationOrder::LiFo)
         .task_executor(runtime.executor())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())

@@ -96,12 +96,8 @@ impl Future for Checkout {
 /// ## `From` implementations
 ///
 /// * `Duration`: `WaitAtMost` or `Immediately`
-/// * `Option<Duration>>`: `PoolDefault` if `None` or
-/// the mapping used for a `Duration` if `Some`
 /// * `Instant`: `WaitAtMost` up to the `Instant` if the instant is
 /// in the future. Otherwise `Immediately`.
-/// * `Option<Instant>`: `PoolDefault` if `None` or
-/// the mapping used for a `Instant` if `Some`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckoutMode {
     /// Expect a connection to be returned immediately.
@@ -175,16 +171,6 @@ impl From<Duration> for CheckoutMode {
     }
 }
 
-impl From<Option<Duration>> for CheckoutMode {
-    fn from(d: Option<Duration>) -> Self {
-        if let Some(d) = d {
-            d.into()
-        } else {
-            Self::default()
-        }
-    }
-}
-
 impl From<Instant> for CheckoutMode {
     fn from(in_the_future: Instant) -> Self {
         let now = Instant::now();
@@ -193,16 +179,6 @@ impl From<Instant> for CheckoutMode {
             d.into()
         } else {
             CheckoutMode::Immediately
-        }
-    }
-}
-
-impl From<Option<Instant>> for CheckoutMode {
-    fn from(in_the_future: Option<Instant>) -> Self {
-        if let Some(i) = in_the_future {
-            i.into()
-        } else {
-            Self::default()
         }
     }
 }
