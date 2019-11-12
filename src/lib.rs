@@ -101,7 +101,7 @@ impl Future for Checkout {
 pub enum CheckoutMode {
     /// Expect a connection to be returned immediately.
     /// If there is none available return an error immediately.
-    /// In that case a `CheckoutErrorKind::NoConnection` no connection
+    /// In that case a `CheckoutErrorKind::NoConnection`
     /// will be returned
     ///
     /// This mode will always try to get a connection
