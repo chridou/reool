@@ -117,7 +117,7 @@ pub enum CheckoutMode {
 }
 
 impl CheckoutMode {
-    pub fn is_definitely_elapsed(self) -> bool {
+    pub fn is_deadline_elapsed(self) -> bool {
         match self {
             CheckoutMode::Until(deadline) => deadline < Instant::now(),
             _ => false,
@@ -214,8 +214,11 @@ impl RedisPool {
     /// Ping all the nodes which this pool is connected to.
     ///
     /// `timeout` is the maximum time allowed for a ping.
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
-        let deadline = Instant::now() + timeout;
+    pub fn ping<T: Into<Timeout>>(
+        &self,
+        timeout: T,
+    ) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+        let deadline = timeout.into().0;
         match self.0 {
             RedisPoolFlavour::Shared(ref pool) => Box::new(pool.ping(deadline).map(|p| vec![p]))
                 as Box<dyn Future<Item = _, Error = ()> + Send>,
@@ -230,6 +233,20 @@ impl RedisPool {
             RedisPoolFlavour::PerNode(ref pool) => pool.connected_to(),
             RedisPoolFlavour::Empty => &[],
         }
+    }
+}
+
+pub struct Timeout(pub Instant);
+
+impl From<Instant> for Timeout {
+    fn from(at: Instant) -> Self {
+        Self(at)
+    }
+}
+
+impl From<Duration> for Timeout {
+    fn from(d: Duration) -> Self {
+        Self(Instant::now() + d)
     }
 }
 

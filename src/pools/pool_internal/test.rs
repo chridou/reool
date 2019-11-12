@@ -109,7 +109,8 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 
     drop(pool);
 
-    // TODO: Someimes fails with pools == 1!
+    // TODO: Sometimes fails with pools == 1!
+    // See issue https://github.com/chridou/reool/issues/36
     thread::sleep(Duration::from_millis(10));
     assert_eq!(counters.pools(), 0, "pools");
     assert_eq!(counters.connections(), 0, "connections");
@@ -248,11 +249,11 @@ fn create_connection_fails_some_times() {
 
 #[test]
 fn contention_should_eventually_go_to_zero() {
-    (1..=2).for_each(|i| {
+    (1..=2).for_each(|num_conns| {
         let _ = pretty_env_logger::try_init();
         let mut runtime = Runtime::new().unwrap();
         let executor = runtime.executor();
-        let config = Config::default().desired_pool_size(i);
+        let config = Config::default().desired_pool_size(num_conns);
 
         let counters = StateCounters::default();
         let pool = PoolInternal::custom_instrumentation(
@@ -270,13 +271,13 @@ fn contention_should_eventually_go_to_zero() {
             runtime.spawn(checked_out);
         }
 
-        while counters.contention() > 0 || counters.idle() != i {
+        while counters.contention() > 0 || counters.idle() != num_conns {
             thread::yield_now();
         }
 
         assert_eq!(counters.pools(), 1, "pools");
-        assert_eq!(counters.connections(), i, "connections");
-        assert_eq!(counters.idle(), i, "idle");
+        assert_eq!(counters.connections(), num_conns, "connections");
+        assert_eq!(counters.idle(), num_conns, "idle");
         assert_eq!(counters.in_flight(), 0, "in_flight");
         assert_eq!(counters.reservations(), 0, "reservations");
         assert_eq!(counters.contention(), 0, "contention");
@@ -288,12 +289,12 @@ fn contention_should_eventually_go_to_zero() {
 
 #[test]
 fn reservations_should_be_fulfilled() {
-    (1..=2).for_each(|i| {
+    (1..=2).for_each(|num_conns| {
         let _ = pretty_env_logger::try_init();
         let mut runtime = Runtime::new().unwrap();
         let executor = runtime.executor();
         let config = Config::default()
-            .desired_pool_size(i)
+            .desired_pool_size(num_conns)
             .reservation_limit(None);
 
         let counters = StateCounters::default();
@@ -312,13 +313,13 @@ fn reservations_should_be_fulfilled() {
             runtime.spawn(checked_out);
         }
 
-        while counters.reservations() != 0 || counters.idle() != i {
+        while counters.reservations() != 0 || counters.idle() != num_conns {
             thread::yield_now();
         }
 
         assert_eq!(counters.pools(), 1, "pools");
-        assert_eq!(counters.connections(), i, "connections");
-        assert_eq!(counters.idle(), i, "idle");
+        assert_eq!(counters.connections(), num_conns, "connections");
+        assert_eq!(counters.idle(), num_conns, "idle");
         assert_eq!(counters.in_flight(), 0, "in_flight");
         assert_eq!(counters.reservations(), 0, "reservations");
         assert_eq!(counters.contention(), 0, "contention");

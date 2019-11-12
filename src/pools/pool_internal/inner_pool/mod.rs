@@ -128,7 +128,7 @@ where
     }
 
     pub(super) fn check_out(&self, constraint: CheckoutConstraint) -> CheckoutManaged<T> {
-        if constraint.is_definitely_elapsed() {
+        if constraint.is_deadline_elapsed() {
             return CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::CheckoutTimeout,
             )));
@@ -306,12 +306,7 @@ impl InnerPool<ConnectionFlavour> {
                 })
             });
 
-        // If we get a connection we give it at least 5 ms
-        let timeout = timeout
-            .checked_duration_since(Instant::now())
-            .unwrap_or_else(|| Duration::from_millis(5));
-
-        Timeout::new(f, timeout).then(move |r| {
+        Timeout::new_at(f, timeout).then(move |r| {
             let (uri, state) = match r {
                 Ok(uri) => (Some(uri), PingState::Ok),
                 Err(err) => {
@@ -382,7 +377,7 @@ pub enum CheckoutConstraint {
 }
 
 impl CheckoutConstraint {
-    pub fn is_definitely_elapsed(self) -> bool {
+    pub fn is_deadline_elapsed(self) -> bool {
         match self {
             CheckoutConstraint::Until(deadline) => deadline < Instant::now(),
             _ => false,

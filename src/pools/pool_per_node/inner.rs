@@ -102,7 +102,7 @@ impl Inner {
             ))));
         }
 
-        if mode.is_definitely_elapsed() {
+        if mode.is_deadline_elapsed() {
             return Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::CheckoutTimeout,
             ))));
@@ -119,7 +119,7 @@ impl Inner {
             (Arc::clone(&self.pools), self.pools.len()),
             move |(pools, attempts_left)| {
                 // This can be executed far behind the initial check
-                if mode.is_definitely_elapsed() {
+                if mode.is_deadline_elapsed() {
                     return Box::new(future::err(CheckoutErrorKind::CheckoutTimeout.into()))
                         as Box<dyn Future<Item = _, Error = CheckoutError> + Send>;
                 }
