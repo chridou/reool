@@ -11,7 +11,7 @@ use tokio_timer::Timeout;
 
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::pooled_connection::ConnectionFlavour;
-use crate::{config::PoolCheckoutMode, Ping, PingState, Poolable};
+use crate::{Immediately, Ping, PingState, Poolable, Wait};
 
 use super::{CheckoutManaged, Config, Managed, NewConnMessage};
 
@@ -89,12 +89,11 @@ where
 
         self.sync_core.lock().map(|mut core| {
             if core.reservations.is_empty() {
-                core.idle.put(managed);
+                core.put_idle(managed);
                 trace!(
                     "check in - no reservations - added to idle - ide: {}",
-                    core.idle.len()
+                    core.idle_count()
                 );
-                core.instrumentation.idle_inc();
             } else {
                 // Do not let this one get dropped!
                 let mut to_fulfill = managed;
@@ -119,45 +118,58 @@ where
                     }
                 }
 
-                core.idle.put(to_fulfill);
-                let num_idle = core.idle.len();
-                core.instrumentation.idle_inc();
-                trace!("check in - none fulfilled - added to idle {}", num_idle);
+                core.put_idle(to_fulfill);
+                trace!(
+                    "check in - none fulfilled - added to idle {}",
+                    core.idle_count()
+                );
             }
         })
     }
 
-    pub(super) fn check_out(&self, mode: PoolCheckoutMode) -> CheckoutManaged<T> {
-        let mode = mode.adjust();
+    pub(super) fn check_out(&self, constraint: CheckoutConstraint) -> CheckoutManaged<T> {
+        if constraint.is_definitely_elapsed() {
+            return CheckoutManaged::new(future::err(CheckoutError::new(
+                CheckoutErrorKind::CheckoutTimeout,
+            )));
+        }
+
         let reservation_limit = self.reservation_limit;
         CheckoutManaged::new(
             self.sync_core
                 .lock()
                 .map_err(|()| CheckoutError::from(CheckoutErrorKind::TaskExecution))
                 .and_then(move |mut core| {
-                    if let Some((mut managed, idle_since)) = { core.idle.get() } {
+                    if let Some((mut managed, idle_since)) = core.get_idle() {
                         trace!("check out - checking out idle connection");
                         managed.checked_out_at = Some(Instant::now());
 
                         core.instrumentation.checked_out_connection(idle_since);
-                        core.instrumentation.idle_dec();
                         core.instrumentation.in_flight_inc();
 
                         CheckoutManaged::new(future::ok(managed))
                     } else {
                         trace!("check out - no idle connection");
-                        match mode {
-                            PoolCheckoutMode::Immediately => {
+                        match constraint {
+                            CheckoutConstraint::Immediately => {
                                 // This failed. There was no connection to delivery immediately...
                                 CheckoutManaged::new(future::err(CheckoutError::new(
                                     CheckoutErrorKind::NoConnection,
                                 )))
                             }
-                            PoolCheckoutMode::Wait => {
+                            CheckoutConstraint::Wait => {
                                 Self::create_reservation(core, None, reservation_limit)
                             }
-                            PoolCheckoutMode::WaitAtMost(d) => {
-                                Self::create_reservation(core, Some(d), reservation_limit)
+                            CheckoutConstraint::Until(until) => {
+                                if let Some(timeout) = until.checked_duration_since(Instant::now())
+                                {
+                                    Self::create_reservation(core, Some(timeout), reservation_limit)
+                                } else {
+                                    // Already overdue
+                                    CheckoutManaged::new(future::err(CheckoutError::new(
+                                        CheckoutErrorKind::CheckoutTimeout,
+                                    )))
+                                }
                             }
                         }
                     }
@@ -244,10 +256,14 @@ where
     pub fn connected_to(&self) -> &[String] {
         &self.connected_to
     }
+
+    pub fn contention(&self) -> usize {
+        self.instrumentation.contention()
+    }
 }
 
 impl InnerPool<ConnectionFlavour> {
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
+    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
         use crate::commands::Commands;
 
         #[derive(Debug)]
@@ -277,7 +293,7 @@ impl InnerPool<ConnectionFlavour> {
             None
         };
 
-        let f = crate::Checkout(self.check_out(PoolCheckoutMode::Wait))
+        let f = crate::Checkout(self.check_out(CheckoutConstraint::Until(timeout)))
             .map_err(|err| (Box::new(err) as Box<dyn StdError + Send>, None))
             .and_then(|conn| {
                 let connected_to = conn.connected_to().to_owned();
@@ -289,6 +305,11 @@ impl InnerPool<ConnectionFlavour> {
                     )),
                 })
             });
+
+        // If we get a connection we give it at least 5 ms
+        let timeout = timeout
+            .checked_duration_since(Instant::now())
+            .unwrap_or_else(|| Duration::from_millis(5));
 
         Timeout::new(f, timeout).then(move |r| {
             let (uri, state) = match r {
@@ -348,6 +369,50 @@ impl<T: Poolable> Drop for InnerPool<T> {
 pub(super) enum CheckInParcel<T: Poolable> {
     Alive(Managed<T>),
     Dropped(Option<Duration>, Duration),
+}
+
+// ==== CHECKOUT CONSTRAINT ====
+
+/// The checkout options a pool really has
+#[derive(Debug, Copy, Clone)]
+pub enum CheckoutConstraint {
+    Immediately,
+    Until(Instant),
+    Wait,
+}
+
+impl CheckoutConstraint {
+    pub fn is_definitely_elapsed(self) -> bool {
+        match self {
+            CheckoutConstraint::Until(deadline) => deadline < Instant::now(),
+            _ => false,
+        }
+    }
+}
+
+impl From<Immediately> for CheckoutConstraint {
+    fn from(_: Immediately) -> Self {
+        CheckoutConstraint::Immediately
+    }
+}
+
+impl From<Wait> for CheckoutConstraint {
+    fn from(_: Wait) -> Self {
+        CheckoutConstraint::Wait
+    }
+}
+
+impl From<Duration> for CheckoutConstraint {
+    fn from(d: Duration) -> Self {
+        let timeout = Instant::now() + d;
+        timeout.into()
+    }
+}
+
+impl From<Instant> for CheckoutConstraint {
+    fn from(until: Instant) -> Self {
+        CheckoutConstraint::Until(until)
+    }
 }
 
 // ===== RESERVATION =====

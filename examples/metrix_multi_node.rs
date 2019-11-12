@@ -31,7 +31,7 @@ fn main() {
         .desired_pool_size(10)
         .node_pool_strategy(NodePoolStrategy::PoolPerNode)
         .reservation_limit(None) // No limit
-        .checkout_mode(Immediately) // No timeout
+        .default_checkout_mode(Immediately) // No timeout
         .task_executor(runtime.executor())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish_redis_rs()

@@ -108,6 +108,8 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
     assert_eq!(counters.contention(), 0, "contention");
 
     drop(pool);
+
+    // TODO: Someimes fails with pools == 1!
     thread::sleep(Duration::from_millis(10));
     assert_eq!(counters.pools(), 0, "pools");
     assert_eq!(counters.connections(), 0, "connections");
@@ -242,6 +244,88 @@ fn create_connection_fails_some_times() {
 
     drop(pool);
     runtime.shutdown_on_idle().wait().unwrap();
+}
+
+#[test]
+fn contention_should_eventually_go_to_zero() {
+    (1..=2).for_each(|i| {
+        let _ = pretty_env_logger::try_init();
+        let mut runtime = Runtime::new().unwrap();
+        let executor = runtime.executor();
+        let config = Config::default().desired_pool_size(i);
+
+        let counters = StateCounters::default();
+        let pool = PoolInternal::custom_instrumentation(
+            config.clone(),
+            U32Factory::default(),
+            executor.clone().into(),
+            counters.instrumentation(),
+        );
+
+        while counters.contention() < 1_000 {
+            let checked_out = pool
+                .check_out(CheckoutMode::Wait)
+                .map(|_c| ())
+                .map_err(|_| ());
+            runtime.spawn(checked_out);
+        }
+
+        while counters.contention() > 0 || counters.idle() != i {
+            thread::yield_now();
+        }
+
+        assert_eq!(counters.pools(), 1, "pools");
+        assert_eq!(counters.connections(), i, "connections");
+        assert_eq!(counters.idle(), i, "idle");
+        assert_eq!(counters.in_flight(), 0, "in_flight");
+        assert_eq!(counters.reservations(), 0, "reservations");
+        assert_eq!(counters.contention(), 0, "contention");
+
+        drop(pool);
+        runtime.shutdown_on_idle().wait().unwrap();
+    });
+}
+
+#[test]
+fn reservations_should_be_fulfilled() {
+    (1..=2).for_each(|i| {
+        let _ = pretty_env_logger::try_init();
+        let mut runtime = Runtime::new().unwrap();
+        let executor = runtime.executor();
+        let config = Config::default()
+            .desired_pool_size(i)
+            .reservation_limit(None);
+
+        let counters = StateCounters::default();
+        let pool = PoolInternal::custom_instrumentation(
+            config.clone(),
+            U32Factory::default(),
+            executor.clone().into(),
+            counters.instrumentation(),
+        );
+
+        while counters.reservations() < 1_000 {
+            let checked_out = pool
+                .check_out(CheckoutMode::Wait)
+                .map(|_c| ())
+                .map_err(|_| ());
+            runtime.spawn(checked_out);
+        }
+
+        while counters.reservations() != 0 || counters.idle() != i {
+            thread::yield_now();
+        }
+
+        assert_eq!(counters.pools(), 1, "pools");
+        assert_eq!(counters.connections(), i, "connections");
+        assert_eq!(counters.idle(), i, "idle");
+        assert_eq!(counters.in_flight(), 0, "in_flight");
+        assert_eq!(counters.reservations(), 0, "reservations");
+        assert_eq!(counters.contention(), 0, "contention");
+
+        drop(pool);
+        runtime.shutdown_on_idle().wait().unwrap();
+    });
 }
 
 /*

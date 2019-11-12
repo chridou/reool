@@ -1,10 +1,9 @@
 use std::env;
-use std::time::Duration;
 
 use log::warn;
 
 use crate::activation_order::ActivationOrder;
-use crate::config::{NodePoolStrategy, PoolCheckoutMode};
+use crate::config::*;
 use crate::error::{InitializationError, InitializationResult};
 
 fn make_prefix<T: Into<String>>(prefix: Option<T>) -> String {
@@ -32,12 +31,36 @@ where
     }
 }
 
-pub fn set_pool_checkout_mode<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+pub fn set_default_checkout_mode<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(PoolCheckoutMode) -> (),
+    F: FnMut(DefaultPoolCheckoutMode) -> (),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
+
+    let key = format!("{}_{}", prefix, "DEFAULT_POOL_CHECKOUT_MODE");
+    match env::var(&key).map(|s| s.to_uppercase()) {
+        Ok(s) => {
+            f(s.parse()
+                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            Ok(())
+        }
+        Err(env::VarError::NotPresent) => set_old_default_checkout_mode(Some(prefix), f),
+        Err(err) => Err(InitializationError::new(key, Some(err))),
+    }
+}
+
+pub fn set_old_default_checkout_mode<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+where
+    F: FnMut(DefaultPoolCheckoutMode) -> (),
+    T: Into<String>,
+{
+    let prefix = make_prefix(prefix);
+
+    warn!(
+        "'DEFAULT_POOL_CHECKOUT_MODE' not found but deprecated \
+         'POOL_CHECKOUT_MODE'. Use 'DEFAULT_POOL_CHECKOUT_MODE'"
+    );
 
     let key = format!("{}_{}", prefix, "POOL_CHECKOUT_MODE");
     match env::var(&key).map(|s| s.to_uppercase()) {
@@ -45,38 +68,6 @@ where
             f(s.parse()
                 .map_err(|err| InitializationError::new(key, Some(err)))?);
             Ok(())
-        }
-        Err(env::VarError::NotPresent) => set_checkout_timeout(Some(prefix), |d| {
-            if let Some(d) = d {
-                f(PoolCheckoutMode::WaitAtMost(d))
-            } else {
-                f(PoolCheckoutMode::Immediately)
-            }
-        }),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
-    }
-}
-
-pub fn set_checkout_timeout<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
-where
-    F: FnMut(Option<Duration>) -> (),
-    T: Into<String>,
-{
-    let prefix = make_prefix(prefix);
-
-    let key = format!("{}_{}", prefix, "CHECKOUT_TIMEOUT_MS");
-    match env::var(&key).map(|s| s.to_uppercase()) {
-        Ok(s) => {
-            warn!("Found deprecated env var 'CHECKOUT_TIMEOUT_MS'. Use 'POOL_CHECKOUT_MODE'.");
-            if s == "NONE" {
-                f(None);
-                Ok(())
-            } else {
-                f(Some(Duration::from_millis(s.parse().map_err(|err| {
-                    InitializationError::new(key, Some(err))
-                })?)));
-                Ok(())
-            }
         }
         Err(env::VarError::NotPresent) => Ok(()),
         Err(err) => Err(InitializationError::new(key, Some(err))),
@@ -210,6 +201,25 @@ where
     let prefix = make_prefix(prefix);
 
     let key = format!("{}_{}", prefix, "POOL_PER_NODE_MULTIPLIER");
+    match env::var(&key) {
+        Ok(s) => {
+            f(s.parse()
+                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            Ok(())
+        }
+        Err(env::VarError::NotPresent) => Ok(()),
+        Err(err) => Err(InitializationError::new(key, Some(err))),
+    }
+}
+
+pub fn set_contention_limit<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+where
+    F: FnMut(ContentionLimit) -> (),
+    T: Into<String>,
+{
+    let prefix = make_prefix(prefix);
+
+    let key = format!("{}_{}", prefix, "CONTENTION_LIMIT");
     match env::var(&key) {
         Ok(s) => {
             f(s.parse()
