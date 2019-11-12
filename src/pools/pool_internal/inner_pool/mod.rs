@@ -91,7 +91,7 @@ where
             if core.reservations.is_empty() {
                 core.put_idle(managed);
                 trace!(
-                    "check in - no reservations - added to idle - ide: {}",
+                    "check in - no reservations - added to idle - idle: {}",
                     core.idle_count()
                 );
             } else {
