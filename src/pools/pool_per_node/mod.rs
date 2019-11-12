@@ -1,6 +1,6 @@
 //! A connection pool for connecting to the nodes of a replica set
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::Instant;
 
 use futures::future::Future;
 use log::info;
@@ -65,7 +65,7 @@ impl PoolPerNode {
         self.inner.check_out(mode.into())
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
         self.inner.ping(timeout)
     }
 

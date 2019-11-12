@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.0 (BREAKING CHANGE)
+    * `PoolCheckoutMode` became `DefaultPoolCheckoutMode`
+    * Use an `Instant` instead of a `Duration` to define a checkout timeout
+    * A contention limit can be set which would prevent a pool from checking out a
+    connection if the limit is reached
+
 ## 0.19.0 (BREAKING CHANGE)
     * Use a struct to configure the reservation behaviour and the pool default behaviour
     in checkout methods.

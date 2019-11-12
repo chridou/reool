@@ -95,32 +95,32 @@ impl Future for Checkout {
 ///
 /// ## `From` implementations
 ///
-/// * `Duration`: `WaitAtMost` or `Immediately`
-/// * `Instant`: `WaitAtMost` up to the `Instant` if the instant is
-/// in the future. Otherwise `Immediately`.
+/// * `Duration`: `Until`
+/// * `Instant`: `Until`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckoutMode {
     /// Expect a connection to be returned immediately.
     /// If there is none available return an error immediately.
+    /// In that case a `CheckoutErrorKind::NoConnection`
+    /// will be returned
+    ///
+    /// This mode will always try to get a connection
     Immediately,
     /// Use the default configured for the pool
     PoolDefault,
     /// Wait until there is a connection even if it would take forever.
     Wait,
-    /// Wait for at most the given `Duration`.
-    ///
-    /// The amount of time waited will in the end not be really exact.
-    WaitAtMost(Duration),
+    /// Checkout before the given `Instant` is elapsed. If the given timeout is
+    /// elapsed, no attempt to checkout a connection will be made.
+    /// In that case a `CheckoutErrorKind::CheckoutTimeout` will be returned.
+    Until(Instant),
 }
 
 impl CheckoutMode {
-    /// Do a sanity adjustment. E.g. it makes no sense to use
-    /// `WaitAtMost(Duration::from_desc(0))` since this would logically be
-    /// `Immediately`.
-    pub fn adjust(self) -> Self {
+    pub fn is_deadline_elapsed(self) -> bool {
         match self {
-            CheckoutMode::WaitAtMost(d) if d == Duration::from_secs(0) => CheckoutMode::Immediately,
-            x => x,
+            CheckoutMode::Until(deadline) => deadline < Instant::now(),
+            _ => false,
         }
     }
 }
@@ -163,34 +163,14 @@ impl Default for CheckoutMode {
 
 impl From<Duration> for CheckoutMode {
     fn from(d: Duration) -> Self {
-        if d != Duration::from_secs(0) {
-            CheckoutMode::WaitAtMost(d)
-        } else {
-            CheckoutMode::Immediately
-        }
+        let timeout = Instant::now() + d;
+        timeout.into()
     }
 }
 
 impl From<Instant> for CheckoutMode {
-    fn from(in_the_future: Instant) -> Self {
-        let now = Instant::now();
-        if now < in_the_future {
-            let d = in_the_future - now;
-            d.into()
-        } else {
-            CheckoutMode::Immediately
-        }
-    }
-}
-
-impl From<config::PoolCheckoutMode> for CheckoutMode {
-    fn from(mode: config::PoolCheckoutMode) -> Self {
-        use config::PoolCheckoutMode::*;
-        match mode {
-            Immediately => CheckoutMode::Immediately,
-            Wait => CheckoutMode::Wait,
-            WaitAtMost(d) => CheckoutMode::WaitAtMost(d),
-        }
+    fn from(until: Instant) -> Self {
+        CheckoutMode::Until(until)
     }
 }
 
@@ -234,11 +214,15 @@ impl RedisPool {
     /// Ping all the nodes which this pool is connected to.
     ///
     /// `timeout` is the maximum time allowed for a ping.
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub fn ping<T: Into<Timeout>>(
+        &self,
+        timeout: T,
+    ) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+        let deadline = timeout.into().0;
         match self.0 {
-            RedisPoolFlavour::Shared(ref pool) => Box::new(pool.ping(timeout).map(|p| vec![p]))
+            RedisPoolFlavour::Shared(ref pool) => Box::new(pool.ping(deadline).map(|p| vec![p]))
                 as Box<dyn Future<Item = _, Error = ()> + Send>,
-            RedisPoolFlavour::PerNode(ref pool) => Box::new(pool.ping(timeout)),
+            RedisPoolFlavour::PerNode(ref pool) => Box::new(pool.ping(deadline)),
             RedisPoolFlavour::Empty => Box::new(future::ok(vec![])),
         }
     }
@@ -249,6 +233,20 @@ impl RedisPool {
             RedisPoolFlavour::PerNode(ref pool) => pool.connected_to(),
             RedisPoolFlavour::Empty => &[],
         }
+    }
+}
+
+pub struct Timeout(pub Instant);
+
+impl From<Instant> for Timeout {
+    fn from(at: Instant) -> Self {
+        Self(at)
+    }
+}
+
+impl From<Duration> for Timeout {
+    fn from(d: Duration) -> Self {
+        Self(Instant::now() + d)
     }
 }
 

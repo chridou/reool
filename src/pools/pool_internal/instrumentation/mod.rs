@@ -12,6 +12,7 @@ pub(crate) struct PoolInstrumentation {
     pub pool_index: usize,
     pub flavour: InstrumentationFlavour,
     in_flight: Arc<AtomicUsize>,
+    contention: Arc<AtomicUsize>,
 }
 
 impl PoolInstrumentation {
@@ -20,11 +21,16 @@ impl PoolInstrumentation {
             pool_index,
             flavour,
             in_flight: Arc::new(AtomicUsize::new(0)),
+            contention: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub fn in_flight(&self) -> usize {
         self.in_flight.load(Ordering::SeqCst)
+    }
+
+    pub fn contention(&self) -> usize {
+        self.contention.load(Ordering::SeqCst)
     }
 
     pub fn pool_added(&self) {
@@ -89,9 +95,11 @@ impl PoolInstrumentation {
         self.flavour.connection_factory_failed(self.pool_index)
     }
     pub fn reached_lock(&self) {
+        self.contention.fetch_add(1, Ordering::SeqCst);
         self.flavour.reached_lock(self.pool_index)
     }
     pub fn passed_lock(&self, wait_time: Duration) {
+        self.contention.fetch_sub(1, Ordering::SeqCst);
         self.flavour.passed_lock(wait_time, self.pool_index)
     }
     pub fn lock_released(&self, exclusive_lock_time: Duration) {

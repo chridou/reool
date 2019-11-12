@@ -41,7 +41,7 @@ pub struct Config {
     pub desired_pool_size: usize,
     /// The timeout for a checkout if no specific timeout is given
     /// with a checkout.
-    pub checkout_mode: PoolCheckoutMode,
+    pub default_checkout_mode: DefaultPoolCheckoutMode,
     /// The `BackoffStrategy` to use when retrying on
     /// failures to create new connections
     pub backoff_strategy: BackoffStrategy,
@@ -69,6 +69,11 @@ pub struct Config {
     /// * `reservation_limit`: Stays zero if zero, otherwise (`reservation_limit`/multiplier) +1
     /// * `desired_pool_size`: (`desired_pool_size`/multiplier) +1
     pub pool_per_node_multiplier: u32,
+    /// The contention limit of the pool. If a pool per node is
+    /// configured the limit is for each inner pool.ContentionLimit
+    ///
+    /// The default is `NoLimit`
+    pub contention_limit: ContentionLimit,
 }
 
 impl Config {
@@ -81,8 +86,8 @@ impl Config {
 
     /// Sets the behaviour of the pool on checkouts if no specific behaviour
     /// was requested by the user.
-    pub fn checkout_mode<T: Into<PoolCheckoutMode>>(mut self, v: T) -> Self {
-        self.checkout_mode = v.into();
+    pub fn default_checkout_mode<T: Into<DefaultPoolCheckoutMode>>(mut self, v: T) -> Self {
+        self.default_checkout_mode = v.into();
         self
     }
 
@@ -134,6 +139,12 @@ impl Config {
         self
     }
 
+    /// Sets the `ContentionLimit` of the pool.
+    pub fn contention_limit(mut self, v: ContentionLimit) -> Self {
+        self.contention_limit = v;
+        self
+    }
+
     /// When pool per node is created, sets a multiplier
     /// for the amount of pools per node to be created.
     ///
@@ -154,20 +165,21 @@ impl Config {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
+    /// * `DEFAULT_POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `NODE_POOL_STRATEGY`: Omit if you do not want to update the value
     /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
+    /// * `CONTENTION_LIMIT`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
         })?;
 
-        helpers::set_pool_checkout_mode(prefix, |v| {
-            self.checkout_mode = v.adjust();
+        helpers::set_default_checkout_mode(prefix, |v| {
+            self.default_checkout_mode = v.adjust();
         })?;
 
         helpers::set_reservation_limit(prefix, |v| {
@@ -194,6 +206,10 @@ impl Config {
             self.pool_per_node_multiplier = v;
         })?;
 
+        helpers::set_contention_limit(prefix, |v| {
+            self.contention_limit = v;
+        })?;
+
         Ok(())
     }
 
@@ -201,13 +217,14 @@ impl Config {
     pub fn builder(&self) -> Builder {
         Builder::default()
             .desired_pool_size(self.desired_pool_size)
-            .checkout_mode(self.checkout_mode.adjust())
+            .default_checkout_mode(self.default_checkout_mode.adjust())
             .backoff_strategy(self.backoff_strategy)
             .reservation_limit(self.reservation_limit)
             .min_required_nodes(self.min_required_nodes)
             .connect_to_nodes(self.connect_to_nodes.clone())
             .node_pool_strategy(self.node_pool_strategy)
             .pool_per_node_multiplier(self.pool_per_node_multiplier)
+            .contention_limit(self.contention_limit)
     }
 }
 
@@ -215,7 +232,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             desired_pool_size: 20,
-            checkout_mode: PoolCheckoutMode::WaitAtMost(Duration::from_millis(30)),
+            default_checkout_mode: DefaultPoolCheckoutMode::WaitAtMost(Duration::from_millis(30)),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(100),
             activation_order: ActivationOrder::default(),
@@ -223,6 +240,7 @@ impl Default for Config {
             connect_to_nodes: Vec::new(),
             node_pool_strategy: NodePoolStrategy::default(),
             pool_per_node_multiplier: 1,
+            contention_limit: ContentionLimit::NoLimit,
         }
     }
 }
@@ -254,8 +272,8 @@ impl Builder {
 
     /// Sets the behaviour of the pool on checkouts if no specific behaviour
     /// was requested by the user.
-    pub fn checkout_mode<T: Into<PoolCheckoutMode>>(mut self, v: T) -> Self {
-        self.config.checkout_mode = v.into().adjust();
+    pub fn default_checkout_mode<T: Into<DefaultPoolCheckoutMode>>(mut self, v: T) -> Self {
+        self.config.default_checkout_mode = v.into().adjust();
         self
     }
 
@@ -316,6 +334,12 @@ impl Builder {
         self
     }
 
+    /// Sets the `ContentionLimit` of the pool.
+    pub fn contention_limit(mut self, v: ContentionLimit) -> Self {
+        self.config.contention_limit = v;
+        self
+    }
+
     /// The executor to use for spawning tasks. If not set it is assumed
     /// that the pool is created on the default runtime.
     pub fn task_executor(mut self, executor: ::tokio::runtime::TaskExecutor) -> Self {
@@ -359,13 +383,14 @@ impl Builder {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
+    /// * `DEFAULT_POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `NODE_POOL_STRATEGY`: ` Omit if you do not want to update the value
     /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
+    /// * `CONTENTION_LIMIT`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         self.config.update_from_environment(prefix)?;
         Ok(())
@@ -377,13 +402,14 @@ impl Builder {
     /// Otherwise the prefix is used with an automatically appended `_`.
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
-    /// * `POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
+    /// * `DEFAULT_POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
     /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `NODE_POOL_STRATEGY`: ` Omit if you do not want to update the value
     /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
+    /// * `CONTENTION_LIMIT`: Omit if you do not want to update the value
     pub fn updated_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         self.config.update_from_environment(prefix)?;
         Ok(self)
@@ -396,6 +422,12 @@ impl Builder {
         if config.pool_per_node_multiplier == 0 {
             return Err(InitializationError::message_only(
                 "pool_per_node_multiplier must not be zero",
+            ));
+        }
+
+        if let Some(0) = config.contention_limit.limit() {
+            return Err(InitializationError::message_only(
+                "contention limit may not be ContentionLimit::Limited(0)",
             ));
         }
 
@@ -550,7 +582,7 @@ impl std::error::Error for ParseNodesStrategyError {
 /// This struct has the same behaviour as `CheckoutMode` regarding its
 /// `From` implementations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PoolCheckoutMode {
+pub enum DefaultPoolCheckoutMode {
     /// Expect a connection to be returned immediately.
     /// If there is none available return an error immediately.
     Immediately,
@@ -562,70 +594,125 @@ pub enum PoolCheckoutMode {
     WaitAtMost(Duration),
 }
 
-impl PoolCheckoutMode {
+impl DefaultPoolCheckoutMode {
     /// Do a sanity adjustment. E.g. it makes no sense to use
     /// `WaitAtMost(Duration::from_desc(0))` since this would logically be
     /// `Immediately`.
     pub fn adjust(self) -> Self {
         match self {
-            PoolCheckoutMode::WaitAtMost(d) if d == Duration::from_secs(0) => {
-                PoolCheckoutMode::Immediately
+            DefaultPoolCheckoutMode::WaitAtMost(d) if d == Duration::from_secs(0) => {
+                DefaultPoolCheckoutMode::Immediately
             }
             x => x,
         }
     }
 }
 
-impl std::str::FromStr for PoolCheckoutMode {
-    type Err = ParsePoolCheckoutModeError;
+impl std::str::FromStr for DefaultPoolCheckoutMode {
+    type Err = ParseDefaultPoolCheckoutModeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match &*s.to_lowercase() {
-            "immediately" => Ok(PoolCheckoutMode::Immediately),
-            "wait" => Ok(PoolCheckoutMode::Wait),
-            milliseconds => Ok(PoolCheckoutMode::WaitAtMost(Duration::from_millis(
+            "immediately" => Ok(DefaultPoolCheckoutMode::Immediately),
+            "wait" => Ok(DefaultPoolCheckoutMode::Wait),
+            milliseconds => Ok(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_millis(
                 milliseconds
                     .parse::<u64>()
-                    .map_err(|err| ParsePoolCheckoutModeError(err.to_string()))?,
+                    .map_err(|err| ParseDefaultPoolCheckoutModeError(err.to_string()))?,
             ))),
         }
     }
 }
 
-impl From<Immediately> for PoolCheckoutMode {
+impl From<Immediately> for DefaultPoolCheckoutMode {
     fn from(_: Immediately) -> Self {
-        PoolCheckoutMode::Immediately
+        DefaultPoolCheckoutMode::Immediately
     }
 }
 
-impl From<Wait> for PoolCheckoutMode {
+impl From<Wait> for DefaultPoolCheckoutMode {
     fn from(_: Wait) -> Self {
-        PoolCheckoutMode::Wait
+        DefaultPoolCheckoutMode::Wait
     }
 }
 
-impl From<Duration> for PoolCheckoutMode {
+impl From<Duration> for DefaultPoolCheckoutMode {
     fn from(d: Duration) -> Self {
         if d != Duration::from_secs(0) {
-            PoolCheckoutMode::WaitAtMost(d)
+            DefaultPoolCheckoutMode::WaitAtMost(d)
         } else {
-            PoolCheckoutMode::Immediately
+            DefaultPoolCheckoutMode::Immediately
         }
     }
 }
 
 #[derive(Debug)]
-pub struct ParsePoolCheckoutModeError(String);
+pub struct ParseDefaultPoolCheckoutModeError(String);
 
-impl fmt::Display for ParsePoolCheckoutModeError {
+impl fmt::Display for ParseDefaultPoolCheckoutModeError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Could not parse PoolCheckoutMode: {}", self.0)
+        write!(
+            f,
+            "Could not parse ParseDefaultPoolCheckoutMode: {}",
+            self.0
+        )
     }
 }
 
-impl std::error::Error for ParsePoolCheckoutModeError {
+impl std::error::Error for ParseDefaultPoolCheckoutModeError {
     fn description(&self) -> &str {
-        "parse pool checkout mode failed"
+        "parse default pool checkout mode failed"
+    }
+
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        None
+    }
+}
+
+/// The maximum contention
+#[derive(Debug, Copy, Clone)]
+pub enum ContentionLimit {
+    NoLimit,
+    Limited(usize),
+}
+
+impl ContentionLimit {
+    pub fn limit(self) -> Option<usize> {
+        match self {
+            ContentionLimit::Limited(n) => Some(n),
+            ContentionLimit::NoLimit => None,
+        }
+    }
+}
+
+impl std::str::FromStr for ContentionLimit {
+    type Err = ParseContentionLimitError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &*s.to_lowercase() {
+            "no-limit" => Ok(ContentionLimit::NoLimit),
+            limit => {
+                let limit = limit
+                    .parse::<usize>()
+                    .map_err(|err| ParseContentionLimitError(err.to_string()))?;
+                Ok(ContentionLimit::Limited(limit))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ParseContentionLimitError(String);
+
+impl fmt::Display for ParseContentionLimitError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Could not parse ContentionLimit: {}", self.0)
+    }
+}
+
+impl std::error::Error for ParseContentionLimitError {
+    fn description(&self) -> &str {
+        "parse contention limit failed"
     }
 
     fn cause(&self) -> Option<&dyn std::error::Error> {

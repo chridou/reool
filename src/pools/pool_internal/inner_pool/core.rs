@@ -14,7 +14,7 @@ use super::{Managed, Reservation};
 
 /// Used to ensure there is no race between checkouts and puts
 pub(super) struct Core<T: Poolable> {
-    pub idle: IdleConnections<Managed<T>>,
+    idle: IdleConnections<Managed<T>>,
     pub reservations: VecDeque<Reservation<T>>,
     pub instrumentation: PoolInstrumentation,
 }
@@ -30,6 +30,25 @@ impl<T: Poolable> Core<T> {
             reservations: VecDeque::default(),
             instrumentation,
         }
+    }
+
+    pub fn get_idle(&mut self) -> Option<(Managed<T>, Duration)> {
+        let idle = self.idle.get();
+
+        if idle.is_some() {
+            self.instrumentation.idle_dec();
+        }
+
+        idle
+    }
+
+    pub fn put_idle(&mut self, conn: Managed<T>) {
+        self.instrumentation.idle_inc();
+        self.idle.put(conn)
+    }
+
+    pub fn idle_count(&self) -> usize {
+        self.idle.len()
     }
 }
 

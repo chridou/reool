@@ -6,7 +6,7 @@ use log::{debug, error, info};
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 
-use reool::config::PoolCheckoutMode;
+use reool::config::DefaultPoolCheckoutMode;
 use reool::*;
 
 /// Do many ping commands with no checkout timeout
@@ -21,7 +21,7 @@ fn main() {
         .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(10)
         .reservation_limit(None) // No limit
-        .checkout_mode(PoolCheckoutMode::Immediately) // No timeout
+        .default_checkout_mode(DefaultPoolCheckoutMode::Immediately) // No timeout
         .task_executor(runtime.executor())
         .finish_redis_rs()
         .unwrap();

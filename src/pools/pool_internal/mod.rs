@@ -14,15 +14,15 @@ use tokio::{self, timer::Delay};
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
-use crate::config::PoolCheckoutMode;
+use crate::config::{ContentionLimit, DefaultPoolCheckoutMode};
 use crate::connection_factory::{ConnectionFactory, NewConnectionError};
-use crate::error::CheckoutError;
+use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::*;
 use crate::instrumentation::InstrumentationFlavour;
 use crate::pooled_connection::ConnectionFlavour;
 use crate::{CheckoutMode, Ping, Poolable};
 
-use inner_pool::{CheckInParcel, InnerPool};
+use inner_pool::{CheckInParcel, CheckoutConstraint, InnerPool};
 
 mod inner_pool;
 pub(crate) mod instrumentation;
@@ -35,7 +35,8 @@ pub(crate) struct Config {
     pub backoff_strategy: BackoffStrategy,
     pub reservation_limit: Option<usize>,
     pub activation_order: ActivationOrder,
-    pub checkout_mode: PoolCheckoutMode,
+    pub default_checkout_mode: DefaultPoolCheckoutMode,
+    pub contention_limit: ContentionLimit,
 }
 
 #[cfg(test)]
@@ -49,6 +50,11 @@ impl Config {
         self.backoff_strategy = v;
         self
     }
+
+    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
+        self.reservation_limit = v;
+        self
+    }
 }
 
 impl Default for Config {
@@ -58,14 +64,16 @@ impl Default for Config {
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: Some(50),
             activation_order: ActivationOrder::default(),
-            checkout_mode: PoolCheckoutMode::Wait,
+            default_checkout_mode: DefaultPoolCheckoutMode::Wait,
+            contention_limit: ContentionLimit::NoLimit,
         }
     }
 }
 
 pub(crate) struct PoolInternal<T: Poolable> {
     inner_pool: Arc<InnerPool<T>>,
-    default_checkout_mode: PoolCheckoutMode,
+    default_checkout_mode: DefaultPoolCheckoutMode,
+    contention_limit: ContentionLimit,
 }
 
 impl<T> PoolInternal<T>
@@ -105,7 +113,8 @@ where
 
         let pool = Self {
             inner_pool,
-            default_checkout_mode: config.checkout_mode,
+            default_checkout_mode: config.default_checkout_mode,
+            contention_limit: config.contention_limit,
         };
 
         (0..num_connections).for_each(|_| {
@@ -152,7 +161,15 @@ where
     }
 
     pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> CheckoutManaged<T> {
-        let mode = checkout_mode_to_pool_mode(mode.into(), self.default_checkout_mode);
+        if let Some(limit) = self.contention_limit.limit() {
+            if self.inner_pool.contention() >= limit {
+                return CheckoutManaged::new(future::err(
+                    CheckoutErrorKind::ContentionLimitReached.into(),
+                ));
+            }
+        }
+
+        let mode = checkout_mode_to_checkout_constraint(mode.into(), self.default_checkout_mode);
         self.inner_pool.check_out(mode)
     }
 
@@ -173,7 +190,7 @@ where
 }
 
 impl PoolInternal<ConnectionFlavour> {
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
+    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
         self.inner_pool.ping(timeout)
     }
 }
@@ -231,6 +248,7 @@ impl<T: Poolable> Clone for PoolInternal<T> {
         Self {
             inner_pool: self.inner_pool.clone(),
             default_checkout_mode: self.default_checkout_mode,
+            contention_limit: self.contention_limit,
         }
     }
 }
@@ -436,14 +454,21 @@ impl StdError for PoolIsGoneError {
     }
 }
 
-#[cfg(test)]
-mod test;
-
-fn checkout_mode_to_pool_mode(m: CheckoutMode, default: PoolCheckoutMode) -> PoolCheckoutMode {
+fn checkout_mode_to_checkout_constraint(
+    m: CheckoutMode,
+    default: DefaultPoolCheckoutMode,
+) -> CheckoutConstraint {
     match m {
-        CheckoutMode::Immediately => PoolCheckoutMode::Immediately,
-        CheckoutMode::Wait => PoolCheckoutMode::Wait,
-        CheckoutMode::WaitAtMost(d) => PoolCheckoutMode::WaitAtMost(d),
-        CheckoutMode::PoolDefault => default,
+        CheckoutMode::Immediately => CheckoutConstraint::Immediately,
+        CheckoutMode::Wait => CheckoutConstraint::Wait,
+        CheckoutMode::Until(d) => CheckoutConstraint::Until(d),
+        CheckoutMode::PoolDefault => match default {
+            DefaultPoolCheckoutMode::Immediately => CheckoutConstraint::Immediately,
+            DefaultPoolCheckoutMode::Wait => CheckoutConstraint::Wait,
+            DefaultPoolCheckoutMode::WaitAtMost(d) => CheckoutConstraint::Until(Instant::now() + d),
+        },
     }
 }
+
+#[cfg(test)]
+mod test;

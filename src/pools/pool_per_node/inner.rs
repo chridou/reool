@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::Instant;
 
 use futures::future::{self, Future, Loop};
 use log::{debug, info};
@@ -62,10 +62,11 @@ impl Inner {
                 let connection_factory = create_connection_factory(vec![connect_to.to_string()])?;
                 let pool_conf = PoolConfig {
                     desired_pool_size: config.desired_pool_size,
-                    checkout_mode: config.checkout_mode,
+                    default_checkout_mode: config.default_checkout_mode,
                     backoff_strategy: config.backoff_strategy,
                     reservation_limit: config.reservation_limit,
                     activation_order: config.activation_order,
+                    contention_limit: config.contention_limit,
                 };
 
                 let indexed_instrumentation =
@@ -96,47 +97,59 @@ impl Inner {
 
     pub fn check_out(&self, mode: CheckoutMode) -> Checkout {
         if self.pools.is_empty() {
-            Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
+            return Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::NoPool,
-            ))))
-        } else {
-            let count = self.count.fetch_add(1, Ordering::SeqCst);
-
-            // If a pool fails to checkout a connection try the next one.
-            //
-            // Use CheckoutMode::Immediately to quickly return a connection and
-            // use the user supplied mode on the last attempt only.
-            let loop_fut = future::loop_fn(
-                (Arc::clone(&self.pools), self.pools.len()),
-                move |(pools, attempts_left)| {
-                    if attempts_left == 0 {
-                        return Box::new(future::err(CheckoutErrorKind::NoConnection.into()))
-                            as Box<dyn Future<Item = _, Error = CheckoutError> + Send>;
-                    }
-
-                    let idx = (count + attempts_left) % pools.len();
-
-                    let mode_to_use = if attempts_left == 1 {
-                        mode
-                    } else {
-                        CheckoutMode::Immediately
-                    };
-
-                    Box::new(pools[idx].check_out(mode_to_use).then(move |r| match r {
-                        Ok(managed_conn) => Ok(Loop::Break(managed_conn)),
-                        Err(err) => {
-                            debug!("no connection from pool - trying next - {}", err);
-                            Ok(Loop::Continue((pools, attempts_left - 1)))
-                        }
-                    }))
-                },
-            );
-
-            Checkout::new(loop_fut)
+            ))));
         }
+
+        if mode.is_deadline_elapsed() {
+            return Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
+                CheckoutErrorKind::CheckoutTimeout,
+            ))));
+        }
+
+        let count = self.count.fetch_add(1, Ordering::SeqCst);
+
+        // If a pool fails to checkout a connection try the next one.
+        //
+        // Use CheckoutMode::Immediately to quickly return a connection and
+        // use the user supplied mode on the last attempt only but also checked
+        // whether a checkout timeout happened meanwhile.
+        let loop_fut = future::loop_fn(
+            (Arc::clone(&self.pools), self.pools.len()),
+            move |(pools, attempts_left)| {
+                // This can be executed far behind the initial check
+                if mode.is_deadline_elapsed() {
+                    return Box::new(future::err(CheckoutErrorKind::CheckoutTimeout.into()))
+                        as Box<dyn Future<Item = _, Error = CheckoutError> + Send>;
+                }
+
+                if attempts_left == 0 {
+                    return Box::new(future::err(CheckoutErrorKind::NoConnection.into()));
+                }
+
+                let idx = (count + attempts_left) % pools.len();
+
+                let mode_to_use = if attempts_left == 1 {
+                    mode
+                } else {
+                    CheckoutMode::Immediately
+                };
+
+                Box::new(pools[idx].check_out(mode_to_use).then(move |r| match r {
+                    Ok(managed_conn) => Ok(Loop::Break(managed_conn)),
+                    Err(err) => {
+                        debug!("no connection from pool - trying next - {}", err);
+                        Ok(Loop::Continue((pools, attempts_left - 1)))
+                    }
+                }))
+            },
+        );
+
+        Checkout::new(loop_fut)
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
         let futs: Vec<_> = self.pools.iter().map(|p| p.ping(timeout)).collect();
         future::join_all(futs)
     }

@@ -1,5 +1,5 @@
 //! A connection pool for connecting to a single node
-use std::time::Duration;
+use std::time::Instant;
 
 use futures::prelude::Future;
 use log::info;
@@ -53,7 +53,8 @@ impl SharedPool {
             backoff_strategy: config.backoff_strategy,
             reservation_limit: config.reservation_limit,
             activation_order: config.activation_order,
-            checkout_mode: config.checkout_mode,
+            default_checkout_mode: config.default_checkout_mode,
+            contention_limit: config.contention_limit,
         };
 
         let connection_factory = if !config.connect_to_nodes.is_empty() {
@@ -78,7 +79,7 @@ impl SharedPool {
         Checkout(self.pool.check_out(mode.into()))
     }
 
-    pub fn ping(&self, timeout: Duration) -> impl Future<Item = Ping, Error = ()> + Send {
+    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
         self.pool.ping(timeout)
     }
 
