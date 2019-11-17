@@ -1,42 +1,78 @@
 use std::error::Error as StdError;
 use std::fmt;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::{
-    future::{self, Future, Loop},
+    future::{self, Future},
     stream::Stream,
-    sync::mpsc,
     Poll,
 };
-use log::{debug, trace, warn};
-use tokio::{self, timer::Delay};
+use log::{error, trace};
+use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    self,
+    timer::{Interval, Timeout},
+};
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
-use crate::config::{ContentionLimit, DefaultPoolCheckoutMode};
-use crate::connection_factory::{ConnectionFactory, NewConnectionError};
+use crate::config::DefaultPoolCheckoutMode;
+use crate::connection_factory::ConnectionFactory;
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::*;
-use crate::instrumentation::InstrumentationFlavour;
-use crate::pooled_connection::ConnectionFlavour;
-use crate::{CheckoutMode, Ping, Poolable};
+use crate::instrumentation::{InstrumentationFlavour, PoolId};
+use crate::PoolState;
+use crate::{CheckoutMode, Immediately, Ping, Poolable, Wait};
 
-use inner_pool::{CheckInParcel, CheckoutConstraint, InnerPool};
+use inner_pool::{CheckoutPackage, InnerPool, PoolMessage};
 
+mod extended_connection_factory;
 mod inner_pool;
 pub(crate) mod instrumentation;
+mod managed;
 
+use self::extended_connection_factory::ExtendedConnectionFactory;
 use self::instrumentation::PoolInstrumentation;
+pub(crate) use self::managed::Managed;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
     pub desired_pool_size: usize,
     pub backoff_strategy: BackoffStrategy,
-    pub reservation_limit: Option<usize>,
+    pub reservation_limit: usize,
     pub activation_order: ActivationOrder,
     pub default_checkout_mode: DefaultPoolCheckoutMode,
-    pub contention_limit: ContentionLimit,
+    pub checkout_queue_size: usize,
+}
+
+/// A wrapper for a pool message so that we can also send a
+/// stop message over the stream without the need of the inner pool
+/// to know about this message
+pub(crate) enum MessageWrapper<T: Poolable> {
+    /// Pass the content of this to the inner pool
+    PoolMessage(PoolMessage<T>),
+    /// Do not pass anything to the inner pool but stop
+    /// the stream
+    Stop,
+}
+
+impl<T: Poolable> PoolMessage<T> {
+    /// Wrap the message, send it on the channel and in case of a failure
+    /// return the original message
+    fn send_on_internal_channel(
+        self,
+        channel: &mut mpsc::UnboundedSender<MessageWrapper<T>>,
+    ) -> Result<(), PoolMessage<T>> {
+        let wrapped = MessageWrapper::PoolMessage(self);
+        channel.try_send(wrapped).map_err(|err| {
+            if let MessageWrapper::PoolMessage(msg) = err.into_inner() {
+                msg
+            } else {
+                panic!("Did not send a PoolMessage - THIS IS A BUG");
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -51,7 +87,7 @@ impl Config {
         self
     }
 
-    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
+    pub fn reservation_limit(mut self, v: usize) -> Self {
         self.reservation_limit = v;
         self
     }
@@ -62,18 +98,25 @@ impl Default for Config {
         Self {
             desired_pool_size: 20,
             backoff_strategy: BackoffStrategy::default(),
-            reservation_limit: Some(50),
+            reservation_limit: 100,
             activation_order: ActivationOrder::default(),
-            default_checkout_mode: DefaultPoolCheckoutMode::Wait,
-            contention_limit: ContentionLimit::NoLimit,
+            default_checkout_mode: DefaultPoolCheckoutMode::Immediately,
+            checkout_queue_size: 100,
         }
     }
 }
 
 pub(crate) struct PoolInternal<T: Poolable> {
-    inner_pool: Arc<InnerPool<T>>,
+    extended_connection_factory: Arc<ExtendedConnectionFactory<T>>,
     default_checkout_mode: DefaultPoolCheckoutMode,
-    contention_limit: ContentionLimit,
+    checkout_sink: mpsc::Sender<PoolMessage<T>>,
+}
+
+/// We use an bounded and unbounded channel and both have
+/// different error type. Map them to this type to make them the same.
+pub enum RecvError {
+    Unbounded(mpsc::error::UnboundedRecvError),
+    Bounded(mpsc::error::RecvError),
 }
 
 impl<T> PoolInternal<T>
@@ -89,39 +132,112 @@ where
     where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
     {
-        let (new_con_tx, new_conn_rx) = mpsc::unbounded();
+        // We want to send inner messages in an unbounded manner.
+        let (mut internal_tx, internal_rx) = mpsc::unbounded_channel::<MessageWrapper<T>>();
+        // Checkout messages should be capped so that we do not get flooded.
+        let (checkout_sink, checkout_rx) = mpsc::channel(config.checkout_queue_size);
 
-        let num_connections = config.desired_pool_size;
-        let inner_pool = Arc::new(InnerPool::new(
-            connection_factory
-                .connecting_to()
-                .iter()
-                .map(|c| c.as_ref().to_owned())
-                .collect(),
-            &config,
-            new_con_tx.clone(),
-            instrumentation,
-        ));
+        // A `Future` that joins both streams and has the
+        // inner pool as a consumer for messages.
+        let inner_pool_fut = {
+            let mut inner_pool = InnerPool::new(&config, instrumentation.clone());
 
-        start_new_conn_stream(
-            new_conn_rx,
-            Arc::new(connection_factory),
-            Arc::downgrade(&inner_pool),
-            executor,
-            config.backoff_strategy,
-        );
+            let joined = internal_rx
+                .map_err(RecvError::Unbounded)
+                .fuse()
+                .select(
+                    checkout_rx
+                        .map(MessageWrapper::PoolMessage)
+                        .map_err(RecvError::Bounded)
+                        .fuse(),
+                )
+                .fuse()
+                .map_err(|_err| ());
 
-        let pool = Self {
-            inner_pool,
-            default_checkout_mode: config.default_checkout_mode,
-            contention_limit: config.contention_limit,
+            joined
+                .for_each(move |message| match message {
+                    MessageWrapper::PoolMessage(message) => {
+                        inner_pool.process(message);
+                        Ok(())
+                    }
+                    MessageWrapper::Stop => {
+                        trace!("Stopping message stream");
+                        Err(())
+                    }
+                })
+                .then(move |_r| {
+                    trace!("pool message stream stopped");
+                    Ok(())
+                })
         };
 
-        (0..num_connections).for_each(|_| {
-            pool.add_new_connection();
+        let _ = executor.spawn(inner_pool_fut);
+
+        // We need to access it from multiple places since we are
+        // going to put it into multiple `ExtendedConnectionFactory`s
+        let wrapped_connection_factory = Arc::new(connection_factory)
+            as Arc<dyn ConnectionFactory<Connection = T> + Send + Sync + 'static>;
+
+        (0..config.desired_pool_size).for_each(|_| {
+            // One for each connection
+            let extended_connection_factory = ExtendedConnectionFactory::new(
+                Arc::clone(&wrapped_connection_factory),
+                internal_tx.clone(),
+                instrumentation.clone(),
+                config.backoff_strategy,
+            );
+            let f = future::lazy(move || {
+                extended_connection_factory.create_connection(Instant::now());
+                Ok(())
+            });
+
+            // This triggers the creation of a connection.
+            // Once these connections fail they will recreate themselves
+            let _ = executor.spawn(f);
         });
 
-        pool
+        // We keep one for this pool to access it.
+        let extended_connection_factory = Arc::new(ExtendedConnectionFactory::new(
+            Arc::clone(&wrapped_connection_factory),
+            internal_tx.clone(),
+            instrumentation.clone(),
+            config.backoff_strategy,
+        ));
+
+        // A stream driven by an interval to send periodic messages to the inner pool.
+        // Since this stream tries to send to the pool stream it will
+        // end once it fails to send a message to the pool stream.
+        let cleanup_ticker = Interval::new_interval(self::inner_pool::CLEANUP_INTERVAL)
+            .map_err(|err| {
+                error!("timer error in cleanup ticker: {}", err);
+            })
+            .for_each(move |_| {
+                let wrapped =
+                    MessageWrapper::PoolMessage(PoolMessage::CleanupReservations(Instant::now()));
+                if let Err(_err) = internal_tx.try_send(wrapped) {
+                    trace!("pool gone - cleanup ticker stopping");
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            })
+            .then(move |_r| {
+                trace!("cleanup ticker stream stopped");
+                Ok(())
+            });
+
+        let _ = executor.spawn(cleanup_ticker);
+
+        trace!("PoolInternal created");
+
+        // The counterpart is triggered in `Self::drop`.
+        extended_connection_factory.instrumentation.pool_added();
+
+        Self {
+            extended_connection_factory,
+            default_checkout_mode: config.default_checkout_mode,
+            checkout_sink,
+        }
     }
 
     #[cfg(test)]
@@ -139,7 +255,10 @@ where
             config,
             connection_factory,
             executor,
-            PoolInstrumentation::new(InstrumentationFlavour::Custom(Arc::new(instrumentation)), 0),
+            PoolInstrumentation::new(
+                InstrumentationFlavour::Custom(Arc::new(instrumentation)),
+                PoolId::new(0),
+            ),
         )
     }
 
@@ -156,170 +275,173 @@ where
             config,
             connection_factory,
             executor,
-            PoolInstrumentation::new(InstrumentationFlavour::NoInstrumentation, 0),
+            PoolInstrumentation::new(InstrumentationFlavour::NoInstrumentation, PoolId::new(0)),
         )
     }
 
-    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> CheckoutManaged<T> {
-        if let Some(limit) = self.contention_limit.limit() {
-            if self.inner_pool.contention() >= limit {
-                return CheckoutManaged::new(future::err(
-                    CheckoutErrorKind::ContentionLimitReached.into(),
-                ));
-            }
+    /// Try to send a message to the inner pool to check out a connection.
+    /// Also create the future that can be returned to the client.
+    ///
+    /// On a failure return the created future and also the sender that was not sent to the inner
+    /// pool to reuse it for a subsequent attempt
+    pub fn check_out<M: Into<CheckoutMode>>(
+        &self,
+        mode: M,
+    ) -> Result<CheckoutManaged<T>, FailedCheckout<T>> {
+        let constraint =
+            checkout_mode_to_checkout_constraint(mode.into(), self.default_checkout_mode);
+
+        if constraint.is_deadline_elapsed() {
+            return Ok(CheckoutManaged::new(future::err(
+                CheckoutErrorKind::CheckoutTimeout.into(),
+            )));
         }
 
-        let mode = checkout_mode_to_checkout_constraint(mode.into(), self.default_checkout_mode);
-        self.inner_pool.check_out(mode)
-    }
+        let (deadline, reservation_allowed) = constraint.deadline_and_reservation_allowed();
 
-    #[cfg(test)]
-    #[allow(unused)]
-    fn inner_pool(&self) -> &Arc<InnerPool<T>> {
-        &self.inner_pool
-    }
+        let (tx, rx) = oneshot::channel();
 
-    pub fn connected_to(&self) -> &[String] {
-        self.inner_pool.connected_to()
-    }
+        // This will be passed to the client as a `Future`
+        let rx = rx.then(|r| match r {
+            Ok(from_pool) => from_pool,
+            Err(_receive_error) => {
+                // The pool dropped the reservation because it was dropped itself
+                Err(CheckoutErrorKind::NoPool.into())
+            }
+        });
 
-    fn add_new_connection(&self) {
-        trace!("add new connection request");
-        self.inner_pool.request_new_conn();
-    }
-}
+        // Maybe we need to wrap it in a timeout ...
+        let rx = if let Some(deadline) = deadline {
+            Box::new(Timeout::new_at(rx, deadline).map_err(|err| {
+                if err.is_inner() {
+                    return err.into_inner().unwrap();
+                }
 
-impl PoolInternal<ConnectionFlavour> {
-    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
-        self.inner_pool.ping(timeout)
-    }
-}
+                if err.is_elapsed() {
+                    return CheckoutError::new(CheckoutErrorKind::CheckoutTimeout);
+                }
 
-fn start_new_conn_stream<T, C>(
-    receiver: mpsc::UnboundedReceiver<NewConnMessage>,
-    connection_factory: Arc<C>,
-    inner_pool: Weak<InnerPool<T>>,
-    executor: ExecutorFlavour,
-    back_off_strategy: BackoffStrategy,
-) where
-    T: Poolable,
-    C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
-{
-    let spawn_handle = executor.spawn_unbounded(receiver);
-
-    let mut is_shut_down = false;
-    let fut = spawn_handle.for_each(move |msg| {
-        if is_shut_down {
-            trace!("new connection requested on finished stream");
-            Box::new(future::err(()))
+                CheckoutError::new(CheckoutErrorKind::TaskExecution)
+            }))
         } else {
+            Box::new(rx) as Box<dyn Future<Item = _, Error = _> + Send>
+        };
+
+        // We need a future to return to the client and a `CheckoutPackage`
+        // to send to the inner pool to complete the checkout
+        let checkout = CheckoutManaged::new(rx);
+        let package = CheckoutPackage {
+            checkout_requested_at: Instant::now(),
+            sender: tx,
+            reservation_allowed,
+        };
+
+        self.check_out_package(package, checkout)
+    }
+
+    // Takes a checkout future and a `CheckoutPackage`.
+    // If the package can be sent to the inner pool the future will be returned immediately.
+    // Otherwise the future will be returned alongside the package to use the parts for
+    // a retry.
+    pub(crate) fn check_out_package(
+        &self,
+        package: CheckoutPackage<T>,
+        checkout: CheckoutManaged<T>,
+    ) -> Result<CheckoutManaged<T>, FailedCheckout<T>> {
+        let mut checkout_sink = self.checkout_sink.clone();
+        if let Err(err) = checkout_sink.try_send(PoolMessage::CheckOut {
+            created_at: Instant::now(),
+            package,
+        }) {
+            let error_kind = if err.is_full() {
+                CheckoutErrorKind::CheckoutLimitReached
+            } else {
+                CheckoutErrorKind::NoPool
+            };
+
+            let msg = err.into_inner();
+
             match msg {
-                NewConnMessage::RequestNewConn => {
-                    if Weak::upgrade(&inner_pool).is_some() {
-                        trace!("creating new connection");
-                        let fut = create_new_managed(
-                            Instant::now(),
-                            connection_factory.clone(),
-                            inner_pool.clone(),
-                            back_off_strategy,
-                        )
-                        .map(|_| ()) // Dropping the connection puts it into the pool
-                        .map_err(|err| warn!("Failed to create new connection: {}", err));
-                        Box::new(fut)
-                    } else {
-                        warn!("attempt to create new connection even though the pool is gone");
-                        Box::new(future::err(())) as Box<dyn Future<Item = _, Error = _> + Send>
-                    }
+                PoolMessage::CheckOut { package, .. } => {
+                    return Err(FailedCheckout::new(package, checkout, error_kind))
                 }
-                NewConnMessage::Shutdown => {
-                    debug!("shutdown new conn stream");
-                    is_shut_down = true;
-                    Box::new(future::err(()))
-                }
+                _ => unreachable!(),
             }
         }
-    });
 
-    executor.execute(fut).unwrap()
+        Ok(checkout)
+    }
+
+    pub fn connected_to(&self) -> &str {
+        self.extended_connection_factory.connecting_to()
+    }
+
+    pub fn state(&self) -> PoolState {
+        self.extended_connection_factory.instrumentation.state()
+    }
+
+    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
+        self.extended_connection_factory.ping(timeout)
+    }
+}
+
+/// An attempt to send a checkout to the inner pool failed.
+pub(crate) struct FailedCheckout<T: Poolable> {
+    package: CheckoutPackage<T>,
+    pub error_kind: CheckoutErrorKind,
+    checkout: CheckoutManaged<T>,
+}
+
+impl<T: Poolable> FailedCheckout<T> {
+    pub fn new(
+        package: CheckoutPackage<T>,
+        checkout: CheckoutManaged<T>,
+        error_kind: CheckoutErrorKind,
+    ) -> Self {
+        Self {
+            package,
+            error_kind,
+            checkout,
+        }
+    }
+
+    /// Give us the future for the client and the package we can send to the inner pool
+    /// over the stream.
+    pub fn explode(self) -> (CheckoutPackage<T>, CheckoutManaged<T>) {
+        (self.package, self.checkout)
+    }
 }
 
 impl<T: Poolable> Clone for PoolInternal<T> {
     fn clone(&self) -> Self {
         Self {
-            inner_pool: self.inner_pool.clone(),
+            extended_connection_factory: Arc::clone(&self.extended_connection_factory),
             default_checkout_mode: self.default_checkout_mode,
-            contention_limit: self.contention_limit,
+            checkout_sink: self.checkout_sink.clone(),
         }
     }
 }
 
-fn create_new_managed<T: Poolable, C>(
-    initiated_at: Instant,
-    connection_factory: Arc<C>,
-    weak_inner_pool: Weak<InnerPool<T>>,
-    back_off_strategy: BackoffStrategy,
-) -> NewManaged<T>
-where
-    T: Poolable,
-    C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
-{
-    let fut = future::loop_fn((weak_inner_pool, 1), move |(weak_inner, attempt)| {
-        if let Some(inner_pool) = weak_inner.upgrade() {
-            let start_connect = Instant::now();
-            let fut = connection_factory
-                .create_connection()
-                .then(move |res| match res {
-                    Ok(conn) => {
-                        trace!("new connection created");
-                        inner_pool.notify_connection_created(
-                            initiated_at.elapsed(),
-                            start_connect.elapsed(),
-                        );
-                        Box::new(future::ok(Loop::Break(Managed::fresh(
-                            conn,
-                            Arc::downgrade(&inner_pool),
-                        ))))
-                    }
-                    Err(err) => {
-                        inner_pool.notify_connection_factory_failed();
-                        if let Some(backoff) = back_off_strategy.get_next_backoff(attempt) {
-                            let delay = Delay::new(Instant::now() + backoff);
-                            warn!(
-                            "Attempt {} to create a connection failed. Retry in {:?}. Error: {}",
-                            attempt, backoff, err
-                        );
-                            Box::new(
-                                delay
-                                    .map_err(|err| NewConnectionError::new(Box::new(err)))
-                                    .and_then(move |()| {
-                                        future::ok(Loop::Continue((
-                                            Arc::downgrade(&inner_pool),
-                                            attempt + 1,
-                                        )))
-                                    }),
-                            )
-                                as Box<dyn Future<Item = _, Error = _> + Send>
-                        } else {
-                            warn!(
-                        "Attempt {} to create a connection failed. Retry immediately. Error: {}",
-                        attempt, err);
-                            Box::new(future::ok(Loop::Continue((
-                                Arc::downgrade(&inner_pool),
-                                attempt + 1,
-                            ))))
-                        }
-                    }
-                });
-            Box::new(fut) as Box<dyn Future<Item = _, Error = _> + Send>
-        } else {
-            Box::new(future::err(NewConnectionError::new(Box::new(
-                PoolIsGoneError,
-            ))))
-        }
-    });
-    NewManaged::new(fut)
+impl<T: Poolable> Drop for PoolInternal<T> {
+    fn drop(&mut self) {
+        trace!("Dropping PoolInternal {}", self.connected_to());
+        let mut sender = self.extended_connection_factory.send_back_cloned();
+        // Stop the internal stream manually and forcefully. Otherwise it
+        // wll stay alive as long as a client does not return a connection.
+        let _ = sender.try_send(MessageWrapper::Stop);
+        self.extended_connection_factory
+            .instrumentation
+            .pool_removed();
+    }
 }
 
+impl<T: Poolable> fmt::Debug for PoolInternal<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PoolInternal")
+    }
+}
+
+/// A future containing a checked out connection or an error
 pub(crate) struct CheckoutManaged<T: Poolable> {
     inner: Box<dyn Future<Item = Managed<T>, Error = CheckoutError> + Send + 'static>,
 }
@@ -333,102 +455,15 @@ impl<T: Poolable> CheckoutManaged<T> {
             inner: Box::new(fut),
         }
     }
+
+    pub fn error<E: Into<CheckoutError>>(err: E) -> Self {
+        Self::new(future::err(err.into()))
+    }
 }
 
 impl<T: Poolable> Future for CheckoutManaged<T> {
     type Item = Managed<T>;
     type Error = CheckoutError;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.inner.poll()
-    }
-}
-
-/// Contains a connection and some other data.
-///
-/// `Managed` tries to return to its pool on drop.
-///
-/// The pool the connection belongs to is referenced by
-/// a `Weak` so that the connection can track whether
-/// the pool is still there when being dropped.
-pub(crate) struct Managed<T: Poolable> {
-    created_at: Instant,
-    /// Is `Some` taken from the pool otherwise fresh connection
-    checked_out_at: Option<Instant>,
-    /// The actual connection. If `None` this
-    /// `Managed` may not return to the pool.
-    pub value: Option<T>,
-    inner_pool: Weak<InnerPool<T>>,
-}
-
-impl<T: Poolable> Managed<T> {
-    pub fn fresh(value: T, inner_pool: Weak<InnerPool<T>>) -> Self {
-        Managed {
-            value: Some(value),
-            inner_pool,
-            created_at: Instant::now(),
-            checked_out_at: None,
-        }
-    }
-
-    pub fn connected_to(&self) -> &str {
-        self.value
-            .as_ref()
-            .expect("no value in managed - this is a bug")
-            .connected_to()
-    }
-}
-
-impl<T: Poolable> Drop for Managed<T> {
-    fn drop(&mut self) {
-        let inner_pool = match self.inner_pool.upgrade() {
-            Some(inner_pool) => inner_pool,
-            None => {
-                trace!("terminating connection because the pool is gone");
-                return;
-            }
-        };
-
-        if let Some(value) = self.value.take() {
-            tokio::spawn(inner_pool.check_in(CheckInParcel::Alive(Managed {
-                inner_pool: Arc::downgrade(&inner_pool),
-                value: Some(value),
-                created_at: self.created_at,
-                checked_out_at: self.checked_out_at,
-            })));
-        } else {
-            debug!("no value - drop connection and request new one");
-            // No connection. Create a new one.
-            tokio::spawn(inner_pool.check_in(CheckInParcel::Dropped(
-                self.checked_out_at.as_ref().map(Instant::elapsed),
-                self.created_at.elapsed(),
-            )));
-            inner_pool.request_new_conn();
-        }
-    }
-}
-
-pub(crate) enum NewConnMessage {
-    RequestNewConn,
-    Shutdown,
-}
-
-pub(crate) struct NewManaged<T: Poolable> {
-    inner: Box<dyn Future<Item = Managed<T>, Error = NewConnectionError> + Send + 'static>,
-}
-
-impl<T: Poolable> NewManaged<T> {
-    pub fn new<F>(f: F) -> Self
-    where
-        F: Future<Item = Managed<T>, Error = NewConnectionError> + Send + 'static,
-    {
-        Self { inner: Box::new(f) }
-    }
-}
-
-impl<T: Poolable> Future for NewManaged<T> {
-    type Item = Managed<T>;
-    type Error = NewConnectionError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.inner.poll()
@@ -451,6 +486,57 @@ impl StdError for PoolIsGoneError {
 
     fn cause(&self) -> Option<&dyn StdError> {
         None
+    }
+}
+
+// ==== CHECKOUT CONSTRAINT ====
+
+/// The checkout options a pool really has
+#[derive(Debug, Copy, Clone)]
+pub enum CheckoutConstraint {
+    Immediately,
+    Until(Instant),
+    Wait,
+}
+
+impl From<Immediately> for CheckoutConstraint {
+    fn from(_: Immediately) -> Self {
+        CheckoutConstraint::Immediately
+    }
+}
+impl From<Wait> for CheckoutConstraint {
+    fn from(_: Wait) -> Self {
+        CheckoutConstraint::Wait
+    }
+}
+
+impl From<Duration> for CheckoutConstraint {
+    fn from(d: Duration) -> Self {
+        let timeout = Instant::now() + d;
+        timeout.into()
+    }
+}
+
+impl From<Instant> for CheckoutConstraint {
+    fn from(until: Instant) -> Self {
+        CheckoutConstraint::Until(until)
+    }
+}
+
+impl CheckoutConstraint {
+    pub fn is_deadline_elapsed(self) -> bool {
+        match self {
+            CheckoutConstraint::Until(deadline) => deadline < Instant::now(),
+            _ => false,
+        }
+    }
+
+    pub fn deadline_and_reservation_allowed(self) -> (Option<Instant>, bool) {
+        match self {
+            CheckoutConstraint::Until(deadline) => (Some(deadline), true),
+            CheckoutConstraint::Immediately => (None, false),
+            CheckoutConstraint::Wait => (None, true),
+        }
     }
 }
 

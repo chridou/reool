@@ -1,7 +1,5 @@
 use std::env;
 
-use log::warn;
-
 use crate::activation_order::ActivationOrder;
 use crate::config::*;
 use crate::error::{InitializationError, InitializationResult};
@@ -45,30 +43,6 @@ where
                 .map_err(|err| InitializationError::new(key, Some(err)))?);
             Ok(())
         }
-        Err(env::VarError::NotPresent) => set_old_default_checkout_mode(Some(prefix), f),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
-    }
-}
-
-pub fn set_old_default_checkout_mode<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
-where
-    F: FnMut(DefaultPoolCheckoutMode) -> (),
-    T: Into<String>,
-{
-    let prefix = make_prefix(prefix);
-
-    warn!(
-        "'DEFAULT_POOL_CHECKOUT_MODE' not found but deprecated \
-         'POOL_CHECKOUT_MODE'. Use 'DEFAULT_POOL_CHECKOUT_MODE'"
-    );
-
-    let key = format!("{}_{}", prefix, "POOL_CHECKOUT_MODE");
-    match env::var(&key).map(|s| s.to_uppercase()) {
-        Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
-            Ok(())
-        }
         Err(env::VarError::NotPresent) => Ok(()),
         Err(err) => Err(InitializationError::new(key, Some(err))),
     }
@@ -76,7 +50,7 @@ where
 
 pub fn set_reservation_limit<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(Option<usize>) -> (),
+    F: FnMut(usize) -> (),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -84,15 +58,9 @@ where
     let key = format!("{}_{}", prefix, "RESERVATION_LIMIT");
     match env::var(&key).map(|s| s.to_uppercase()) {
         Ok(s) => {
-            if s == "NONE" {
-                f(None);
-                Ok(())
-            } else {
-                f(Some(s.parse().map_err(|err| {
-                    InitializationError::new(key, Some(err))
-                })?));
-                Ok(())
-            }
+            f(s.parse()
+                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
         Err(err) => Err(InitializationError::new(key, Some(err))),
@@ -137,37 +105,6 @@ where
     }
 }
 
-pub fn set_node_pool_strategy<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
-where
-    F: FnMut(NodePoolStrategy) -> (),
-    T: Into<String>,
-{
-    let prefix = make_prefix(prefix);
-
-    let key = format!("{}_{}", prefix, "NODE_POOL_STRATEGY");
-    match env::var(&key) {
-        Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
-            Ok(())
-        }
-        Err(env::VarError::NotPresent) => {
-            let key = format!("{}_{}", prefix, "POOL_MODE");
-            match env::var(&key) {
-                Ok(s) => {
-                    warn!("Found deprecated env var 'POOL_MODE' - use 'NODE_POOL_STRATEGY'");
-                    f(s.parse()
-                        .map_err(|err| InitializationError::new(key, Some(err)))?);
-                    Ok(())
-                }
-                Err(env::VarError::NotPresent) => Ok(()),
-                Err(err) => Err(InitializationError::new(key, Some(err))),
-            }
-        }
-        Err(err) => Err(InitializationError::new(key, Some(err))),
-    }
-}
-
 pub fn get_connect_to<T>(prefix: Option<T>) -> InitializationResult<Option<Vec<String>>>
 where
     T: Into<String>,
@@ -193,14 +130,14 @@ where
     }
 }
 
-pub fn set_pool_per_node_multiplier<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+pub fn set_pool_multiplier<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
     F: FnMut(u32) -> (),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
 
-    let key = format!("{}_{}", prefix, "POOL_PER_NODE_MULTIPLIER");
+    let key = format!("{}_{}", prefix, "POOL_MULTIPLIER");
     match env::var(&key) {
         Ok(s) => {
             f(s.parse()
@@ -212,14 +149,14 @@ where
     }
 }
 
-pub fn set_contention_limit<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+pub fn set_checkout_queue_size<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(ContentionLimit) -> (),
+    F: FnMut(usize) -> (),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
 
-    let key = format!("{}_{}", prefix, "CONTENTION_LIMIT");
+    let key = format!("{}_{}", prefix, "CHECKOUT_QUEUE_SIZE");
     match env::var(&key) {
         Ok(s) => {
             f(s.parse()

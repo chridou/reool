@@ -10,34 +10,34 @@
 //! ## Connecting to multiple nodes
 //!
 //! Set the value `connect_to_nodes` to more than one node.
-//! See `NodePoolStrategy` to read on how to configure a pool with multiple
-//! nodes.
+//! Make sure not to write to that pool.
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{debug, warn};
+use log::{debug, info, warn};
 
+use crate::connection_factory::ConnectionFactory;
 use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::helpers;
 use crate::instrumentation::{Instrumentation, InstrumentationFlavour};
-use crate::pools::{PoolPerNode, SharedPool};
+use crate::pools::{PoolPerNode, SinglePool};
 use crate::redis_rs::RedisRsFactory;
 
 pub use crate::activation_order::ActivationOrder;
 pub use crate::backoff_strategy::BackoffStrategy;
 pub use crate::error::InitializationError;
+use crate::{Immediately, Poolable, RedisPool, RedisPoolFlavour, Wait};
 
-use super::{Immediately, RedisPool, RedisPoolFlavour, Wait};
-
-/// A configuration for creating a `MultiNodePool`.
-///
-/// You should prefer using the `MultiNodePool::builder()` function.
+/// A configuration for creating a `RedisPool`.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// The number of connections the pool should initially have
-    /// and try to maintain
+    /// The number of connections a pool should have. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
+    ///
+    /// The default is 50.
     pub desired_pool_size: usize,
     /// The timeout for a checkout if no specific timeout is given
     /// with a checkout.
@@ -46,8 +46,12 @@ pub struct Config {
     /// failures to create new connections
     pub backoff_strategy: BackoffStrategy,
     /// The maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub reservation_limit: Option<usize>,
+    /// when no idle connections are available. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
+    ///
+    /// The default is 50.
+    pub reservation_limit: usize,
     /// Defines the `ActivationOrder` in which idle connections are
     /// activated.
     ///
@@ -55,30 +59,30 @@ pub struct Config {
     pub activation_order: ActivationOrder,
     /// The minimum required nodes to start
     pub min_required_nodes: usize,
-    /// The nodes to connect To
+    /// The nodes to connect to.
     pub connect_to_nodes: Vec<String>,
-    /// Sets the `NodePoolStrategy` to be used when creating the pool.
-    pub node_pool_strategy: NodePoolStrategy,
-    /// When pool per node is created, sets a multiplier
-    /// for the amount of pools per node to be created.
-    ///
-    /// Increasing this values reduces the contention on each created pool
+    /// When the pool is created this is a multiplier for the amount of sub
+    /// pools to be created.
     ///
     /// Other values will be adjusted if the multiplier is > 1:
     ///
     /// * `reservation_limit`: Stays zero if zero, otherwise (`reservation_limit`/multiplier) +1
-    /// * `desired_pool_size`: (`desired_pool_size`/multiplier) +1
-    pub pool_per_node_multiplier: u32,
-    /// The contention limit of the pool. If a pool per node is
-    /// configured the limit is for each inner pool.ContentionLimit
+    /// * `desired_pool_size`: `desired_pool_size`/multiplier) +1
+    pub pool_multiplier: u32,
+    /// The number of checkouts that can be enqueued. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
     ///
-    /// The default is `NoLimit`
-    pub contention_limit: ContentionLimit,
+    /// The default is 100.
+    pub checkout_queue_size: usize,
 }
 
 impl Config {
-    /// Sets the number of connections the pool should initially have
-    /// and try to maintain
+    /// The number of connections a pool should have. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
+    ///
+    /// The default is 50.
     pub fn desired_pool_size(mut self, v: usize) -> Self {
         self.desired_pool_size = v;
         self
@@ -98,9 +102,13 @@ impl Config {
         self
     }
 
-    /// Sets the maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
+    /// The maximum length of the queue for waiting checkouts
+    /// when no idle connections are available. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
+    ///
+    /// The default is 50.
+    pub fn reservation_limit(mut self, v: usize) -> Self {
         self.reservation_limit = v;
         self
     }
@@ -133,29 +141,25 @@ impl Config {
         self
     }
 
-    /// Sets the `NodePoolStrategy` to be used when creating the pool.
-    pub fn node_pool_strategy(mut self, v: NodePoolStrategy) -> Self {
-        self.node_pool_strategy = v;
-        self
-    }
-
-    /// Sets the `ContentionLimit` of the pool.
-    pub fn contention_limit(mut self, v: ContentionLimit) -> Self {
-        self.contention_limit = v;
-        self
-    }
-
-    /// When pool per node is created, sets a multiplier
-    /// for the amount of pools per node to be created.
+    /// The number of checkouts that can be enqueued. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
     ///
-    /// Increasing this values reduces the contention on each created pool
+    /// The default is 100.
+    pub fn checkout_queue_size(mut self, v: usize) -> Self {
+        self.checkout_queue_size = v;
+        self
+    }
+
+    /// When the pool is created this is a multiplier for the amount of sub
+    /// pools to be created.
     ///
     /// Other values will be adjusted if the multiplier is > 1:
     ///
     /// * `reservation_limit`: Stays zero if zero, otherwise (`reservation_limit`/multiplier) +1
-    /// * `desired_pool_size`: (`desired_pool_size`/multiplier) +1
-    pub fn pool_per_node_multiplier(mut self, v: u32) -> Self {
-        self.pool_per_node_multiplier = v;
+    /// * `desired_pool_size`: `desired_pool_size`/multiplier) +1
+    pub fn pool_multiplier(mut self, v: u32) -> Self {
+        self.pool_multiplier = v;
         self
     }
 
@@ -166,13 +170,12 @@ impl Config {
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
     /// * `DEFAULT_POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
-    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
-    /// * `NODE_POOL_STRATEGY`: Omit if you do not want to update the value
-    /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
-    /// * `CONTENTION_LIMIT`: Omit if you do not want to update the value
+    /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
+    /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -198,16 +201,12 @@ impl Config {
             self.connect_to_nodes = v;
         };
 
-        helpers::set_node_pool_strategy(prefix, |v| {
-            self.node_pool_strategy = v;
+        helpers::set_pool_multiplier(prefix, |v| {
+            self.pool_multiplier = v;
         })?;
 
-        helpers::set_pool_per_node_multiplier(prefix, |v| {
-            self.pool_per_node_multiplier = v;
-        })?;
-
-        helpers::set_contention_limit(prefix, |v| {
-            self.contention_limit = v;
+        helpers::set_checkout_queue_size(prefix, |v| {
+            self.checkout_queue_size = v;
         })?;
 
         Ok(())
@@ -222,25 +221,23 @@ impl Config {
             .reservation_limit(self.reservation_limit)
             .min_required_nodes(self.min_required_nodes)
             .connect_to_nodes(self.connect_to_nodes.clone())
-            .node_pool_strategy(self.node_pool_strategy)
-            .pool_per_node_multiplier(self.pool_per_node_multiplier)
-            .contention_limit(self.contention_limit)
+            .pool_multiplier(self.pool_multiplier)
+            .checkout_queue_size(self.checkout_queue_size)
     }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            desired_pool_size: 20,
+            desired_pool_size: 50,
             default_checkout_mode: DefaultPoolCheckoutMode::WaitAtMost(Duration::from_millis(30)),
             backoff_strategy: BackoffStrategy::default(),
-            reservation_limit: Some(100),
+            reservation_limit: 50,
             activation_order: ActivationOrder::default(),
             min_required_nodes: 1,
             connect_to_nodes: Vec::new(),
-            node_pool_strategy: NodePoolStrategy::default(),
-            pool_per_node_multiplier: 1,
-            contention_limit: ContentionLimit::NoLimit,
+            pool_multiplier: 1,
+            checkout_queue_size: 100,
         }
     }
 }
@@ -263,8 +260,11 @@ impl Default for Builder {
 }
 
 impl Builder {
-    /// The number of connections the pool should initially have
-    /// and try to maintain
+    /// The number of connections a pool should have. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
+    ///
+    /// The default is 50.
     pub fn desired_pool_size(mut self, v: usize) -> Self {
         self.config.desired_pool_size = v;
         self
@@ -285,8 +285,12 @@ impl Builder {
     }
 
     /// The maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
-    pub fn reservation_limit(mut self, v: Option<usize>) -> Self {
+    /// when no idle connections are available. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
+    ///
+    /// The default is 50.
+    pub fn reservation_limit(mut self, v: usize) -> Self {
         self.config.reservation_limit = v;
         self
     }
@@ -314,29 +318,25 @@ impl Builder {
         self
     }
 
-    /// Sets the `NodePoolStrategy` to be used when creating the pool.
-    pub fn node_pool_strategy(mut self, v: NodePoolStrategy) -> Self {
-        self.config.node_pool_strategy = v;
-        self
-    }
-
-    /// When pool per node is created, sets a multiplier
-    /// for the amount of pools per node to be created.
-    ///
-    /// Increasing this values reduces the contention on each created pool
+    /// When the pool is created this is a multiplier for the amount of sub
+    /// pools to be created.
     ///
     /// Other values will be adjusted if the multiplier is > 1:
     ///
     /// * `reservation_limit`: Stays zero if zero, otherwise (`reservation_limit`/multiplier) +1
-    /// * `desired_pool_size`: (`desired_pool_size`/multiplier) +1
-    pub fn pool_per_node_multiplier(mut self, v: u32) -> Self {
-        self.config.pool_per_node_multiplier = v;
+    /// * `desired_pool_size`: `desired_pool_size`/multiplier) +1
+    pub fn pool_multiplier(mut self, v: u32) -> Self {
+        self.config.pool_multiplier = v;
         self
     }
 
-    /// Sets the `ContentionLimit` of the pool.
-    pub fn contention_limit(mut self, v: ContentionLimit) -> Self {
-        self.config.contention_limit = v;
+    /// The number of checkouts that can be enqueued. If a pool with
+    /// multiple sub pools is created, this value applies to each
+    /// sub pool.
+    ///
+    /// The default is 100.
+    pub fn checkout_queue_size(mut self, v: usize) -> Self {
+        self.config.checkout_queue_size = v;
         self
     }
 
@@ -384,13 +384,12 @@ impl Builder {
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
     /// * `DEFAULT_POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
-    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
-    /// * `NODE_POOL_STRATEGY`: ` Omit if you do not want to update the value
-    /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
-    /// * `CONTENTION_LIMIT`: Omit if you do not want to update the value
+    /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
+    /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         self.config.update_from_environment(prefix)?;
         Ok(())
@@ -403,31 +402,37 @@ impl Builder {
     ///
     /// * `DESIRED_POOL_SIZE`: `usize`. Omit if you do not want to update the value
     /// * `DEFAULT_POOL_CHECKOUT_MODE`: The default checkout mode to use. Omit if you do not want to update the value
-    /// * `RESERVATION_LIMIT`: `usize` or `"NONE"`. Omit if you do not want to update the value
+    /// * `RESERVATION_LIMIT`: `usize`. Omit if you do not want to update the value
     /// * `ACTIVATION_ORDER`: `string`. Omit if you do not want to update the value
     /// * `MIN_REQUIRED_NODES`: `usize`. Omit if you do not want to update the value
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
-    /// * `NODE_POOL_STRATEGY`: ` Omit if you do not want to update the value
-    /// * `POOL_PER_NODE_MULTIPLIER`: Omit if you do not want to update the value
-    /// * `CONTENTION_LIMIT`: Omit if you do not want to update the value
+    /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
+    /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
     pub fn updated_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         self.config.update_from_environment(prefix)?;
         Ok(self)
     }
 
-    /// Build a new `RedisPool`
-    pub fn finish_redis_rs(self) -> InitializationResult<RedisPool> {
+    /// Build a new `RedisPool` with the given connection factory
+    pub fn finish<CF, F>(
+        self,
+        connection_factory: F,
+    ) -> InitializationResult<RedisPool<CF::Connection>>
+    where
+        F: Fn(String) -> InitializationResult<CF>,
+        CF: ConnectionFactory + Send + Sync + 'static,
+    {
         let config = self.config;
 
-        if config.pool_per_node_multiplier == 0 {
+        if config.pool_multiplier == 0 {
             return Err(InitializationError::message_only(
-                "pool_per_node_multiplier must not be zero",
+                "pool_multiplier must not be zero",
             ));
         }
 
-        if let Some(0) = config.contention_limit.limit() {
+        if config.checkout_queue_size == 0 {
             return Err(InitializationError::message_only(
-                "contention limit may not be ContentionLimit::Limited(0)",
+                "checkout_queue_size must be greater than 0",
             ));
         }
 
@@ -440,33 +445,31 @@ impl Builder {
         }
 
         if config.connect_to_nodes.is_empty() {
-            warn!("creating a pool with no nodes");
+            warn!("Creating a pool with no nodes");
             return Ok(create_no_pool(self.instrumentation));
         }
 
-        let connect_to = config.connect_to_nodes.clone();
-        let create_single_pool =
-            config.node_pool_strategy == NodePoolStrategy::SharedPool || connect_to.len() == 1;
+        info!("Configuration: {:?}", config);
+
+        let create_single_pool = config.connect_to_nodes.len() == 1 && config.pool_multiplier == 1;
 
         let flavour = if create_single_pool {
-            debug!(
-                "Create shared pool for {} nodes",
-                config.connect_to_nodes.len()
-            );
-            RedisPoolFlavour::Shared(SharedPool::new(
+            debug!("Create single pool for 1 node",);
+
+            RedisPoolFlavour::Single(SinglePool::new(
                 config,
-                RedisRsFactory::new,
+                connection_factory,
                 self.executor_flavour,
                 self.instrumentation,
             )?)
         } else {
             debug!(
-                "Create multiple pools. One for each of the {} nodes",
+                "Create multiple pools. One for each of  the {} nodes",
                 config.connect_to_nodes.len()
             );
             RedisPoolFlavour::PerNode(PoolPerNode::new(
                 config,
-                RedisRsFactory::new,
+                connection_factory,
                 self.executor_flavour,
                 self.instrumentation,
             )?)
@@ -474,98 +477,10 @@ impl Builder {
 
         Ok(RedisPool(flavour))
     }
-}
 
-impl std::str::FromStr for NodePoolStrategy {
-    type Err = ParseNodesStrategyError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match &*s.to_lowercase() {
-            "shared-pool" => Ok(NodePoolStrategy::SharedPool),
-            "pool-per-node" => Ok(NodePoolStrategy::PoolPerNode),
-            "single" | "auto" => {
-                 warn!("found 'single' or 'auto' in the env which are deprecated - using 'shared-pool'");
-                 Ok(NodePoolStrategy::SharedPool)},
-            "multi"  => {
-                 warn!("found 'multi' in the env which is deprecated - using 'pool-per-node'");
-                Ok(NodePoolStrategy::PoolPerNode)},
-            invalid => Err(ParseNodesStrategyError(format!(
-                "'{}' is not a valid NodesStrategy. Only 'shared_pool' and 'pool-per-node' are allowed.",
-                invalid
-            ))),
-        }
-    }
-}
-
-/// Determines which kind of pool to create.
-///
-/// 2 kinds of pools can be created: A shared pool which
-/// will have connections to possibly multiple nodes
-/// or a pool with multiple sub pools which will all connect
-/// to one node only.
-///
-/// If there is only 1 node to connect to `NodePoolStrategy::SharedPool` will always
-///  be used which is also the default.
-///
-/// ## `NodePoolStrategy::SharedPool`
-///
-/// The pool created will create connections to each nose in a round robin fashion.
-/// Since connections can also be closed it is never really known how many connections
-/// the pool has to a specific node. Nevertheless the connections should be evenly
-/// distributed under normal circumstances.
-///
-/// When a node fails the connections to that node will be replaced by connections to the
-/// other nodes once the pool is recreating connections (e.g. after a connection caused an error).
-///
-/// When pinged it is not certain which od the nodes in the pool is getting pinged.
-///
-/// In configurations or when using `FromStr` this value is created from the
-/// string `shared-pool`.
-///
-/// ## `NodePoolStrategy::PoolPerNode`
-///
-/// This pool can only be created if there are more than one node. Each of the pools
-/// within the resulting pool will be connected to a single node. When checking out a connection
-/// the checkout will be done in a round robin fashion and the next pool will be tried if
-/// a pool has no connections left.
-///
-/// When pinged it is exactly known which host is pinged and it is even guaranteed that all of
-/// the hosts will get pinged.
-///
-/// In configurations or when using `FromStr` this value is created from the
-/// string `pool-per-node`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodePoolStrategy {
-    /// There will only be a single pool and all connections to maybe different nodes
-    /// will share the pool
-    SharedPool,
-    /// Create a pool that contains connection pools where
-    /// each pool is connected to one node only
-    PoolPerNode,
-}
-
-impl Default for NodePoolStrategy {
-    fn default() -> Self {
-        NodePoolStrategy::SharedPool
-    }
-}
-
-#[derive(Debug)]
-pub struct ParseNodesStrategyError(String);
-
-impl fmt::Display for ParseNodesStrategyError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Could not parse NodesStrategy. {}", self.0)
-    }
-}
-
-impl std::error::Error for ParseNodesStrategyError {
-    fn description(&self) -> &str {
-        "parse activation order initialization failed"
-    }
-
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        None
+    /// Build a new `RedisPool`
+    pub fn finish_redis_rs(self) -> InitializationResult<RedisPool> {
+        self.finish(RedisRsFactory::new)
     }
 }
 
@@ -586,7 +501,7 @@ pub enum DefaultPoolCheckoutMode {
     /// Expect a connection to be returned immediately.
     /// If there is none available return an error immediately.
     Immediately,
-    /// Wait until there is a connection even if it would take forever.
+    /// Wait until there is a connection.
     Wait,
     /// Wait for at most the given `Duration`.
     ///
@@ -613,8 +528,8 @@ impl std::str::FromStr for DefaultPoolCheckoutMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match &*s.to_lowercase() {
-            "immediately" => Ok(DefaultPoolCheckoutMode::Immediately),
             "wait" => Ok(DefaultPoolCheckoutMode::Wait),
+            "immediately" => Ok(DefaultPoolCheckoutMode::Immediately),
             milliseconds => Ok(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_millis(
                 milliseconds
                     .parse::<u64>()
@@ -669,57 +584,6 @@ impl std::error::Error for ParseDefaultPoolCheckoutModeError {
     }
 }
 
-/// The maximum contention
-#[derive(Debug, Copy, Clone)]
-pub enum ContentionLimit {
-    NoLimit,
-    Limited(usize),
-}
-
-impl ContentionLimit {
-    pub fn limit(self) -> Option<usize> {
-        match self {
-            ContentionLimit::Limited(n) => Some(n),
-            ContentionLimit::NoLimit => None,
-        }
-    }
-}
-
-impl std::str::FromStr for ContentionLimit {
-    type Err = ParseContentionLimitError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match &*s.to_lowercase() {
-            "no-limit" => Ok(ContentionLimit::NoLimit),
-            limit => {
-                let limit = limit
-                    .parse::<usize>()
-                    .map_err(|err| ParseContentionLimitError(err.to_string()))?;
-                Ok(ContentionLimit::Limited(limit))
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct ParseContentionLimitError(String);
-
-impl fmt::Display for ParseContentionLimitError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Could not parse ContentionLimit: {}", self.0)
-    }
-}
-
-impl std::error::Error for ParseContentionLimitError {
-    fn description(&self) -> &str {
-        "parse contention limit failed"
-    }
-
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        None
-    }
-}
-
-fn create_no_pool(_instrumentation: InstrumentationFlavour) -> RedisPool {
+fn create_no_pool<T: Poolable>(_instrumentation: InstrumentationFlavour) -> RedisPool<T> {
     RedisPool(RedisPoolFlavour::Empty)
 }

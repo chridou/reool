@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::future::{self, Future, Loop};
+use futures::future::{self, Future};
 use log::{debug, info};
 
 use crate::config::Config;
@@ -10,19 +10,17 @@ use crate::connection_factory::ConnectionFactory;
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
-use crate::instrumentation::InstrumentationFlavour;
-use crate::pooled_connection::ConnectionFlavour;
+use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::pools::pool_internal::instrumentation::PoolInstrumentation;
 use crate::pools::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
-use crate::{Checkout, CheckoutMode, Ping};
+use crate::{CheckoutMode, Ping, PoolState, Poolable};
 
-pub struct Inner {
+pub(crate) struct Inner<T: Poolable> {
     count: AtomicUsize,
-    pub(crate) pools: Arc<Vec<PoolInternal<ConnectionFlavour>>>,
-    pub(crate) connected_to: Vec<String>,
+    pub(crate) pools: Arc<Vec<PoolInternal<T>>>,
 }
 
-impl Inner {
+impl<T: Poolable> Inner<T> {
     pub(crate) fn new<F, CF>(
         mut config: Config,
         create_connection_factory: F,
@@ -30,47 +28,53 @@ impl Inner {
         instrumentation: InstrumentationFlavour,
     ) -> InitializationResult<Self>
     where
-        CF: ConnectionFactory<Connection = ConnectionFlavour> + Send + Sync + 'static,
-        F: Fn(Vec<String>) -> InitializationResult<CF>,
+        CF: ConnectionFactory<Connection = T> + Send + Sync + 'static,
+        F: Fn(String) -> InitializationResult<CF>,
     {
-        if config.pool_per_node_multiplier == 0 {
+        if config.pool_multiplier == 0 {
             return Err(InitializationError::message_only(
-                "pool_per_node_multiplier may not be zero",
+                "pool_multiplier may not be zero",
             ));
         }
 
-        let connect_to_distinct = config.connect_to_nodes.clone();
-
-        let multiplier = config.pool_per_node_multiplier as usize;
+        let multiplier = config.pool_multiplier as usize;
         if multiplier != 1 {
-            info!("pool per node multiplier is {}", multiplier);
-            if let Some(ref mut limit) = config.reservation_limit {
-                let new_limit = *limit / multiplier + 1;
-                info!("new reservation limit is is {}", new_limit);
-                *limit = new_limit;
-            }
-
             let new_connections_per_pool = config.desired_pool_size / multiplier + 1;
-            info!("connections per pool is {}", new_connections_per_pool);
+            let new_reservation_limit = if config.reservation_limit == 0 {
+                config.reservation_limit
+            } else {
+                config.reservation_limit / multiplier + 1
+            };
+
+            info!(
+                "Pool per node multiplier is {}. Connections per pool will be {}(config: {}) \
+                 and the reservation limit will be {}(config: {}).",
+                multiplier,
+                new_connections_per_pool,
+                config.desired_pool_size,
+                new_reservation_limit,
+                config.reservation_limit
+            );
+
             config.desired_pool_size = new_connections_per_pool;
+            config.reservation_limit = new_reservation_limit;
         }
 
         let mut pools = Vec::new();
-        let mut pool_index = 0;
+        let mut id = PoolId::new(0);
         for _ in 0..multiplier {
             for connect_to in &config.connect_to_nodes {
-                let connection_factory = create_connection_factory(vec![connect_to.to_string()])?;
+                let connection_factory = create_connection_factory(connect_to.to_string())?;
                 let pool_conf = PoolConfig {
                     desired_pool_size: config.desired_pool_size,
                     default_checkout_mode: config.default_checkout_mode,
                     backoff_strategy: config.backoff_strategy,
                     reservation_limit: config.reservation_limit,
                     activation_order: config.activation_order,
-                    contention_limit: config.contention_limit,
+                    checkout_queue_size: config.checkout_queue_size,
                 };
 
-                let indexed_instrumentation =
-                    PoolInstrumentation::new(instrumentation.clone(), pool_index);
+                let indexed_instrumentation = PoolInstrumentation::new(instrumentation.clone(), id);
 
                 let pool = PoolInternal::new(
                     pool_conf,
@@ -80,7 +84,7 @@ impl Inner {
                 );
 
                 pools.push(pool);
-                pool_index += 1;
+                id.inc();
             }
         }
 
@@ -89,64 +93,62 @@ impl Inner {
         let inner = Inner {
             count: AtomicUsize::new(0),
             pools: Arc::new(pools),
-            connected_to: connect_to_distinct,
         };
 
         Ok(inner)
     }
 
-    pub fn check_out(&self, mode: CheckoutMode) -> Checkout {
+    pub fn check_out(&self, mode: CheckoutMode) -> CheckoutManaged<T> {
         if self.pools.is_empty() {
-            return Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
+            return CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::NoPool,
-            ))));
+            )));
         }
 
         if mode.is_deadline_elapsed() {
-            return Checkout(CheckoutManaged::new(future::err(CheckoutError::new(
+            return CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::CheckoutTimeout,
-            ))));
+            )));
         }
 
-        let count = self.count.fetch_add(1, Ordering::SeqCst);
+        let position = self.count.fetch_add(1, Ordering::SeqCst);
+        let first_pool_index = position % self.pools.len();
 
-        // If a pool fails to checkout a connection try the next one.
-        //
-        // Use CheckoutMode::Immediately to quickly return a connection and
-        // use the user supplied mode on the last attempt only but also checked
-        // whether a checkout timeout happened meanwhile.
-        let loop_fut = future::loop_fn(
-            (Arc::clone(&self.pools), self.pools.len()),
-            move |(pools, attempts_left)| {
-                // This can be executed far behind the initial check
-                if mode.is_deadline_elapsed() {
-                    return Box::new(future::err(CheckoutErrorKind::CheckoutTimeout.into()))
-                        as Box<dyn Future<Item = _, Error = CheckoutError> + Send>;
+        // Do the first attempt
+        let failed_checkout = match self.pools[first_pool_index].check_out(mode) {
+            Ok(checkout) => return checkout,
+            Err(failed_checkout) if self.pools.len() == 1 => {
+                return CheckoutManaged::error(failed_checkout.error_kind)
+            }
+            Err(failed_checkout) => failed_checkout,
+        };
+
+        let mut last_failed_checkout = failed_checkout;
+        // Iterate over all but the first pool because we already tried that.
+        for position in position + 1..position + self.pools.len() {
+            if mode.is_deadline_elapsed() {
+                return CheckoutManaged::error(CheckoutErrorKind::CheckoutTimeout);
+            }
+
+            let idx = position % self.pools.len();
+            let (checkout_package, original_checkout) = last_failed_checkout.explode();
+
+            match self.pools[idx].check_out_package(checkout_package, original_checkout) {
+                Ok(checkout) => return checkout,
+                Err(failed_checkout) => {
+                    last_failed_checkout = failed_checkout;
                 }
+            }
+        }
 
-                if attempts_left == 0 {
-                    return Box::new(future::err(CheckoutErrorKind::NoConnection.into()));
-                }
+        CheckoutManaged::error(last_failed_checkout.error_kind)
+    }
 
-                let idx = (count + attempts_left) % pools.len();
-
-                let mode_to_use = if attempts_left == 1 {
-                    mode
-                } else {
-                    CheckoutMode::Immediately
-                };
-
-                Box::new(pools[idx].check_out(mode_to_use).then(move |r| match r {
-                    Ok(managed_conn) => Ok(Loop::Break(managed_conn)),
-                    Err(err) => {
-                        debug!("no connection from pool - trying next - {}", err);
-                        Ok(Loop::Continue((pools, attempts_left - 1)))
-                    }
-                }))
-            },
-        );
-
-        Checkout::new(loop_fut)
+    pub fn state(&self) -> PoolState {
+        self.pools
+            .iter()
+            .map(|p| p.state())
+            .fold(PoolState::default(), |a, b| a + b)
     }
 
     pub fn ping(&self, timeout: Instant) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {

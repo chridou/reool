@@ -32,7 +32,7 @@ const NEW_CONN_BACKOFFS_MS: &[Duration] = &[
 ];
 const MAX_NEW_CONN_BACKOFF_MS: Duration = Duration::from_millis(10_000);
 
-/// A strategy for determining delays betwen retries
+/// A strategy for determining delays between retries
 ///
 /// The pool has a fixed size and will try to create all
 /// the needed connections with infinite retries. This

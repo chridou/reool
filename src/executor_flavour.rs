@@ -1,10 +1,10 @@
-use futures::{future::Future, stream::Stream, sync::mpsc};
-use log::warn;
+use std::error::Error;
+
+use futures::future::Future;
 use tokio::executor::{DefaultExecutor, Executor};
 use tokio::runtime::TaskExecutor;
 
-use crate::error::*;
-
+/// Compatibility for different executors
 #[derive(Clone)]
 pub enum ExecutorFlavour {
     Runtime,
@@ -12,35 +12,18 @@ pub enum ExecutorFlavour {
 }
 
 impl ExecutorFlavour {
-    pub fn execute<F>(&self, task: F) -> CheckoutResult<()>
+    pub fn spawn<F>(&self, task: F) -> Result<(), Box<dyn Error>>
     where
         F: Future<Item = (), Error = ()> + Send + 'static,
     {
         match self {
-            ExecutorFlavour::Runtime => {
-                DefaultExecutor::current()
-                    .spawn(Box::new(task))
-                    .map_err(|err| {
-                        warn!("default executor failed to execute a task: {:?}", err);
-                        CheckoutError::with_cause(CheckoutErrorKind::TaskExecution, err)
-                    })
-            }
+            ExecutorFlavour::Runtime => DefaultExecutor::current()
+                .spawn(Box::new(task))
+                .map_err(|err| Box::new(err) as Box<dyn Error>),
             ExecutorFlavour::TokioTaskExecutor(executor) => {
                 executor.spawn(Box::new(task));
                 Ok(())
             }
-        }
-    }
-
-    pub fn spawn_unbounded<S>(&self, stream: S) -> mpsc::SpawnHandle<S::Item, S::Error>
-    where
-        S: Stream + Send + 'static,
-        S::Item: Send,
-        S::Error: Send,
-    {
-        match self {
-            ExecutorFlavour::Runtime => mpsc::spawn_unbounded(stream, &DefaultExecutor::current()),
-            ExecutorFlavour::TokioTaskExecutor(executor) => mpsc::spawn_unbounded(stream, executor),
         }
     }
 }

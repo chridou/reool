@@ -10,8 +10,8 @@ use crate::connection_factory::ConnectionFactory;
 use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::InstrumentationFlavour;
-use crate::pooled_connection::ConnectionFlavour;
-use crate::{Checkout, CheckoutMode, Ping};
+use crate::pools::pool_internal::CheckoutManaged;
+use crate::{CheckoutMode, Ping, PoolState, Poolable};
 
 mod inner;
 
@@ -29,25 +29,27 @@ use self::inner::*;
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
-pub(crate) struct PoolPerNode {
-    inner: Arc<Inner>,
+pub(crate) struct PoolPerNode<T: Poolable> {
+    inner: Arc<(Inner<T>, Vec<String>)>,
 }
 
-impl PoolPerNode {
+impl<T: Poolable> PoolPerNode<T> {
     pub fn new<F, CF>(
         config: Config,
         create_connection_factory: F,
         executor_flavour: ExecutorFlavour,
         instrumentation: InstrumentationFlavour,
-    ) -> InitializationResult<PoolPerNode>
+    ) -> InitializationResult<PoolPerNode<T>>
     where
-        CF: ConnectionFactory<Connection = ConnectionFlavour> + Send + Sync + 'static,
-        F: Fn(Vec<String>) -> InitializationResult<CF>,
+        CF: ConnectionFactory<Connection = T> + Send + Sync + 'static,
+        F: Fn(String) -> InitializationResult<CF>,
     {
         info!(
             "Creating pool per node for {:?} nodes",
             config.connect_to_nodes
         );
+
+        let connected_to = config.connect_to_nodes.clone();
 
         let inner = Inner::new(
             config,
@@ -57,27 +59,31 @@ impl PoolPerNode {
         )?;
 
         Ok(PoolPerNode {
-            inner: Arc::new(inner),
+            inner: Arc::new((inner, connected_to)),
         })
     }
 
-    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> Checkout {
-        self.inner.check_out(mode.into())
-    }
-
-    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
-        self.inner.ping(timeout)
+    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> CheckoutManaged<T> {
+        self.inner.0.check_out(mode.into())
     }
 
     pub fn connected_to(&self) -> &[String] {
-        &self.inner.connected_to
+        &(self.inner.1)
+    }
+
+    pub fn state(&self) -> PoolState {
+        self.inner.0.state()
+    }
+
+    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+        self.inner.0.ping(timeout)
     }
 }
 
-impl Clone for PoolPerNode {
+impl<T: Poolable> Clone for PoolPerNode<T> {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: Arc::clone(&self.inner),
         }
     }
 }

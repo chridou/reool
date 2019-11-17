@@ -7,6 +7,9 @@ use std::time::Duration;
 
 use log::info;
 
+use crate::instrumentation::PoolId;
+use crate::PoolState;
+
 use super::Instrumentation;
 
 /// Simply tracks the following values:
@@ -35,7 +38,6 @@ pub struct StateCounters {
     in_flight: Arc<AtomicUsize>,
     reservations: Arc<AtomicUsize>,
     pools: Arc<AtomicUsize>,
-    contention: Arc<AtomicUsize>,
     log: bool,
     print: bool,
 }
@@ -79,6 +81,16 @@ impl StateCounters {
         me
     }
 
+    pub fn state(&self) -> PoolState {
+        PoolState {
+            in_flight: self.in_flight.load(Ordering::SeqCst),
+            reservations: self.reservations.load(Ordering::SeqCst),
+            connections: self.connections.load(Ordering::SeqCst),
+            idle: self.idle.load(Ordering::SeqCst),
+            pools: self.pools.load(Ordering::SeqCst),
+        }
+    }
+
     pub fn connections(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
     }
@@ -94,9 +106,6 @@ impl StateCounters {
     pub fn pools(&self) -> usize {
         self.pools.load(Ordering::SeqCst)
     }
-    pub fn contention(&self) -> usize {
-        self.contention.load(Ordering::SeqCst)
-    }
 
     /// Create the `Instrumentation` to be put into the pool to instrument.
     pub fn instrumentation(&self) -> StateCountersInstrumentation {
@@ -106,7 +115,6 @@ impl StateCounters {
             in_flight: Arc::clone(&self.in_flight),
             reservations: Arc::clone(&self.reservations),
             pools: Arc::clone(&self.pools),
-            contention: Arc::clone(&self.contention),
             log: self.log,
             print: self.print,
         }
@@ -119,29 +127,25 @@ pub struct StateCountersInstrumentation {
     in_flight: Arc<AtomicUsize>,
     reservations: Arc<AtomicUsize>,
     pools: Arc<AtomicUsize>,
-    contention: Arc<AtomicUsize>,
     log: bool,
     print: bool,
 }
 
 impl StateCountersInstrumentation {
-    pub fn connections(&self) -> usize {
+    fn connections(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
     }
-    pub fn idle(&self) -> usize {
+    fn idle(&self) -> usize {
         self.idle.load(Ordering::SeqCst)
     }
-    pub fn in_flight(&self) -> usize {
+    fn in_flight(&self) -> usize {
         self.in_flight.load(Ordering::SeqCst)
     }
-    pub fn reservations(&self) -> usize {
+    fn reservations(&self) -> usize {
         self.reservations.load(Ordering::SeqCst)
     }
-    pub fn pools(&self) -> usize {
+    fn pools(&self) -> usize {
         self.pools.load(Ordering::SeqCst)
-    }
-    pub fn contention(&self) -> usize {
-        self.contention.load(Ordering::SeqCst)
     }
 
     fn output_required(&self) -> bool {
@@ -163,46 +167,43 @@ impl StateCountersInstrumentation {
 }
 
 impl Instrumentation for StateCountersInstrumentation {
-    fn pool_added(&self, pool_index: usize) {
+    fn pool_added(&self, pool: PoolId) {
         self.pools.fetch_add(1, Ordering::SeqCst);
         if self.output_required() {
-            self.output(&format!(
-                "[{:02}] pool added (+1): {}",
-                pool_index,
-                self.pools()
-            ));
+            self.output(&format!("[{}] pool added (+1): {}", pool, self.pools()));
         }
     }
 
-    fn pool_removed(&self, pool_index: usize) {
+    fn pool_removed(&self, pool: PoolId) {
         self.pools.fetch_sub(1, Ordering::SeqCst);
         if self.output_required() {
-            self.output(&format!(
-                "[{:02}] pool removed (-1): {}",
-                pool_index,
-                self.pools()
-            ));
+            self.output(&format!("[{}] pool removed (-1): {}", pool, self.pools()));
         }
     }
 
-    fn checked_out_connection(&self, _idle_for: Duration, pool_index: usize) {
+    fn checked_out_connection(
+        &self,
+        _idle_for: Duration,
+        _time_since_checkout_request: Duration,
+        pool: PoolId,
+    ) {
         if self.output_required() {
-            self.output(&format!("[{:02}] check out", pool_index));
+            self.output(&format!("[{}] check out", pool));
         }
     }
 
-    fn checked_in_returned_connection(&self, _flight_time: Duration, pool_index: usize) {
+    fn checked_in_returned_connection(&self, _flight_time: Duration, pool: PoolId) {
         if self.output_required() {
-            self.output(&format!("[{:02}] check in returned", pool_index));
+            self.output(&format!("[{}] check in returned", pool));
         }
     }
 
-    fn checked_in_new_connection(&self, pool_index: usize) {
+    fn checked_in_new_connection(&self, pool: PoolId) {
         self.connections.fetch_add(1, Ordering::SeqCst);
         if self.output_required() {
             self.output(&format!(
-                "[{:02}] check in new connection (+1): {}",
-                pool_index,
+                "[{}] check in new connection (+1): {}",
+                pool,
                 self.connections()
             ));
         }
@@ -212,128 +213,107 @@ impl Instrumentation for StateCountersInstrumentation {
         &self,
         _flight_time: Option<Duration>,
         _lifetime: Duration,
-        pool_index: usize,
+        pool: PoolId,
     ) {
         self.connections.fetch_sub(1, Ordering::SeqCst);
         if self.output_required() {
             self.output(&format!(
-                "[{:02}] connection dropped (-1): {}",
-                pool_index,
+                "[{}] connection dropped (-1): {}",
+                pool,
                 self.connections()
             ));
         }
     }
 
-    fn connection_created(
-        &self,
-        _connected_after: Duration,
-        _total_time: Duration,
-        _pool_index: usize,
-    ) {
+    fn connection_created(&self, _connected_after: Duration, _total_time: Duration, _pool: PoolId) {
     }
 
-    fn idle_inc(&self, pool_index: usize) {
+    fn idle_inc(&self, pool: PoolId) {
         self.idle.fetch_add(1, Ordering::SeqCst);
         if self.output_required() {
-            self.output(&format!("[{:02}] idle +1: {}", pool_index, self.idle()));
+            self.output(&format!("[{}] idle +1: {}", pool, self.idle()));
         }
     }
 
-    fn idle_dec(&self, pool_index: usize) {
+    fn idle_dec(&self, pool: PoolId) {
         self.idle.fetch_sub(1, Ordering::SeqCst);
         if self.output_required() {
-            self.output(&format!("[{:02}] idle -1: {}", pool_index, self.idle()));
+            self.output(&format!("[{}] idle -1: {}", pool, self.idle()));
         }
     }
 
-    fn in_flight_inc(&self, pool_index: usize) {
+    fn in_flight_inc(&self, pool: PoolId) {
         self.in_flight.fetch_add(1, Ordering::SeqCst);
         if self.output_required() {
-            self.output(&format!(
-                "[{:02}] in_flight +1: {}",
-                pool_index,
-                self.in_flight()
-            ));
+            self.output(&format!("[{}] in_flight +1: {}", pool, self.in_flight()));
         }
     }
 
-    fn in_flight_dec(&self, pool_index: usize) {
+    fn in_flight_dec(&self, pool: PoolId) {
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         if self.output_required() {
-            self.output(&format!(
-                "[{:02}] in_flight -1: {}",
-                pool_index,
-                self.in_flight()
-            ));
+            self.output(&format!("[{}] in_flight -1: {}", pool, self.in_flight()));
         }
     }
 
-    fn reservation_added(&self, pool_index: usize) {
+    fn reservation_added(&self, pool: PoolId) {
         self.reservations.fetch_add(1, Ordering::SeqCst);
         if self.output_required() {
             self.output(&format!(
-                "[{:02}] reservation added (+1): {}",
-                pool_index,
+                "[{}] reservation added (+1): {}",
+                pool,
                 self.reservations()
             ));
         }
     }
 
-    fn reservation_fulfilled(&self, _after: Duration, pool_index: usize) {
+    fn reservation_fulfilled(
+        &self,
+        _reservation_time: Duration,
+        _checkout_request_time: Duration,
+        pool: PoolId,
+    ) {
         self.reservations.fetch_sub(1, Ordering::SeqCst);
         if self.output_required() {
             self.output(&format!(
-                "[{:02}] reservation fulfilled (-1): {}",
-                pool_index,
+                "[{}] reservation fulfilled (-1): {}",
+                pool,
                 self.reservations()
             ));
         }
     }
 
-    fn reservation_not_fulfilled(&self, _after: Duration, pool_index: usize) {
+    fn reservation_not_fulfilled(
+        &self,
+        _reservation_time: Duration,
+        _checkout_request_time: Duration,
+        pool: PoolId,
+    ) {
         self.reservations.fetch_sub(1, Ordering::SeqCst);
         if self.output_required() {
             self.output(&format!(
-                "[{:02}] reservations not fulfilled (-1): {}",
-                pool_index,
+                "[{}] reservations not fulfilled (-1): {}",
+                pool,
                 self.reservations()
             ));
         }
     }
 
-    fn reservation_limit_reached(&self, pool_index: usize) {
+    fn reservation_limit_reached(&self, pool: PoolId) {
         if self.output_required() {
-            self.output(&format!("[{:02}] reservation limit reached", pool_index));
+            self.output(&format!("[{}] reservation limit reached", pool));
         }
     }
 
-    fn connection_factory_failed(&self, pool_index: usize) {
+    fn connection_factory_failed(&self, pool: PoolId) {
         if self.output_required() {
-            self.output(&format!("[{:02}] connection factory failed", pool_index));
+            self.output(&format!("[{}] connection factory failed", pool));
         }
     }
 
-    fn reached_lock(&self, pool_index: usize) {
-        self.contention.fetch_add(1, Ordering::SeqCst);
-        if self.output_required() {
-            self.output(&format!(
-                "[{:02}] contention +1: {}",
-                pool_index,
-                self.contention()
-            ));
-        }
-    }
+    fn internal_message_received(&self, _latency: Duration, _pool: PoolId) {}
 
-    fn passed_lock(&self, _wait_time: Duration, pool_index: usize) {
-        self.contention.fetch_sub(1, Ordering::SeqCst);
-        if self.output_required() {
-            self.output(&format!(
-                "[{:02}] contention -1: {}",
-                pool_index,
-                self.contention()
-            ));
-        }
-    }
+    fn checkout_message_received(&self, _latency: Duration, _pool: PoolId) {}
 
-    fn lock_released(&self, _exclusive_lock_time: Duration, _pool_index: usize) {}
+    fn relevant_message_processed(&self, _processing_time: Duration, _pool: PoolId) {}
 }

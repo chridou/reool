@@ -12,23 +12,26 @@ use crate::Poolable;
 ///
 /// Pooled connection implements `redis::async::ConnectionLike`
 /// to easily integrate with code that already uses `redis-rs`.
-pub struct RedisConnection {
+pub struct PoolConnection<T: Poolable = ConnectionFlavour> {
     /// Track whether the connection is still in a valid state.
     ///
     /// If a future gets cancelled it is likely that the connection
     /// is not in a valid state anymore. For stateless connections this
     /// field is useless.
     pub(crate) connection_state_ok: bool,
-    pub(crate) managed: Managed<ConnectionFlavour>,
+    pub(crate) managed: Managed<T>,
 }
 
-impl RedisConnection {
+impl<T: Poolable> PoolConnection<T> {
     pub fn connected_to(&self) -> &str {
         self.managed.connected_to()
     }
 }
 
-impl ConnectionLike for RedisConnection {
+impl<T: Poolable> ConnectionLike for PoolConnection<T>
+where
+    T: ConnectionLike,
+{
     fn req_packed_command(mut self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
         if let Some(conn) = self.managed.value.take() {
             self.connection_state_ok = false;
@@ -76,7 +79,7 @@ impl ConnectionLike for RedisConnection {
     }
 }
 
-impl Drop for RedisConnection {
+impl<T: Poolable> Drop for PoolConnection<T> {
     fn drop(&mut self) {
         if !self.connection_state_ok {
             self.managed.value.take();
@@ -124,6 +127,53 @@ impl ConnectionLike for ConnectionFlavour {
     fn get_db(&self) -> i64 {
         match self {
             ConnectionFlavour::RedisRs(ref conn, _) => conn.get_db(),
+        }
+    }
+}
+
+impl<T: Poolable> ConnectionLike for Managed<T>
+where
+    T: ConnectionLike,
+{
+    fn req_packed_command(mut self, cmd: Vec<u8>) -> RedisFuture<(Self, Value)> {
+        if let Some(conn) = self.value.take() {
+            Box::new(conn.req_packed_command(cmd).map(|(conn, value)| {
+                self.value = Some(conn);
+                (self, value)
+            }))
+        } else {
+            Box::new(future::err(
+                (ErrorKind::IoError, "no connection - this is a bug of reool").into(),
+            ))
+        }
+    }
+
+    fn req_packed_commands(
+        mut self,
+        cmd: Vec<u8>,
+        offset: usize,
+        count: usize,
+    ) -> RedisFuture<(Self, Vec<Value>)> {
+        if let Some(conn) = self.value.take() {
+            Box::new(
+                conn.req_packed_commands(cmd, offset, count)
+                    .map(|(conn, values)| {
+                        self.value = Some(conn);
+                        (self, values)
+                    }),
+            )
+        } else {
+            Box::new(future::err(
+                (ErrorKind::IoError, "no connection - this is a bug of reool").into(),
+            ))
+        }
+    }
+
+    fn get_db(&self) -> i64 {
+        if let Some(conn) = self.value.as_ref() {
+            conn.get_db()
+        } else {
+            -1
         }
     }
 }
