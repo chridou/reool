@@ -24,8 +24,9 @@ use reool::connection_factory::*;
 use reool::CheckoutErrorKind;
 use reool::*;
 
-/// Do many ping commands where many will fail because either
-/// the checkout ties out or the checkout queue is full
+/// Simply use an artificial connection factory
+/// that does not create real connections and hammer the
+/// pool with checkout requests.
 fn main() {
     env::set_var("RUST_LOG", "info");
     let _ = pretty_env_logger::try_init();
