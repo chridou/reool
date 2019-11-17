@@ -74,9 +74,7 @@ fn main() {
         }
         let checked_out = collect_result_metrics
             .collect(
-                pool
-                    //.check_out(Duration::from_millis(30))
-                    .check_out(PoolDefault),
+                pool.check_out(Duration::from_millis(30)), //.check_out(PoolDefault),
             )
             .map_err(|_err| ())
             .and_then(move |_c| {
@@ -149,18 +147,18 @@ fn report_stats(driver: &TelemetryDriver) {
     let rate = internal_messages.find("per_second/one_minute/rate");
     let quantiles = internal_messages.find("latency_us/quantiles");
     info!(
-        "internal messages p50/p99/p999 - rate : {}/{}/{} - {}",
+        "internal messages p50/p99/p999: {}/{}/{} - {}/s",
         quantiles.find("p50").to_duration_microseconds(),
         quantiles.find("p99").to_duration_microseconds(),
         quantiles.find("p999").to_duration_microseconds(),
         rate,
     );
 
-    let external_messages = snapshot.find("external_messages");
+    let external_messages = snapshot.find("checkout_messages");
     let rate = external_messages.find("per_second/one_minute/rate");
     let quantiles = external_messages.find("latency_us/quantiles");
     info!(
-        "external messages p50/p99/p999 - rate : {}/{}/{} - {}",
+        "checkout messages p50/p99/p999: {}/{}/{} - {}/s",
         quantiles.find("p50").to_duration_microseconds(),
         quantiles.find("p99").to_duration_microseconds(),
         quantiles.find("p999").to_duration_microseconds(),

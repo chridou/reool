@@ -124,7 +124,7 @@ pub enum Metric {
     PoolCountChanged,
 
     InternalMessageReceived,
-    ExternalMessageReceived,
+    CheckoutMessageReceived,
     ProcessedRelevantMessage,
 }
 
@@ -257,7 +257,7 @@ impl Instrumentation for MetrixInstrumentation {
 
     fn checkout_message_received(&self, latency: Duration, _pool: PoolId) {
         self.transmitter
-            .observed_one_duration_now(Metric::ExternalMessageReceived, latency);
+            .observed_one_duration_now(Metric::CheckoutMessageReceived, latency);
     }
 
     fn relevant_message_processed(&self, processing_time: Duration, _pool: PoolId) {
@@ -406,7 +406,7 @@ fn create<A: AggregatesProcessors>(
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ExternalMessageReceived, "external_messages");
+    let mut panel = Panel::with_name(Metric::CheckoutMessageReceived, "checkout_messages");
     panel.set_value_scaling(ValueScaling::NanosToMicros);
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("latency_us");
