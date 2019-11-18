@@ -1,7 +1,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures::{
     future::{self, Future},
@@ -23,15 +23,17 @@ use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::*;
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::PoolState;
-use crate::{CheckoutMode, Immediately, Ping, Poolable, Wait};
+use crate::{CheckoutMode, Ping, Poolable};
 
 use inner_pool::{CheckoutPackage, InnerPool, PoolMessage};
 
+mod checkout_constraint;
 mod extended_connection_factory;
 mod inner_pool;
 pub(crate) mod instrumentation;
 mod managed;
 
+pub(crate) use self::checkout_constraint::CheckoutConstraint;
 use self::extended_connection_factory::ExtendedConnectionFactory;
 use self::instrumentation::PoolInstrumentation;
 pub(crate) use self::managed::Managed;
@@ -49,7 +51,7 @@ pub(crate) struct Config {
 /// A wrapper for a pool message so that we can also send a
 /// stop message over the stream without the need of the inner pool
 /// to know about this message
-pub(crate) enum MessageWrapper<T: Poolable> {
+pub(crate) enum PoolMessageEnvelope<T: Poolable> {
     /// Pass the content of this to the inner pool
     PoolMessage(PoolMessage<T>),
     /// Do not pass anything to the inner pool but stop
@@ -62,11 +64,11 @@ impl<T: Poolable> PoolMessage<T> {
     /// return the original message
     fn send_on_internal_channel(
         self,
-        channel: &mut mpsc::UnboundedSender<MessageWrapper<T>>,
+        channel: &mut mpsc::UnboundedSender<PoolMessageEnvelope<T>>,
     ) -> Result<(), PoolMessage<T>> {
-        let wrapped = MessageWrapper::PoolMessage(self);
+        let wrapped = PoolMessageEnvelope::PoolMessage(self);
         channel.try_send(wrapped).map_err(|err| {
-            if let MessageWrapper::PoolMessage(msg) = err.into_inner() {
+            if let PoolMessageEnvelope::PoolMessage(msg) = err.into_inner() {
                 msg
             } else {
                 panic!("Did not send a PoolMessage - THIS IS A BUG");
@@ -133,7 +135,7 @@ where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
     {
         // We want to send inner messages in an unbounded manner.
-        let (mut internal_tx, internal_rx) = mpsc::unbounded_channel::<MessageWrapper<T>>();
+        let (mut internal_tx, internal_rx) = mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
         // Checkout messages should be capped so that we do not get flooded.
         let (checkout_sink, checkout_rx) = mpsc::channel(config.checkout_queue_size);
 
@@ -147,7 +149,7 @@ where
                 .fuse()
                 .select(
                     checkout_rx
-                        .map(MessageWrapper::PoolMessage)
+                        .map(PoolMessageEnvelope::PoolMessage)
                         .map_err(RecvError::Bounded)
                         .fuse(),
                 )
@@ -156,11 +158,11 @@ where
 
             joined
                 .for_each(move |message| match message {
-                    MessageWrapper::PoolMessage(message) => {
+                    PoolMessageEnvelope::PoolMessage(message) => {
                         inner_pool.process(message);
                         Ok(())
                     }
-                    MessageWrapper::Stop => {
+                    PoolMessageEnvelope::Stop => {
                         trace!("Stopping message stream");
                         Err(())
                     }
@@ -212,8 +214,9 @@ where
                 error!("timer error in cleanup ticker: {}", err);
             })
             .for_each(move |_| {
-                let wrapped =
-                    MessageWrapper::PoolMessage(PoolMessage::CleanupReservations(Instant::now()));
+                let wrapped = PoolMessageEnvelope::PoolMessage(PoolMessage::CleanupReservations(
+                    Instant::now(),
+                ));
                 if let Err(_err) = internal_tx.try_send(wrapped) {
                     trace!("pool gone - cleanup ticker stopping");
                     Err(())
@@ -240,45 +243,6 @@ where
         }
     }
 
-    #[cfg(test)]
-    pub fn custom_instrumentation<C, I>(
-        config: Config,
-        connection_factory: C,
-        executor: ExecutorFlavour,
-        instrumentation: I,
-    ) -> Self
-    where
-        I: crate::instrumentation::Instrumentation + Send + Sync + 'static,
-        C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
-    {
-        Self::new(
-            config,
-            connection_factory,
-            executor,
-            PoolInstrumentation::new(
-                InstrumentationFlavour::Custom(Arc::new(instrumentation)),
-                PoolId::new(0),
-            ),
-        )
-    }
-
-    #[cfg(test)]
-    pub fn no_instrumentation<C>(
-        config: Config,
-        connection_factory: C,
-        executor: ExecutorFlavour,
-    ) -> Self
-    where
-        C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
-    {
-        Self::new(
-            config,
-            connection_factory,
-            executor,
-            PoolInstrumentation::new(InstrumentationFlavour::NoInstrumentation, PoolId::new(0)),
-        )
-    }
-
     /// Try to send a message to the inner pool to check out a connection.
     /// Also create the future that can be returned to the client.
     ///
@@ -288,8 +252,10 @@ where
         &self,
         mode: M,
     ) -> Result<CheckoutManaged<T>, FailedCheckout<T>> {
-        let constraint =
-            checkout_mode_to_checkout_constraint(mode.into(), self.default_checkout_mode);
+        let constraint = CheckoutConstraint::from_checkout_mode_and_pool_default(
+            mode,
+            self.default_checkout_mode,
+        );
 
         if constraint.is_deadline_elapsed() {
             return Ok(CheckoutManaged::new(future::err(
@@ -383,6 +349,74 @@ where
     pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
         self.extended_connection_factory.ping(timeout)
     }
+
+    #[cfg(test)]
+    pub fn custom_instrumentation<C, I>(
+        config: Config,
+        connection_factory: C,
+        executor: ExecutorFlavour,
+        instrumentation: I,
+    ) -> Self
+    where
+        I: crate::instrumentation::Instrumentation + Send + Sync + 'static,
+        C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
+    {
+        Self::new(
+            config,
+            connection_factory,
+            executor,
+            PoolInstrumentation::new(
+                InstrumentationFlavour::Custom(Arc::new(instrumentation)),
+                PoolId::new(0),
+            ),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn no_instrumentation<C>(
+        config: Config,
+        connection_factory: C,
+        executor: ExecutorFlavour,
+    ) -> Self
+    where
+        C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
+    {
+        Self::new(
+            config,
+            connection_factory,
+            executor,
+            PoolInstrumentation::new(InstrumentationFlavour::NoInstrumentation, PoolId::new(0)),
+        )
+    }
+}
+
+impl<T: Poolable> Clone for PoolInternal<T> {
+    fn clone(&self) -> Self {
+        Self {
+            extended_connection_factory: Arc::clone(&self.extended_connection_factory),
+            default_checkout_mode: self.default_checkout_mode,
+            checkout_sink: self.checkout_sink.clone(),
+        }
+    }
+}
+
+impl<T: Poolable> Drop for PoolInternal<T> {
+    fn drop(&mut self) {
+        trace!("Dropping PoolInternal {}", self.connected_to());
+        let mut sender = self.extended_connection_factory.send_back_cloned();
+        // Stop the internal stream manually and forcefully. Otherwise it
+        // wll stay alive as long as a client does not return a connection.
+        let _ = sender.try_send(PoolMessageEnvelope::Stop);
+        self.extended_connection_factory
+            .instrumentation
+            .pool_removed();
+    }
+}
+
+impl<T: Poolable> fmt::Debug for PoolInternal<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PoolInternal")
+    }
 }
 
 /// An attempt to send a checkout to the inner pool failed.
@@ -409,35 +443,6 @@ impl<T: Poolable> FailedCheckout<T> {
     /// over the stream.
     pub fn explode(self) -> (CheckoutPackage<T>, CheckoutManaged<T>) {
         (self.package, self.checkout)
-    }
-}
-
-impl<T: Poolable> Clone for PoolInternal<T> {
-    fn clone(&self) -> Self {
-        Self {
-            extended_connection_factory: Arc::clone(&self.extended_connection_factory),
-            default_checkout_mode: self.default_checkout_mode,
-            checkout_sink: self.checkout_sink.clone(),
-        }
-    }
-}
-
-impl<T: Poolable> Drop for PoolInternal<T> {
-    fn drop(&mut self) {
-        trace!("Dropping PoolInternal {}", self.connected_to());
-        let mut sender = self.extended_connection_factory.send_back_cloned();
-        // Stop the internal stream manually and forcefully. Otherwise it
-        // wll stay alive as long as a client does not return a connection.
-        let _ = sender.try_send(MessageWrapper::Stop);
-        self.extended_connection_factory
-            .instrumentation
-            .pool_removed();
-    }
-}
-
-impl<T: Poolable> fmt::Debug for PoolInternal<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PoolInternal")
     }
 }
 
@@ -486,73 +491,6 @@ impl StdError for PoolIsGoneError {
 
     fn cause(&self) -> Option<&dyn StdError> {
         None
-    }
-}
-
-// ==== CHECKOUT CONSTRAINT ====
-
-/// The checkout options a pool really has
-#[derive(Debug, Copy, Clone)]
-pub enum CheckoutConstraint {
-    Immediately,
-    Until(Instant),
-    Wait,
-}
-
-impl From<Immediately> for CheckoutConstraint {
-    fn from(_: Immediately) -> Self {
-        CheckoutConstraint::Immediately
-    }
-}
-impl From<Wait> for CheckoutConstraint {
-    fn from(_: Wait) -> Self {
-        CheckoutConstraint::Wait
-    }
-}
-
-impl From<Duration> for CheckoutConstraint {
-    fn from(d: Duration) -> Self {
-        let timeout = Instant::now() + d;
-        timeout.into()
-    }
-}
-
-impl From<Instant> for CheckoutConstraint {
-    fn from(until: Instant) -> Self {
-        CheckoutConstraint::Until(until)
-    }
-}
-
-impl CheckoutConstraint {
-    pub fn is_deadline_elapsed(self) -> bool {
-        match self {
-            CheckoutConstraint::Until(deadline) => deadline < Instant::now(),
-            _ => false,
-        }
-    }
-
-    pub fn deadline_and_reservation_allowed(self) -> (Option<Instant>, bool) {
-        match self {
-            CheckoutConstraint::Until(deadline) => (Some(deadline), true),
-            CheckoutConstraint::Immediately => (None, false),
-            CheckoutConstraint::Wait => (None, true),
-        }
-    }
-}
-
-fn checkout_mode_to_checkout_constraint(
-    m: CheckoutMode,
-    default: DefaultPoolCheckoutMode,
-) -> CheckoutConstraint {
-    match m {
-        CheckoutMode::Immediately => CheckoutConstraint::Immediately,
-        CheckoutMode::Wait => CheckoutConstraint::Wait,
-        CheckoutMode::Until(d) => CheckoutConstraint::Until(d),
-        CheckoutMode::PoolDefault => match default {
-            DefaultPoolCheckoutMode::Immediately => CheckoutConstraint::Immediately,
-            DefaultPoolCheckoutMode::Wait => CheckoutConstraint::Wait,
-            DefaultPoolCheckoutMode::WaitAtMost(d) => CheckoutConstraint::Until(Instant::now() + d),
-        },
     }
 }
 

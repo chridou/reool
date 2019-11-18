@@ -14,7 +14,7 @@ use crate::{Ping, Poolable};
 use super::inner_pool::PoolMessage;
 
 use super::instrumentation::PoolInstrumentation;
-use super::{Managed, MessageWrapper};
+use super::{Managed, PoolMessageEnvelope};
 
 /// A connection factory that uses a retry logic when creating connections. As long
 /// as the pool is there, it will retry to create a connection.
@@ -25,7 +25,7 @@ use super::{Managed, MessageWrapper};
 /// after a connection was created or not created.
 pub(crate) struct ExtendedConnectionFactory<T: Poolable> {
     inner_factory: Arc<dyn ConnectionFactory<Connection = T> + Send + Sync + 'static>,
-    send_back: mpsc::UnboundedSender<MessageWrapper<T>>,
+    send_back: mpsc::UnboundedSender<PoolMessageEnvelope<T>>,
     pub instrumentation: PoolInstrumentation,
     back_off_strategy: BackoffStrategy,
 }
@@ -33,7 +33,7 @@ pub(crate) struct ExtendedConnectionFactory<T: Poolable> {
 impl<T: Poolable> ExtendedConnectionFactory<T> {
     pub fn new(
         inner_factory: Arc<dyn ConnectionFactory<Connection = T> + Send + Sync + 'static>,
-        send_back: mpsc::UnboundedSender<MessageWrapper<T>>,
+        send_back: mpsc::UnboundedSender<PoolMessageEnvelope<T>>,
         instrumentation: PoolInstrumentation,
         back_off_strategy: BackoffStrategy,
     ) -> Self {
@@ -46,7 +46,7 @@ impl<T: Poolable> ExtendedConnectionFactory<T> {
     }
 
     /// Returns a cloned version of the sender to the internal channel
-    pub fn send_back_cloned(&self) -> mpsc::UnboundedSender<MessageWrapper<T>> {
+    pub fn send_back_cloned(&self) -> mpsc::UnboundedSender<PoolMessageEnvelope<T>> {
         self.send_back.clone()
     }
 
