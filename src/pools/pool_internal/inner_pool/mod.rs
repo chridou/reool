@@ -28,7 +28,7 @@ pub(crate) enum PoolMessage<T: Poolable> {
         created_at: Instant,
         /// Data containing all data and constraints
         /// needed to do a proper checkout
-        package: CheckoutPackage<T>,
+        payload: CheckoutPayload<T>,
     },
     CleanupReservations(Instant),
     CheckAlive(Instant),
@@ -47,7 +47,7 @@ impl<T: Poolable> PoolMessage<T> {
 
 /// Data containing all data and constraints
 /// needed to do a proper checkout
-pub(crate) struct CheckoutPackage<T: Poolable> {
+pub(crate) struct CheckoutPayload<T: Poolable> {
     /// A sender which can be used to complete a checkout with a connection
     pub sender: oneshot::Sender<Result<Managed<T>, CheckoutError>>,
     /// The `Instant` when the request for a connection was received
@@ -101,8 +101,8 @@ where
                 self.instrumentation
                     .relevant_message_processed(started_at.elapsed());
             }
-            PoolMessage::CheckOut { package, .. } => {
-                self.check_out(package);
+            PoolMessage::CheckOut { payload, .. } => {
+                self.check_out(payload);
                 self.instrumentation
                     .relevant_message_processed(started_at.elapsed());
             }
@@ -179,8 +179,8 @@ where
         }
     }
 
-    fn check_out(&mut self, package: CheckoutPackage<T>) {
-        if package.sender.is_closed() {
+    fn check_out(&mut self, payload: CheckoutPayload<T>) {
+        if payload.sender.is_closed() {
             return;
         }
 
@@ -188,23 +188,23 @@ where
             trace!("check out - checking out idle connection");
             managed.checked_out_at = Some(Instant::now());
 
-            if let Err(Ok(not_send)) = package.sender.send(Ok(managed)) {
+            if let Err(Ok(not_send)) = payload.sender.send(Ok(managed)) {
                 // The sender is already closed. Put the message back to
                 // the idle queue.
                 self.put_idle(not_send);
             } else {
                 self.instrumentation
-                    .checked_out_connection(idle_since, package.checkout_requested_at.elapsed());
+                    .checked_out_connection(idle_since, payload.checkout_requested_at.elapsed());
                 self.instrumentation.in_flight_inc();
             }
         } else {
             trace!("check out - no idle connection");
 
-            if package.reservation_allowed {
-                self.create_reservation(package.sender, package.checkout_requested_at)
+            if payload.reservation_allowed {
+                self.create_reservation(payload.sender, payload.checkout_requested_at)
             } else {
                 // There was no connection to delivery immediately...
-                let _ = package
+                let _ = payload
                     .sender
                     .send(Err(CheckoutError::new(CheckoutErrorKind::NoConnection)));
             }

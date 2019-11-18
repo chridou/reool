@@ -1,4 +1,3 @@
-use std::error::Error as StdError;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,7 +24,7 @@ use crate::PoolState;
 use crate::{Ping, Poolable};
 
 use super::CheckoutConstraint;
-use inner_pool::{CheckoutPackage, InnerPool, PoolMessage};
+use inner_pool::{CheckoutPayload, InnerPool, PoolMessage};
 
 mod extended_connection_factory;
 mod inner_pool;
@@ -54,6 +53,11 @@ pub(crate) enum PoolMessageEnvelope<T: Poolable> {
     /// Do not pass anything to the inner pool but stop
     /// the stream
     Stop,
+}
+
+pub(crate) struct CheckoutRequest<T: Poolable> {
+    pub created_at: Instant,
+    pub payload: CheckoutPayload<T>,
 }
 
 impl<T: Poolable> PoolMessage<T> {
@@ -106,7 +110,7 @@ impl Default for Config {
 
 pub(crate) struct PoolInternal<T: Poolable> {
     extended_connection_factory: Arc<ExtendedConnectionFactory<T>>,
-    checkout_sink: mpsc::Sender<PoolMessage<T>>,
+    checkout_sink: mpsc::Sender<CheckoutRequest<T>>,
 }
 
 /// We use an bounded and unbounded channel and both have
@@ -131,27 +135,33 @@ where
     {
         // We want to send inner messages in an unbounded manner.
         let (mut internal_tx, internal_rx) = mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
-        // Checkout messages should be capped so that we do not get flooded.
-        let (checkout_sink, checkout_rx) = mpsc::channel(config.checkout_queue_size);
+        // Checkout messages should be capped so that we do not get flodded.
+        let (checkout_sink, checkout_rx) =
+            mpsc::channel::<CheckoutRequest<T>>(config.checkout_queue_size);
 
         // A `Future` that joins both streams and has the
         // inner pool as a consumer for messages.
         let inner_pool_fut = {
             let mut inner_pool = InnerPool::new(&config, instrumentation.clone());
 
-            let joined = internal_rx
-                .map_err(RecvError::Unbounded)
-                .fuse()
-                .select(
-                    checkout_rx
-                        .map(PoolMessageEnvelope::PoolMessage)
-                        .map_err(RecvError::Bounded)
-                        .fuse(),
-                )
+            let checkout_stream = checkout_rx
+                .map(|rq| {
+                    PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
+                        created_at: rq.created_at,
+                        payload: rq.payload,
+                    })
+                })
+                .map_err(RecvError::Bounded)
+                .fuse();
+
+            let internal_stream = internal_rx.map_err(RecvError::Unbounded).fuse();
+
+            let merged_stream = internal_stream
+                .select(checkout_stream)
                 .fuse()
                 .map_err(|_err| ());
 
-            joined
+            merged_stream
                 .for_each(move |message| match message {
                     PoolMessageEnvelope::PoolMessage(message) => {
                         inner_pool.process(message);
@@ -175,6 +185,7 @@ where
         let wrapped_connection_factory = Arc::new(connection_factory)
             as Arc<dyn ConnectionFactory<Connection = T> + Send + Sync + 'static>;
 
+        // Create the initial connections
         (0..config.desired_pool_size).for_each(|_| {
             // One for each connection
             let extended_connection_factory = ExtendedConnectionFactory::new(
@@ -286,28 +297,28 @@ where
         // We need a future to return to the client and a `CheckoutPackage`
         // to send to the inner pool to complete the checkout
         let checkout = CheckoutManaged::new(rx);
-        let package = CheckoutPackage {
+        let payload = CheckoutPayload {
             checkout_requested_at: Instant::now(),
             sender: tx,
             reservation_allowed,
         };
 
-        self.check_out_package(package, checkout)
+        self.check_out_payload(payload, checkout)
     }
 
     // Takes a checkout future and a `CheckoutPackage`.
     // If the package can be sent to the inner pool the future will be returned immediately.
     // Otherwise the future will be returned alongside the package to use the parts for
     // a retry.
-    pub(crate) fn check_out_package(
+    pub(crate) fn check_out_payload(
         &self,
-        package: CheckoutPackage<T>,
+        payload: CheckoutPayload<T>,
         checkout: CheckoutManaged<T>,
     ) -> Result<CheckoutManaged<T>, FailedCheckout<T>> {
         let mut checkout_sink = self.checkout_sink.clone();
-        if let Err(err) = checkout_sink.try_send(PoolMessage::CheckOut {
+        if let Err(err) = checkout_sink.try_send(CheckoutRequest {
             created_at: Instant::now(),
-            package,
+            payload,
         }) {
             let error_kind = if err.is_full() {
                 CheckoutErrorKind::CheckoutLimitReached
@@ -315,14 +326,9 @@ where
                 CheckoutErrorKind::NoPool
             };
 
-            let msg = err.into_inner();
+            let CheckoutRequest { payload, .. } = err.into_inner();
 
-            match msg {
-                PoolMessage::CheckOut { package, .. } => {
-                    return Err(FailedCheckout::new(package, checkout, error_kind))
-                }
-                _ => unreachable!(),
-            }
+            return Err(FailedCheckout::new(payload, checkout, error_kind));
         }
 
         Ok(checkout)
@@ -410,28 +416,28 @@ impl<T: Poolable> fmt::Debug for PoolInternal<T> {
 
 /// An attempt to send a checkout to the inner pool failed.
 pub(crate) struct FailedCheckout<T: Poolable> {
-    package: CheckoutPackage<T>,
+    payload: CheckoutPayload<T>,
     pub error_kind: CheckoutErrorKind,
     checkout: CheckoutManaged<T>,
 }
 
 impl<T: Poolable> FailedCheckout<T> {
     pub fn new(
-        package: CheckoutPackage<T>,
+        payload: CheckoutPayload<T>,
         checkout: CheckoutManaged<T>,
         error_kind: CheckoutErrorKind,
     ) -> Self {
         Self {
-            package,
+            payload,
             error_kind,
             checkout,
         }
     }
 
-    /// Give us the future for the client and the package we can send to the inner pool
+    /// Give us the future for the client and the payload we can send to the inner pool
     /// over the stream.
-    pub fn explode(self) -> (CheckoutPackage<T>, CheckoutManaged<T>) {
-        (self.package, self.checkout)
+    pub fn explode(self) -> (CheckoutPayload<T>, CheckoutManaged<T>) {
+        (self.payload, self.checkout)
     }
 }
 
@@ -461,25 +467,6 @@ impl<T: Poolable> Future for CheckoutManaged<T> {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.inner.poll()
-    }
-}
-
-#[derive(Debug)]
-struct PoolIsGoneError;
-
-impl fmt::Display for PoolIsGoneError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(self.description())
-    }
-}
-
-impl StdError for PoolIsGoneError {
-    fn description(&self) -> &str {
-        "the pool was already gone"
-    }
-
-    fn cause(&self) -> Option<&dyn StdError> {
-        None
     }
 }
 

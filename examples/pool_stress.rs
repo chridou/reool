@@ -1,12 +1,15 @@
 use std::env;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
 };
 use std::thread;
 use std::time::{Duration, Instant};
 
-use futures::future::{self, Future};
+use futures::{
+    future::{self, Future},
+    stream::{self, Stream},
+};
 use log::info;
 use metrix::cockpit::Cockpit;
 use metrix::instruments::*;
@@ -31,76 +34,103 @@ fn main() {
     env::set_var("RUST_LOG", "info");
     let _ = pretty_env_logger::try_init();
 
-    let num_conns = 100;
-
     let mut driver = DriverBuilder::default().set_driver_metrics(false).build();
 
-    let mut runtime = RuntimeBuilder::new().core_threads(2).build().unwrap();
+    let mut runtime = RuntimeBuilder::new().core_threads(1).build().unwrap();
 
     let pool = RedisPool::builder()
-        .connect_to_nodes(vec!["C1".to_string()])
+        //.connect_to_nodes(vec!["C1".to_string()])
         //.connect_to_nodes(vec!["C1".to_string(), "C2".to_string()])
-        .desired_pool_size(num_conns)
+        .connect_to_nodes(vec![
+            "C1".to_string(),
+            "C2".to_string(),
+            "C3".to_string(),
+            "C4".to_string(),
+        ])
+        .desired_pool_size(50)
         .reservation_limit(100)
-        .pool_multiplier(2)
+        .pool_multiplier(1)
         .checkout_queue_size(100)
-        .retry_on_checkout_limit(false)
+        .retry_on_checkout_limit(true)
         .task_executor(runtime.executor())
+        .default_checkout_mode(Duration::from_millis(30))
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish(|conn| Ok(MyConnectionFactory(Arc::new(conn), AtomicUsize::new(0))))
         .unwrap();
 
     let collect_result_metrics = create_result_metrics(&mut driver);
 
+    let running = Arc::new(AtomicBool::new(true));
     let _ = thread::spawn({
+        let driver = driver.clone();
+        let running = Arc::clone(&running);
         move || {
             thread::sleep(Duration::from_millis(50));
 
-            loop {
+            while running.load(Ordering::Relaxed) {
                 report_stats(&driver);
                 thread::sleep(Duration::from_secs(5));
             }
         }
     });
 
-    info!("Start to hammer with checkouts");
+    let num_clients = 1_000;
+    //let delay_dur: Option<Duration> = None;
+    let delay_dur: Option<Duration> = Some(Duration::from_millis(15));
+    //let checkout_mode = Wait;
+    //let checkout_mode = Immediately;
+    let checkout_mode = PoolDefault;
+    //let checkout_mode = Duration::from_millis(1);
 
-    let num_checkouts = 10_000;
-
-    let delay_dur: Option<Duration> = None;
-    //let delay_dur: Option<Duration> = Some(Duration::from_millis(10));
-
-    (0..num_checkouts).for_each(|_| {
-        let checked_out = collect_result_metrics
-            .collect(
-                //pool.check_out(Wait),
-                pool.check_out(Duration::from_millis(50)),
-            )
-            .map_err(|_err| ())
-            .and_then(move |_c| {
-                if let Some(delay) = delay_dur {
-                    Box::new(Delay::new(Instant::now() + delay))
-                } else {
-                    Box::new(future::ok(())) as Box<dyn Future<Item = _, Error = _> + Send>
-                }
-                .map(move |_c| ())
-                .map_err(|_| ())
+    let clients = future::lazy({
+        let running = Arc::clone(&running);
+        let pool = pool.clone();
+        let collect_result_metrics = collect_result_metrics.clone();
+        move || {
+            (0..num_clients).for_each(|_n| {
+                let running = Arc::clone(&running);
+                let pool = pool.clone();
+                let collect_result_metrics = collect_result_metrics.clone();
+                let f = stream::repeat(()).for_each(move |_| {
+                    if !running.load(Ordering::Relaxed) {
+                        Box::new(future::err(()))
+                    } else {
+                        let f = collect_result_metrics
+                            .collect(pool.check_out(checkout_mode))
+                            .map_err(|_err| ())
+                            .and_then(move |_c| {
+                                if let Some(delay) = delay_dur {
+                                    Box::new(Delay::new(Instant::now() + delay))
+                                } else {
+                                    Box::new(future::ok(()))
+                                        as Box<dyn Future<Item = _, Error = _> + Send>
+                                }
+                                .map(move |_c| ())
+                                .or_else(|_| Ok(()))
+                            });
+                        Box::new(f) as Box<dyn Future<Item = _, Error = _> + Send>
+                    }
+                });
+                tokio::spawn(f);
             });
-        runtime.spawn(checked_out);
+            Ok(())
+        }
     });
 
-    info!("created {} checkouts", num_checkouts);
+    runtime.spawn(clients);
 
-    while pool.state().reservations > 0 {
-        thread::yield_now();
-    }
-
-    thread::sleep(Duration::from_secs(30));
-    info!("final stats:\n{:#?}", pool.state());
-
+    thread::sleep(Duration::from_secs(60));
+    info!("Finished");
+    let state = pool.state();
     drop(pool);
     info!("pool dropped");
+    running.store(false, Ordering::Relaxed);
     runtime.shutdown_on_idle().wait().unwrap();
+    thread::sleep(Duration::from_secs(2));
+    info!("final state:\n{:#?}", state);
+    report_stats(&driver);
+    info!("=== FINISHED ===");
+    thread::sleep(Duration::from_secs(600));
 }
 
 struct MyConn(usize, Arc<String>);
@@ -129,8 +159,9 @@ impl ConnectionFactory for MyConnectionFactory {
 fn report_stats(driver: &TelemetryDriver) {
     let snapshot = driver.snapshot(false).unwrap();
 
-    let checkouts = snapshot.find("checked_out_connections/per_second/count");
-    info!("checkouts: {}", checkouts);
+    let checkouts_count = snapshot.find("checked_out_connections/per_second/count");
+    let checkouts_per_second = snapshot.find("checked_out_connections/per_second/one_minute/rate");
+    info!("checkouts: {}({}/s)", checkouts_count, checkouts_per_second);
 
     let reservations_bottom = snapshot.find("reservations/count_bottom");
     let reservations_peak = snapshot.find("reservations/count_peak");

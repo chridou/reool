@@ -132,9 +132,9 @@ impl<T: Poolable> Inner<T> {
             }
 
             let idx = position % self.pools.len();
-            let (checkout_package, original_checkout) = last_failed_checkout.explode();
+            let (checkout_payload, original_checkout) = last_failed_checkout.explode();
 
-            match self.pools[idx].check_out_package(checkout_package, original_checkout) {
+            match self.pools[idx].check_out_payload(checkout_payload, original_checkout) {
                 Ok(checkout) => return checkout,
                 Err(failed_checkout) => {
                     last_failed_checkout = failed_checkout;
