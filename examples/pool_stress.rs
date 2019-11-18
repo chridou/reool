@@ -49,11 +49,11 @@ fn main() {
         ])
         .desired_pool_size(50)
         .reservation_limit(100)
-        .pool_multiplier(1)
         .checkout_queue_size(100)
         .retry_on_checkout_limit(true)
-        .task_executor(runtime.executor())
+        .pool_multiplier(1)
         .default_checkout_mode(Duration::from_millis(30))
+        .task_executor(runtime.executor())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish(|conn| Ok(MyConnectionFactory(Arc::new(conn), AtomicUsize::new(0))))
         .unwrap();
