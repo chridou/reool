@@ -42,7 +42,7 @@ fn main() {
         //.connect_to_nodes(vec!["C1".to_string(), "C2".to_string()])
         .desired_pool_size(num_conns)
         .reservation_limit(100)
-        .pool_multiplier(1)
+        .pool_multiplier(10)
         .checkout_queue_size(100)
         .retry_on_checkout_limit(false)
         .task_executor(runtime.executor())
@@ -65,7 +65,7 @@ fn main() {
 
     info!("Start to hammer with checkouts");
 
-    let num_checkouts = 1_000;
+    let num_checkouts = 1_000_000;
 
     let delay_dur: Option<Duration> = None;
     //let delay_dur: Option<Duration> = Some(Duration::from_millis(10));
@@ -76,7 +76,8 @@ fn main() {
         }
         let checked_out = collect_result_metrics
             .collect(
-                pool.check_out(Wait), //.check_out(PoolDefault),
+                //pool.check_out(Wait),
+                pool.check_out(Duration::from_millis(50)),
             )
             .map_err(|_err| ())
             .and_then(move |_c| {
@@ -277,7 +278,6 @@ impl ResultCollector {
                         tx.observed_one_now(ResultMetric::TaskExecution)
                     }
                 };
-                tx.observed_one_now(ResultMetric::Checkout);
                 Err(err)
             }
         })
