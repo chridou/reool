@@ -57,7 +57,7 @@ impl<T: Poolable> SinglePool<T> {
             checkout_queue_size: config.checkout_queue_size,
         };
 
-        let connection_factory = if config.connect_to_nodes.len() != 1 {
+        let connection_factory = if config.connect_to_nodes.len() == 1 {
             create_connection_factory(config.connect_to_nodes.pop().unwrap())?
         } else {
             return Err(InitializationError::message_only(format!(

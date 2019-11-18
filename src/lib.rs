@@ -33,7 +33,7 @@ use futures::{
 
 use crate::config::Builder;
 use crate::config::DefaultPoolCheckoutMode;
-use crate::pools::{check_out_retry_on_queue_limit_reached, pool_internal::CheckoutManaged};
+use crate::pools::pool_internal::CheckoutManaged;
 
 pub mod config;
 pub mod instrumentation;
@@ -68,6 +68,12 @@ pub trait Poolable: Send + Sized + 'static {
 /// * There are simply no connections available
 /// * There is no connected node
 pub struct Checkout<T: Poolable = ConnectionFlavour>(CheckoutManaged<T>);
+
+impl<T: Poolable> Checkout<T> {
+    pub fn error<E: Into<CheckoutError>>(err: E) -> Self {
+        Checkout(CheckoutManaged::error(err))
+    }
+}
 
 impl<T: Poolable> Future for Checkout<T> {
     type Item = PoolConnection<T>;
@@ -203,6 +209,7 @@ impl<T: Poolable> Clone for RedisPoolFlavour<T> {
 pub struct RedisPool<T: Poolable = ConnectionFlavour> {
     flavour: RedisPoolFlavour<T>,
     default_checkout_mode: DefaultPoolCheckoutMode,
+    retry_on_checkout_limit: bool,
 }
 
 impl RedisPool {
@@ -216,6 +223,7 @@ impl<T: Poolable> RedisPool<T> {
         RedisPool {
             flavour: RedisPoolFlavour::Empty,
             default_checkout_mode: DefaultPoolCheckoutMode::Wait,
+            retry_on_checkout_limit: false,
         }
     }
 
@@ -234,10 +242,18 @@ impl<T: Poolable> RedisPool<T> {
         );
         match self.flavour {
             RedisPoolFlavour::Single(ref pool) => {
-                Checkout(check_out_retry_on_queue_limit_reached(pool, constraint))
+                Checkout(pools::check_out_maybe_retry_on_queue_limit_reached(
+                    pool,
+                    constraint,
+                    self.retry_on_checkout_limit,
+                ))
             }
             RedisPoolFlavour::PerNode(ref pool) => {
-                Checkout(check_out_retry_on_queue_limit_reached(pool, constraint))
+                Checkout(pools::check_out_maybe_retry_on_queue_limit_reached(
+                    pool,
+                    constraint,
+                    self.retry_on_checkout_limit,
+                ))
             }
             RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
                 CheckoutError::new(CheckoutErrorKind::NoPool),
@@ -287,6 +303,7 @@ impl<T: Poolable> Clone for RedisPool<T> {
         RedisPool {
             flavour: self.flavour.clone(),
             default_checkout_mode: self.default_checkout_mode,
+            retry_on_checkout_limit: self.retry_on_checkout_limit,
         }
     }
 }

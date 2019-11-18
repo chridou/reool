@@ -38,12 +38,13 @@ fn main() {
     let mut runtime = RuntimeBuilder::new().core_threads(2).build().unwrap();
 
     let pool = RedisPool::builder()
-        .connect_to_nodes(vec!["C1".to_string(), "C2".to_string()])
+        .connect_to_nodes(vec!["C1".to_string()])
+        //.connect_to_nodes(vec!["C1".to_string(), "C2".to_string()])
         .desired_pool_size(num_conns)
         .reservation_limit(100)
-        .default_checkout_mode(Duration::from_millis(30)) // No timeout
-        .pool_multiplier(2)
+        .pool_multiplier(1)
         .checkout_queue_size(100)
+        .retry_on_checkout_limit(false)
         .task_executor(runtime.executor())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish(|conn| Ok(MyConnectionFactory(Arc::new(conn), AtomicUsize::new(0))))
@@ -64,7 +65,7 @@ fn main() {
 
     info!("Start to hammer with checkouts");
 
-    let num_checkouts = 100_000;
+    let num_checkouts = 1_000;
 
     let delay_dur: Option<Duration> = None;
     //let delay_dur: Option<Duration> = Some(Duration::from_millis(10));
@@ -75,7 +76,7 @@ fn main() {
         }
         let checked_out = collect_result_metrics
             .collect(
-                pool.check_out(Duration::from_millis(30)), //.check_out(PoolDefault),
+                pool.check_out(Wait), //.check_out(PoolDefault),
             )
             .map_err(|_err| ())
             .and_then(move |_c| {

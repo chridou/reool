@@ -114,6 +114,15 @@ impl Builder {
         self
     }
 
+    /// Set to `true` if a retry on a checkout should be made if the queue was full.
+    /// Otherwise do not retry.
+    ///
+    /// The default is `true`.
+    pub fn retry_on_checkout_limit(mut self, v: bool) -> Self {
+        self.config.retry_on_checkout_limit = v;
+        self
+    }
+
     /// The executor to use for spawning tasks. If not set it is assumed
     /// that the pool is created on the default runtime.
     pub fn task_executor(mut self, executor: ::tokio::runtime::TaskExecutor) -> Self {
@@ -164,6 +173,7 @@ impl Builder {
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
     /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
+    /// * `RETRY_ON_CHECKOUT_LIMIT`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         self.config.update_from_environment(prefix)?;
         Ok(())
@@ -182,6 +192,7 @@ impl Builder {
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
     /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
+    /// * `RETRY_ON_CHECKOUT_LIMIT`: Omit if you do not want to update the value
     pub fn updated_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         self.config.update_from_environment(prefix)?;
         Ok(self)
@@ -228,6 +239,7 @@ impl Builder {
         let create_single_pool = config.connect_to_nodes.len() == 1 && config.pool_multiplier == 1;
 
         let default_checkout_mode = config.default_checkout_mode;
+        let retry_on_checkout_limit = config.retry_on_checkout_limit;
 
         let flavour = if create_single_pool {
             debug!("Create single pool for 1 node",);
@@ -254,6 +266,7 @@ impl Builder {
         Ok(RedisPool {
             flavour,
             default_checkout_mode,
+            retry_on_checkout_limit,
         })
     }
 

@@ -71,6 +71,11 @@ pub struct Config {
     ///
     /// The default is 100.
     pub checkout_queue_size: usize,
+    /// Set to `true` if a retry on a checkout should be made if the queue was full.
+    /// Otherwise do not retry.
+    ///
+    /// The default is `true`.
+    pub retry_on_checkout_limit: bool,
 }
 
 impl Config {
@@ -147,6 +152,15 @@ impl Config {
         self
     }
 
+    /// Set to `true` if a retry on a checkout should be made if the queue was full.
+    /// Otherwise do not retry.
+    ///
+    /// The default is `true`.
+    pub fn retry_on_checkout_limit(mut self, v: bool) -> Self {
+        self.retry_on_checkout_limit = v;
+        self
+    }
+
     /// When the pool is created this is a multiplier for the amount of sub
     /// pools to be created.
     ///
@@ -172,6 +186,7 @@ impl Config {
     /// * `CONNECT_TO`: `[String]`. Separated by `;`. Omit if you do not want to update the value
     /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
     /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
+    /// * `RETRY_ON_CHECKOUT_LIMIT`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -205,6 +220,10 @@ impl Config {
             self.checkout_queue_size = v;
         })?;
 
+        helpers::set_retry_on_checkout_limit(prefix, |v| {
+            self.retry_on_checkout_limit = v;
+        })?;
+
         Ok(())
     }
 
@@ -219,6 +238,7 @@ impl Config {
             .connect_to_nodes(self.connect_to_nodes.clone())
             .pool_multiplier(self.pool_multiplier)
             .checkout_queue_size(self.checkout_queue_size)
+            .retry_on_checkout_limit(self.retry_on_checkout_limit)
     }
 }
 
@@ -234,6 +254,7 @@ impl Default for Config {
             connect_to_nodes: Vec::new(),
             pool_multiplier: 1,
             checkout_queue_size: 100,
+            retry_on_checkout_limit: true,
         }
     }
 }

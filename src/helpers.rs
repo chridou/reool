@@ -86,6 +86,26 @@ where
     }
 }
 
+pub fn set_retry_on_checkout_limit<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+where
+    F: FnMut(bool) -> (),
+    T: Into<String>,
+{
+    let prefix = make_prefix(prefix);
+
+    let key = format!("{}_{}", prefix, "RETRY_ON_CHECKOUT_LIMIT");
+    match env::var(&key) {
+        Ok(s) => {
+            f(s.to_lowercase()
+                .parse()
+                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            Ok(())
+        }
+        Err(env::VarError::NotPresent) => Ok(()),
+        Err(err) => Err(InitializationError::new(key, Some(err))),
+    }
+}
+
 pub fn set_activation_order<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
     F: FnMut(ActivationOrder) -> (),
