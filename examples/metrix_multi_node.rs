@@ -30,7 +30,7 @@ fn main() {
         ])
         .desired_pool_size(10)
         .reservation_limit(1_000)
-        .default_checkout_mode(Immediately) // No timeout
+        .default_checkout_mode(Immediately)
         .task_executor(runtime.executor())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish_redis_rs()
