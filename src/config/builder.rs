@@ -227,6 +227,8 @@ impl Builder {
 
         let create_single_pool = config.connect_to_nodes.len() == 1 && config.pool_multiplier == 1;
 
+        let default_checkout_mode = config.default_checkout_mode;
+
         let flavour = if create_single_pool {
             debug!("Create single pool for 1 node",);
 
@@ -249,7 +251,10 @@ impl Builder {
             )?)
         };
 
-        Ok(RedisPool(flavour))
+        Ok(RedisPool {
+            flavour,
+            default_checkout_mode,
+        })
     }
 
     /// Build a new `RedisPool`
@@ -259,5 +264,5 @@ impl Builder {
 }
 
 fn create_no_pool<T: Poolable>(_instrumentation: InstrumentationFlavour) -> RedisPool<T> {
-    RedisPool(RedisPoolFlavour::Empty)
+    RedisPool::no_pool()
 }

@@ -11,7 +11,9 @@ use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::InstrumentationFlavour;
 use crate::pools::pool_internal::CheckoutManaged;
-use crate::{CheckoutMode, Ping, PoolState, Poolable};
+use crate::{Ping, PoolState, Poolable};
+
+use super::{CanCheckout, CheckoutConstraint};
 
 mod inner;
 
@@ -63,10 +65,6 @@ impl<T: Poolable> PoolPerNode<T> {
         })
     }
 
-    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> CheckoutManaged<T> {
-        self.inner.0.check_out(mode.into())
-    }
-
     pub fn connected_to(&self) -> &[String] {
         &(self.inner.1)
     }
@@ -77,6 +75,12 @@ impl<T: Poolable> PoolPerNode<T> {
 
     pub fn ping(&self, timeout: Instant) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
         self.inner.0.ping(timeout)
+    }
+}
+
+impl<T: Poolable> CanCheckout<T> for PoolPerNode<T> {
+    fn check_out<M: Into<CheckoutConstraint>>(&self, constraint: M) -> CheckoutManaged<T> {
+        self.inner.0.check_out(constraint.into())
     }
 }
 

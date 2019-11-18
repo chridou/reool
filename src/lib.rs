@@ -32,7 +32,8 @@ use futures::{
 };
 
 use crate::config::Builder;
-use crate::pools::pool_internal::CheckoutManaged;
+use crate::config::DefaultPoolCheckoutMode;
+use crate::pools::{check_out_retry_on_queue_limit_reached, pool_internal::CheckoutManaged};
 
 pub mod config;
 pub mod instrumentation;
@@ -199,7 +200,10 @@ impl<T: Poolable> Clone for RedisPoolFlavour<T> {
 ///
 /// When having more that one sub pool `Reool` will retry checkout attempts on different
 /// sub pools.
-pub struct RedisPool<T: Poolable = ConnectionFlavour>(RedisPoolFlavour<T>);
+pub struct RedisPool<T: Poolable = ConnectionFlavour> {
+    flavour: RedisPoolFlavour<T>,
+    default_checkout_mode: DefaultPoolCheckoutMode,
+}
 
 impl RedisPool {
     pub fn builder() -> Builder {
@@ -209,7 +213,10 @@ impl RedisPool {
 
 impl<T: Poolable> RedisPool<T> {
     pub fn no_pool() -> Self {
-        RedisPool(RedisPoolFlavour::Empty)
+        RedisPool {
+            flavour: RedisPoolFlavour::Empty,
+            default_checkout_mode: DefaultPoolCheckoutMode::Wait,
+        }
     }
 
     /// Checkout a new connection and if the request has to be enqueued
@@ -221,9 +228,17 @@ impl<T: Poolable> RedisPool<T> {
     /// Checkout a new connection and choose whether to wait for a connection or not
     /// as defined by the `CheckoutMode`.
     pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> Checkout<T> {
-        match self.0 {
-            RedisPoolFlavour::Single(ref pool) => Checkout(pool.check_out(mode)),
-            RedisPoolFlavour::PerNode(ref pool) => Checkout(pool.check_out(mode)),
+        let constraint = pools::CheckoutConstraint::from_checkout_mode_and_pool_default(
+            mode,
+            self.default_checkout_mode,
+        );
+        match self.flavour {
+            RedisPoolFlavour::Single(ref pool) => {
+                Checkout(check_out_retry_on_queue_limit_reached(pool, constraint))
+            }
+            RedisPoolFlavour::PerNode(ref pool) => {
+                Checkout(check_out_retry_on_queue_limit_reached(pool, constraint))
+            }
             RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
                 CheckoutError::new(CheckoutErrorKind::NoPool),
             ))),
@@ -231,7 +246,7 @@ impl<T: Poolable> RedisPool<T> {
     }
 
     pub fn connected_to(&self) -> Vec<String> {
-        match self.0 {
+        match self.flavour {
             RedisPoolFlavour::Single(ref pool) => vec![pool.connected_to().to_string()],
             RedisPoolFlavour::PerNode(ref pool) => pool.connected_to().to_vec(),
             RedisPoolFlavour::Empty => vec![],
@@ -239,7 +254,7 @@ impl<T: Poolable> RedisPool<T> {
     }
 
     pub fn state(&self) -> PoolState {
-        match self.0 {
+        match self.flavour {
             RedisPoolFlavour::Single(ref pool) => pool.state(),
             RedisPoolFlavour::PerNode(ref pool) => pool.state(),
             RedisPoolFlavour::Empty => PoolState::default(),
@@ -258,7 +273,7 @@ impl<T: Poolable> RedisPool<T> {
         timeout: TO,
     ) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
         let deadline = timeout.into().0;
-        match self.0 {
+        match self.flavour {
             RedisPoolFlavour::Single(ref pool) => Box::new(pool.ping(deadline).map(|p| vec![p]))
                 as Box<dyn Future<Item = _, Error = ()> + Send>,
             RedisPoolFlavour::PerNode(ref pool) => Box::new(pool.ping(deadline)),
@@ -269,7 +284,10 @@ impl<T: Poolable> RedisPool<T> {
 
 impl<T: Poolable> Clone for RedisPool<T> {
     fn clone(&self) -> Self {
-        RedisPool(self.0.clone())
+        RedisPool {
+            flavour: self.flavour.clone(),
+            default_checkout_mode: self.default_checkout_mode,
+        }
     }
 }
 

@@ -43,6 +43,16 @@ impl CheckoutConstraint {
         }
     }
 
+    /// Returns `true` if we can still wait for e.g. another attempt to dispatch
+    /// a message to the inner pool
+    pub fn can_wait_for_dispatch(&self) -> bool {
+        match self {
+            CheckoutConstraint::Until(deadline) => *deadline > Instant::now(),
+            CheckoutConstraint::Immediately => false,
+            CheckoutConstraint::Wait => true,
+        }
+    }
+
     pub fn deadline_and_reservation_allowed(self) -> (Option<Instant>, bool) {
         match self {
             CheckoutConstraint::Until(deadline) => (Some(deadline), true),

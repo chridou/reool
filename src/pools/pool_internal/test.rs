@@ -16,13 +16,14 @@ use crate::error::CheckoutErrorKind;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::StateCounters;
 use crate::pools::pool_internal::{Config, ConnectionFactory, PoolInternal};
+use crate::pools::CheckoutConstraint;
 use crate::*;
 
-fn check_out_fut<T: Poolable, M: Into<CheckoutMode>>(
+fn check_out_fut<T: Poolable, M: Into<CheckoutConstraint>>(
     pool: &PoolInternal<T>,
-    mode: M,
+    constraint: M,
 ) -> CheckoutManaged<T> {
-    match pool.check_out(mode) {
+    match pool.check_out(constraint) {
         Err(failure_package) => CheckoutManaged::error(failure_package.error_kind),
         Ok(checkout) => checkout,
     }
@@ -154,7 +155,7 @@ fn checkout_one() {
 
     thread::sleep(Duration::from_millis(10));
 
-    let checked_out = check_out_fut(&pool, PoolDefault).map(|c| c.value.unwrap());
+    let checked_out = check_out_fut(&pool, Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
@@ -177,12 +178,12 @@ fn checkout_twice_with_one_not_reusable() {
     thread::sleep(Duration::from_millis(10));
 
     // We do not return the conn with managed by taking it
-    let checked_out = check_out_fut(&pool, CheckoutMode::Wait).map(|mut c| c.value.take().unwrap());
+    let checked_out = check_out_fut(&pool, Wait).map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 0);
 
-    let checked_out = check_out_fut(&pool, CheckoutMode::Wait).map(|c| c.value.unwrap());
+    let checked_out = check_out_fut(&pool, Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 1);
@@ -249,12 +250,12 @@ fn create_connection_fails_some_times() {
 
     thread::sleep(Duration::from_millis(10));
 
-    let checked_out = check_out_fut(&pool, CheckoutMode::Wait).map(|mut c| c.value.take().unwrap());
+    let checked_out = check_out_fut(&pool, Wait).map(|mut c| c.value.take().unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 4);
 
-    let checked_out = check_out_fut(&pool, CheckoutMode::Wait).map(|c| c.value.unwrap());
+    let checked_out = check_out_fut(&pool, Wait).map(|c| c.value.unwrap());
     let v = runtime.block_on(checked_out).unwrap();
 
     assert_eq!(v, 8);
@@ -284,9 +285,7 @@ fn reservations_should_be_fulfilled() {
         thread::sleep(Duration::from_millis(10));
 
         while counters.reservations() < 1_000 {
-            let checked_out = check_out_fut(&pool, CheckoutMode::Wait)
-                .map(|_c| ())
-                .map_err(|_| ());
+            let checked_out = check_out_fut(&pool, Wait).map(|_c| ()).map_err(|_| ());
             runtime.spawn(checked_out);
         }
 

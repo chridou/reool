@@ -17,23 +17,21 @@ use tokio::{
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
-use crate::config::DefaultPoolCheckoutMode;
 use crate::connection_factory::ConnectionFactory;
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::*;
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::PoolState;
-use crate::{CheckoutMode, Ping, Poolable};
+use crate::{Ping, Poolable};
 
+use super::CheckoutConstraint;
 use inner_pool::{CheckoutPackage, InnerPool, PoolMessage};
 
-mod checkout_constraint;
 mod extended_connection_factory;
 mod inner_pool;
 pub(crate) mod instrumentation;
 mod managed;
 
-pub(crate) use self::checkout_constraint::CheckoutConstraint;
 use self::extended_connection_factory::ExtendedConnectionFactory;
 use self::instrumentation::PoolInstrumentation;
 pub(crate) use self::managed::Managed;
@@ -44,7 +42,6 @@ pub(crate) struct Config {
     pub backoff_strategy: BackoffStrategy,
     pub reservation_limit: usize,
     pub activation_order: ActivationOrder,
-    pub default_checkout_mode: DefaultPoolCheckoutMode,
     pub checkout_queue_size: usize,
 }
 
@@ -102,7 +99,6 @@ impl Default for Config {
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: 100,
             activation_order: ActivationOrder::default(),
-            default_checkout_mode: DefaultPoolCheckoutMode::Immediately,
             checkout_queue_size: 100,
         }
     }
@@ -110,7 +106,6 @@ impl Default for Config {
 
 pub(crate) struct PoolInternal<T: Poolable> {
     extended_connection_factory: Arc<ExtendedConnectionFactory<T>>,
-    default_checkout_mode: DefaultPoolCheckoutMode,
     checkout_sink: mpsc::Sender<PoolMessage<T>>,
 }
 
@@ -238,7 +233,6 @@ where
 
         Self {
             extended_connection_factory,
-            default_checkout_mode: config.default_checkout_mode,
             checkout_sink,
         }
     }
@@ -248,15 +242,11 @@ where
     ///
     /// On a failure return the created future and also the sender that was not sent to the inner
     /// pool to reuse it for a subsequent attempt
-    pub fn check_out<M: Into<CheckoutMode>>(
+    pub fn check_out<M: Into<CheckoutConstraint>>(
         &self,
-        mode: M,
+        constraint: M,
     ) -> Result<CheckoutManaged<T>, FailedCheckout<T>> {
-        let constraint = CheckoutConstraint::from_checkout_mode_and_pool_default(
-            mode,
-            self.default_checkout_mode,
-        );
-
+        let constraint = constraint.into();
         if constraint.is_deadline_elapsed() {
             return Ok(CheckoutManaged::new(future::err(
                 CheckoutErrorKind::CheckoutTimeout.into(),
@@ -394,7 +384,6 @@ impl<T: Poolable> Clone for PoolInternal<T> {
     fn clone(&self) -> Self {
         Self {
             extended_connection_factory: Arc::clone(&self.extended_connection_factory),
-            default_checkout_mode: self.default_checkout_mode,
             checkout_sink: self.checkout_sink.clone(),
         }
     }

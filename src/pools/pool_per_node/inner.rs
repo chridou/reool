@@ -13,7 +13,9 @@ use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::pools::pool_internal::instrumentation::PoolInstrumentation;
 use crate::pools::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
-use crate::{CheckoutMode, Ping, PoolState, Poolable};
+use crate::{Ping, PoolState, Poolable};
+
+use super::super::CheckoutConstraint;
 
 pub(crate) struct Inner<T: Poolable> {
     count: AtomicUsize,
@@ -67,7 +69,6 @@ impl<T: Poolable> Inner<T> {
                 let connection_factory = create_connection_factory(connect_to.to_string())?;
                 let pool_conf = PoolConfig {
                     desired_pool_size: config.desired_pool_size,
-                    default_checkout_mode: config.default_checkout_mode,
                     backoff_strategy: config.backoff_strategy,
                     reservation_limit: config.reservation_limit,
                     activation_order: config.activation_order,
@@ -98,14 +99,14 @@ impl<T: Poolable> Inner<T> {
         Ok(inner)
     }
 
-    pub fn check_out(&self, mode: CheckoutMode) -> CheckoutManaged<T> {
+    pub fn check_out(&self, constraint: CheckoutConstraint) -> CheckoutManaged<T> {
         if self.pools.is_empty() {
             return CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::NoPool,
             )));
         }
 
-        if mode.is_deadline_elapsed() {
+        if constraint.is_deadline_elapsed() {
             return CheckoutManaged::new(future::err(CheckoutError::new(
                 CheckoutErrorKind::CheckoutTimeout,
             )));
@@ -115,7 +116,7 @@ impl<T: Poolable> Inner<T> {
         let first_pool_index = position % self.pools.len();
 
         // Do the first attempt
-        let failed_checkout = match self.pools[first_pool_index].check_out(mode) {
+        let failed_checkout = match self.pools[first_pool_index].check_out(constraint) {
             Ok(checkout) => return checkout,
             Err(failed_checkout) if self.pools.len() == 1 => {
                 return CheckoutManaged::error(failed_checkout.error_kind)
@@ -126,7 +127,7 @@ impl<T: Poolable> Inner<T> {
         let mut last_failed_checkout = failed_checkout;
         // Iterate over all but the first pool because we already tried that.
         for position in position + 1..position + self.pools.len() {
-            if mode.is_deadline_elapsed() {
+            if constraint.is_deadline_elapsed() {
                 return CheckoutManaged::error(CheckoutErrorKind::CheckoutTimeout);
             }
 
