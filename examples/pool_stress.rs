@@ -31,7 +31,7 @@ fn main() {
     env::set_var("RUST_LOG", "info");
     let _ = pretty_env_logger::try_init();
 
-    let num_conns = 50;
+    let num_conns = 100;
 
     let mut driver = DriverBuilder::default().set_driver_metrics(false).build();
 
@@ -42,7 +42,7 @@ fn main() {
         //.connect_to_nodes(vec!["C1".to_string(), "C2".to_string()])
         .desired_pool_size(num_conns)
         .reservation_limit(100)
-        .pool_multiplier(10)
+        .pool_multiplier(2)
         .checkout_queue_size(100)
         .retry_on_checkout_limit(false)
         .task_executor(runtime.executor())
@@ -65,15 +65,12 @@ fn main() {
 
     info!("Start to hammer with checkouts");
 
-    let num_checkouts = 1_000_000;
+    let num_checkouts = 10_000;
 
     let delay_dur: Option<Duration> = None;
     //let delay_dur: Option<Duration> = Some(Duration::from_millis(10));
 
     (0..num_checkouts).for_each(|_| {
-        if pool.state().reservations > 100 {
-            thread::yield_now();
-        }
         let checked_out = collect_result_metrics
             .collect(
                 //pool.check_out(Wait),
