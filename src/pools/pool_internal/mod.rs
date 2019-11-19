@@ -134,51 +134,14 @@ where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
     {
         // We want to send inner messages in an unbounded manner.
-        let (mut internal_tx, internal_rx) = mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
-        // Checkout messages should be capped so that we do not get flodded.
-        let (checkout_sink, checkout_rx) =
+        let (mut internal_tx, internal_receiver) =
+            mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
+        // Checkout messages should be capped so that we do not get flooded.
+        let (checkout_sink, checkout_receiver) =
             mpsc::channel::<CheckoutRequest<T>>(config.checkout_queue_size);
 
-        // A `Future` that joins both streams and has the
-        // inner pool as a consumer for messages.
-        let inner_pool_fut = {
-            let mut inner_pool = InnerPool::new(&config, instrumentation.clone());
-
-            let checkout_stream = checkout_rx
-                .map(|rq| {
-                    PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
-                        created_at: rq.created_at,
-                        payload: rq.payload,
-                    })
-                })
-                .map_err(RecvError::Bounded)
-                .fuse();
-
-            let internal_stream = internal_rx.map_err(RecvError::Unbounded).fuse();
-
-            let merged_stream = internal_stream
-                .select(checkout_stream)
-                .fuse()
-                .map_err(|_err| ());
-
-            merged_stream
-                .for_each(move |message| match message {
-                    PoolMessageEnvelope::PoolMessage(message) => {
-                        inner_pool.process(message);
-                        Ok(())
-                    }
-                    PoolMessageEnvelope::Stop => {
-                        trace!("Stopping message stream");
-                        Err(())
-                    }
-                })
-                .then(move |_r| {
-                    trace!("pool message stream stopped");
-                    Ok(())
-                })
-        };
-
-        let _ = executor.spawn(inner_pool_fut);
+        let inner_pool = InnerPool::new(&config, instrumentation.clone());
+        start_inner_pool_consumer(inner_pool, checkout_receiver, internal_receiver, &executor);
 
         // We need to access it from multiple places since we are
         // going to put it into multiple `ExtendedConnectionFactory`s
@@ -468,6 +431,48 @@ impl<T: Poolable> Future for CheckoutManaged<T> {
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         self.inner.poll()
     }
+}
+
+fn start_inner_pool_consumer<T: Poolable>(
+    mut pool: InnerPool<T>,
+    checkout_receiver: mpsc::Receiver<CheckoutRequest<T>>,
+    internal_receiver: mpsc::UnboundedReceiver<PoolMessageEnvelope<T>>,
+    executor: &ExecutorFlavour,
+) {
+    let checkout_stream = checkout_receiver
+        .map(|rq| {
+            PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
+                created_at: rq.created_at,
+                payload: rq.payload,
+            })
+        })
+        .map_err(RecvError::Bounded)
+        .fuse();
+
+    let internal_stream = internal_receiver.map_err(RecvError::Unbounded).fuse();
+
+    let merged_stream = internal_stream
+        .select(checkout_stream)
+        .fuse()
+        .map_err(|_err| ());
+
+    let consumer_fut = merged_stream
+        .for_each(move |message| match message {
+            PoolMessageEnvelope::PoolMessage(message) => {
+                pool.process(message);
+                Ok(())
+            }
+            PoolMessageEnvelope::Stop => {
+                trace!("Stopping message stream");
+                Err(())
+            }
+        })
+        .then(move |_r| {
+            trace!("pool message stream stopped");
+            Ok(())
+        });
+
+    let _ = executor.spawn(consumer_fut);
 }
 
 #[cfg(test)]
