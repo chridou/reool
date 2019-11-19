@@ -130,7 +130,6 @@ fn main() {
     info!("final state:\n{:#?}", state);
     report_stats(&driver);
     info!("=== FINISHED ===");
-    thread::sleep(Duration::from_secs(600));
 }
 
 struct MyConn(usize, Arc<String>);
