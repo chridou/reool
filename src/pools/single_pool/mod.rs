@@ -19,7 +19,7 @@ use super::pool_internal::{
 };
 
 /// A connection pool that maintains multiple connections
-/// to possibly multiple Redis instances.
+/// to one node only.
 ///
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
@@ -40,14 +40,9 @@ impl<T: Poolable> SinglePool<T> {
     {
         if config.desired_pool_size == 0 {
             return Err(InitializationError::message_only(
-                "'desired_pool_size' must be at least 1",
+                "'desired_pool_size' must be at least one",
             ));
         }
-
-        info!(
-            "Creating shared pool with {:?} nodes",
-            config.connect_to_nodes
-        );
 
         let pool_conf = PoolConfig {
             desired_pool_size: config.desired_pool_size,
@@ -58,7 +53,13 @@ impl<T: Poolable> SinglePool<T> {
         };
 
         let connection_factory = if config.connect_to_nodes.len() == 1 {
-            create_connection_factory(config.connect_to_nodes.pop().unwrap())?
+            let connect_to = config.connect_to_nodes.pop().unwrap();
+            info!(
+                "Creating pool for '{}' with {} connections",
+                connect_to, config.desired_pool_size,
+            );
+
+            create_connection_factory(connect_to)?
         } else {
             return Err(InitializationError::message_only(format!(
                 "there must be exactly 1 connection string given - found {}",

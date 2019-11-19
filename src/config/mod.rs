@@ -193,7 +193,7 @@ impl Config {
         })?;
 
         helpers::set_default_checkout_mode(prefix, |v| {
-            self.default_checkout_mode = v.adjust();
+            self.default_checkout_mode = v;
         })?;
 
         helpers::set_reservation_limit(prefix, |v| {
@@ -231,7 +231,7 @@ impl Config {
     pub fn builder(&self) -> Builder {
         Builder::default()
             .desired_pool_size(self.desired_pool_size)
-            .default_checkout_mode(self.default_checkout_mode.adjust())
+            .default_checkout_mode(self.default_checkout_mode)
             .backoff_strategy(self.backoff_strategy)
             .reservation_limit(self.reservation_limit)
             .min_required_nodes(self.min_required_nodes)

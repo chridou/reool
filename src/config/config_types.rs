@@ -28,20 +28,6 @@ pub enum DefaultPoolCheckoutMode {
     WaitAtMost(Duration),
 }
 
-impl DefaultPoolCheckoutMode {
-    /// Do a sanity adjustment. E.g. it makes no sense to use
-    /// `WaitAtMost(Duration::from_desc(0))` since this would logically be
-    /// `Immediately`.
-    pub fn adjust(self) -> Self {
-        match self {
-            DefaultPoolCheckoutMode::WaitAtMost(d) if d == Duration::from_secs(0) => {
-                DefaultPoolCheckoutMode::Immediately
-            }
-            x => x,
-        }
-    }
-}
-
 impl std::str::FromStr for DefaultPoolCheckoutMode {
     type Err = ParseDefaultPoolCheckoutModeError;
 

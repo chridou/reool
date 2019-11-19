@@ -26,8 +26,6 @@ pub(crate) trait CanCheckout<T: Poolable> {
 /// Retry the checkout if the checkout failed with a
 /// `CheckoutLimitReached` as long as a retry is allowed
 /// by the constraint
-///
-/// TODO: Currently only diverts to a regular checkout
 pub(crate) fn check_out_maybe_retry_on_queue_limit_reached<P, T, M>(
     pool: &P,
     constraint: M,

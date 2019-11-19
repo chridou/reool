@@ -35,7 +35,7 @@ impl<T: Poolable> Inner<T> {
     {
         if config.pool_multiplier == 0 {
             return Err(InitializationError::message_only(
-                "pool_multiplier may not be zero",
+                "'pool_multiplier' may not be zero",
             ));
         }
 

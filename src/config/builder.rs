@@ -47,7 +47,7 @@ impl Builder {
     /// Sets the behaviour of the pool on checkouts if no specific behaviour
     /// was requested by the user.
     pub fn default_checkout_mode<T: Into<DefaultPoolCheckoutMode>>(mut self, v: T) -> Self {
-        self.config.default_checkout_mode = v.into().adjust();
+        self.config.default_checkout_mode = v.into();
         self
     }
 
