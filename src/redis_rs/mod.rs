@@ -100,7 +100,7 @@ impl ConnectionFactory for RedisRsFactory {
             })
             .map_err(|_| ());
 
-        let f = Timeout::new_at(f, timeout).then(move |_| {
+        let f = Timeout::new_at(f, timeout).or_else(move |_| {
             let total_time = started_at.elapsed();
             let state = PingState::failed_msg(format!(
                 "ping to '{}' timed out after {:?}",
