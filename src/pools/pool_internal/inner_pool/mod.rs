@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use log::trace;
+use log::{debug, trace};
 use tokio::sync::oneshot;
 
 use crate::config::ActivationOrder;
@@ -300,7 +300,10 @@ impl<T: Poolable> Drop for InnerPool<T> {
             instrumentation.connection_dropped(None, slot.conn.created_at.elapsed());
         });
 
-        trace!("inner pool dropped - all connections will be terminated when returned");
+        debug!(
+            "[{}] inner pool dropped - all connections will be terminated when returned",
+            self.instrumentation.id
+        );
         trace!(
             "inner pool dropped - final state: {:?}",
             self.instrumentation.state()
