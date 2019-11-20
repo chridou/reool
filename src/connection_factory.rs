@@ -1,16 +1,34 @@
-use std::borrow::Cow;
 use std::error::Error as StdError;
 use std::fmt;
-use std::sync::Arc;
+use std::time::Instant;
 
-use futures::{future::Future, Poll};
+use futures::{
+    future::{self, Future},
+    Poll,
+};
 
-use crate::Poolable;
+use crate::{Ping, Poolable};
 
+/// A factory for connections that always creates
+/// connections to the same node.
+///
+/// The factory also performs pings on a node by using a fresh connection on each
+/// ping.
 pub trait ConnectionFactory {
     type Connection: Poolable;
+    /// Create a new connection
     fn create_connection(&self) -> NewConnection<Self::Connection>;
-    fn connecting_to(&self) -> Cow<[Arc<String>]>;
+    /// The node this factory will connect to when a new
+    /// connection is requested.
+    fn connecting_to(&self) -> &str;
+    /// Ping the connection
+    ///
+    /// This will create a new connection and try a ping on it.
+    ///
+    /// If a factory does not support `ping` it will simply fail with `()`.
+    fn ping(&self, _timeout: Instant) -> Box<dyn Future<Item = Ping, Error = ()> + Send> {
+        Box::new(future::err(()))
+    }
 }
 
 #[derive(Debug)]

@@ -30,7 +30,7 @@ fn main() {
                 Box::new(conn.del::<_, ()>(MY_KEY).map(|(conn, _)| {
                     info!("key deleted");
                     conn
-                })) as Box<dyn Future<Item = RedisConnection, Error = _> + Send>
+                })) as Box<dyn Future<Item = PoolConnection, Error = _> + Send>
             } else {
                 info!("Key does not exist");
                 Box::new(future::ok(conn)) as Box<dyn Future<Item = _, Error = _> + Send>

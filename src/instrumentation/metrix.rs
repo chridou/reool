@@ -6,7 +6,7 @@ use metrix::instruments::*;
 use metrix::processor::{AggregatesProcessors, TelemetryProcessor};
 use metrix::{TelemetryTransmitter, TransmitsTelemetryData, DECR, INCR};
 
-use super::Instrumentation;
+use super::{Instrumentation, PoolId};
 
 /// A configuration for instrumenting with `metrix`
 pub struct MetrixConfig {
@@ -105,6 +105,7 @@ impl Default for MetrixConfig {
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum Metric {
     CheckOutConnection,
+    Fulfillment,
     CheckedInReturnedConnection,
     CheckedInNewConnection,
     ConnectionDropped,
@@ -121,9 +122,10 @@ pub enum Metric {
     InFlightConnectionsChanged,
     IdleConnectionsChanged,
     PoolCountChanged,
-    WaitingForMutex,
-    LockPassed,
-    LockReleased,
+
+    InternalMessageReceived,
+    CheckoutMessageReceived,
+    ProcessedRelevantMessage,
 }
 
 #[derive(Clone)]
@@ -141,38 +143,39 @@ impl MetrixInstrumentation {
 }
 
 impl Instrumentation for MetrixInstrumentation {
-    fn pool_added(&self, _pool_index: usize) {
+    fn pool_added(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_value_now(Metric::PoolCountChanged, INCR);
     }
 
-    fn pool_removed(&self, _pool_index: usize) {
+    fn pool_removed(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_value_now(Metric::PoolCountChanged, DECR);
     }
 
-    fn checked_out_connection(&self, idle_for: Duration, _pool_index: usize) {
+    fn checked_out_connection(
+        &self,
+        idle_for: Duration,
+        time_since_checkout_request: Duration,
+        _pool: PoolId,
+    ) {
         self.transmitter
-            .observed_one_duration_now(Metric::CheckOutConnection, idle_for);
+            .observed_one_duration_now(Metric::CheckOutConnection, idle_for)
+            .observed_one_duration_now(Metric::Fulfillment, time_since_checkout_request);
     }
 
-    fn checked_in_returned_connection(&self, flight_time: Duration, _pool_index: usize) {
+    fn checked_in_returned_connection(&self, flight_time: Duration, _pool: PoolId) {
         self.transmitter
             .observed_one_duration_now(Metric::CheckedInReturnedConnection, flight_time);
     }
 
-    fn checked_in_new_connection(&self, _pool_index: usize) {
+    fn checked_in_new_connection(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_now(Metric::CheckedInNewConnection)
             .observed_one_value_now(Metric::ConnectionsChanged, INCR);
     }
 
-    fn connection_dropped(
-        &self,
-        flight_time: Option<Duration>,
-        lifetime: Duration,
-        _pool_index: usize,
-    ) {
+    fn connection_dropped(&self, flight_time: Option<Duration>, lifetime: Duration, _pool: PoolId) {
         self.transmitter
             .observed_one_duration_now(
                 Metric::ConnectionDropped,
@@ -182,78 +185,84 @@ impl Instrumentation for MetrixInstrumentation {
             .observed_one_value_now(Metric::ConnectionsChanged, DECR);
     }
 
-    fn connection_created(
-        &self,
-        connected_after: Duration,
-        total_time: Duration,
-        _pool_index: usize,
-    ) {
+    fn connection_created(&self, connected_after: Duration, total_time: Duration, _pool: PoolId) {
         self.transmitter
             .observed_one_duration_now(Metric::ConnectionCreated, connected_after)
             .observed_one_duration_now(Metric::ConnectionCreatedTotalTime, total_time);
     }
 
-    fn idle_inc(&self, _pool_index: usize) {
+    fn idle_inc(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_value_now(Metric::IdleConnectionsChanged, INCR);
     }
 
-    fn idle_dec(&self, _pool_index: usize) {
+    fn idle_dec(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_value_now(Metric::IdleConnectionsChanged, DECR);
     }
 
-    fn in_flight_inc(&self, _pool_index: usize) {
+    fn in_flight_inc(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_value_now(Metric::InFlightConnectionsChanged, INCR);
     }
 
-    fn in_flight_dec(&self, _pool_index: usize) {
+    fn in_flight_dec(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_value_now(Metric::InFlightConnectionsChanged, DECR);
     }
 
-    fn reservation_added(&self, _pool_index: usize) {
+    fn reservation_added(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_now(Metric::ReservationAdded)
             .observed_one_value_now(Metric::ReservationsChanged, INCR);
     }
 
-    fn reservation_fulfilled(&self, after: Duration, _pool_index: usize) {
+    fn reservation_fulfilled(
+        &self,
+        reservation_time: Duration,
+        checkout_request_time: Duration,
+        _pool: PoolId,
+    ) {
         self.transmitter
-            .observed_one_duration_now(Metric::ReservationFulfilled, after)
+            .observed_one_duration_now(Metric::ReservationFulfilled, reservation_time)
+            .observed_one_duration_now(Metric::Fulfillment, checkout_request_time)
             .observed_one_value_now(Metric::ReservationsChanged, DECR);
     }
 
-    fn reservation_not_fulfilled(&self, after: Duration, _pool_index: usize) {
+    fn reservation_not_fulfilled(
+        &self,
+        reservation_time: Duration,
+        _checkout_request_time: Duration,
+        _pool: PoolId,
+    ) {
         self.transmitter
-            .observed_one_duration_now(Metric::ReservationNotFulfilled, after)
+            .observed_one_duration_now(Metric::ReservationNotFulfilled, reservation_time)
             .observed_one_value_now(Metric::ReservationsChanged, DECR);
     }
 
-    fn reservation_limit_reached(&self, _pool_index: usize) {
+    fn reservation_limit_reached(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_now(Metric::ReservationLimitReached);
     }
 
-    fn connection_factory_failed(&self, _pool_index: usize) {
+    fn connection_factory_failed(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_now(Metric::ConnectionFactoryFailed);
     }
 
-    fn reached_lock(&self, _pool_index: usize) {
+    fn internal_message_received(&self, latency: Duration, _pool: PoolId) {
         self.transmitter
-            .observed_one_value_now(Metric::WaitingForMutex, INCR);
-    }
-    fn passed_lock(&self, wait_time: Duration, _pool_index: usize) {
-        self.transmitter
-            .observed_one_duration_now(Metric::LockPassed, wait_time)
-            .observed_one_value_now(Metric::WaitingForMutex, DECR);
+            .observed_one_duration_now(Metric::InternalMessageReceived, latency);
     }
 
-    fn lock_released(&self, exclusive_lock_time: Duration, _pool_index: usize) {
+    fn checkout_message_received(&self, latency: Duration, _pool: PoolId) {
         self.transmitter
-            .observed_one_duration_now(Metric::LockReleased, exclusive_lock_time);
+            .observed_one_duration_now(Metric::CheckoutMessageReceived, latency);
+    }
+
+    fn relevant_message_processed(&self, processing_time: Duration, _pool: PoolId) {
+        self.transmitter
+            .observed_one_duration_now(Metric::ProcessedRelevantMessage, processing_time);
     }
 }
 
@@ -267,6 +276,13 @@ fn create<A: AggregatesProcessors>(
     panel.set_value_scaling(ValueScaling::NanosToMicros);
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("idle_time_us");
+    config.configure_histogram(&mut histogram);
+    panel.set_histogram(histogram);
+    cockpit.add_panel(panel);
+
+    let mut panel = Panel::with_name(Metric::Fulfillment, "fulfillment");
+    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut histogram = Histogram::new_with_defaults("after_us");
     config.configure_histogram(&mut histogram);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
@@ -382,22 +398,26 @@ fn create<A: AggregatesProcessors>(
     panel.set_gauge(gauge);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::WaitingForMutex, "contention");
-    let mut gauge = Gauge::new_with_defaults("count");
-    config.configure_gauge(&mut gauge);
-    panel.set_gauge(gauge);
-    cockpit.add_panel(panel);
-
-    let mut panel = Panel::with_name(Metric::LockPassed, "lock_wait");
+    let mut panel = Panel::with_name(Metric::InternalMessageReceived, "internal_messages");
+    panel.set_value_scaling(ValueScaling::NanosToMicros);
     panel.set_meter(Meter::new_with_defaults("per_second"));
-    let mut histogram = Histogram::new_with_defaults("wait_time_ns");
+    let mut histogram = Histogram::new_with_defaults("latency_us");
     config.configure_histogram(&mut histogram);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::LockReleased, "lock_duration");
+    let mut panel = Panel::with_name(Metric::CheckoutMessageReceived, "checkout_messages");
+    panel.set_value_scaling(ValueScaling::NanosToMicros);
     panel.set_meter(Meter::new_with_defaults("per_second"));
-    let mut histogram = Histogram::new_with_defaults("time_ns");
+    let mut histogram = Histogram::new_with_defaults("latency_us");
+    config.configure_histogram(&mut histogram);
+    panel.set_histogram(histogram);
+    cockpit.add_panel(panel);
+
+    let mut panel = Panel::with_name(Metric::ProcessedRelevantMessage, "processed_messages");
+    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    panel.set_meter(Meter::new_with_defaults("per_second"));
+    let mut histogram = Histogram::new_with_defaults("latency_us");
     config.configure_histogram(&mut histogram);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);

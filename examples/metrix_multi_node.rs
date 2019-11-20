@@ -29,9 +29,8 @@ fn main() {
             "redis://127.0.0.1:6379".to_string(),
         ])
         .desired_pool_size(10)
-        .node_pool_strategy(NodePoolStrategy::PoolPerNode)
-        .reservation_limit(None) // No limit
-        .default_checkout_mode(Immediately) // No timeout
+        .reservation_limit(1_000)
+        .default_checkout_mode(Immediately)
         .task_executor(runtime.executor())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish_redis_rs()

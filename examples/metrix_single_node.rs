@@ -26,7 +26,7 @@ fn main() {
     let pool = RedisPool::builder()
         .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(200)
-        .reservation_limit(Some(10_000))
+        .reservation_limit(10_000)
         .default_checkout_mode(Duration::from_secs(10))
         .activation_order(ActivationOrder::LiFo)
         .task_executor(runtime.executor())

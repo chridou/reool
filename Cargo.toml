@@ -1,6 +1,6 @@
 [package]
 name = "reool"
-version = "0.20.0"
+version = "0.21.0"
 authors = ["Christian Douven <chridou@users.noreply.github.com>"]
 readme = "README.md"
 license = "Apache-2.0/MIT"
@@ -13,13 +13,12 @@ edition = "2018"
 
 [dependencies]
 log = "0.4"
-parking_lot = "0.9"
 futures = "0.1"
 tokio = "0.1"
 tokio-timer = "0.2"
 redis = "0.13"
 rand = "0.7"
-metrix = { version = "0.9", optional = true }
+metrix = { version = "0.9", optional = true, features=["log"] }
 
 [features]
 default = []
@@ -33,4 +32,8 @@ required-features = ["metrix"]
 
 [[example]]
 name = "metrix_multi_node"
+required-features = ["metrix"]
+
+[[example]]
+name = "pool_stress"
 required-features = ["metrix"]

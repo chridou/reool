@@ -1,80 +1,121 @@
-use std::error::Error as StdError;
-use std::fmt;
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use futures::{
-    future::{self, Future},
-    sync::{mpsc, oneshot},
-};
-use log::{debug, error, trace, warn};
-use tokio_timer::Timeout;
+use log::trace;
+use tokio::sync::oneshot;
 
+use crate::config::ActivationOrder;
 use crate::error::{CheckoutError, CheckoutErrorKind};
-use crate::pooled_connection::ConnectionFlavour;
-use crate::{Immediately, Ping, PingState, Poolable, Wait};
+use crate::Poolable;
 
-use super::{CheckoutManaged, Config, Managed, NewConnMessage};
-
-use self::core::{Core, CoreGuard, SyncCore};
 use super::instrumentation::PoolInstrumentation;
-mod core;
+use super::{Config, Managed};
+
+/// An internal interval sent regularly to clean up reservations
+pub(super) const CLEANUP_INTERVAL: Duration = Duration::from_millis(100);
+
+/// A message that can be sent to the inner pool via a stream
+pub(crate) enum PoolMessage<T: Poolable> {
+    /// Check in a connection
+    CheckIn {
+        /// Timestamp of message creation
+        created_at: Instant,
+        /// The connection to check in
+        conn: Managed<T>,
+    },
+    CheckOut {
+        /// Timestamp of message creation
+        created_at: Instant,
+        /// Data containing all data and constraints
+        /// needed to do a proper checkout
+        payload: CheckoutPayload<T>,
+    },
+    CleanupReservations(Instant),
+    CheckAlive(Instant),
+}
+
+impl<T: Poolable> PoolMessage<T> {
+    fn is_checkout_and_created_at(&self) -> (bool, Instant) {
+        match self {
+            PoolMessage::CheckOut { created_at, .. } => (true, *created_at),
+            PoolMessage::CheckIn { created_at, .. } => (false, *created_at),
+            PoolMessage::CleanupReservations(created_at) => (false, *created_at),
+            PoolMessage::CheckAlive(created_at) => (false, *created_at),
+        }
+    }
+}
+
+/// Data containing all data and constraints
+/// needed to do a proper checkout
+pub(crate) struct CheckoutPayload<T: Poolable> {
+    /// A sender which can be used to complete a checkout with a connection
+    pub sender: oneshot::Sender<Result<Managed<T>, CheckoutError>>,
+    /// The `Instant` when the request for a connection was received
+    pub checkout_requested_at: Instant,
+    /// `true` if it is allowed to create a reservation.
+    pub reservation_allowed: bool,
+}
 
 pub(crate) struct InnerPool<T: Poolable> {
-    sync_core: SyncCore<T>,
-    request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
-    reservation_limit: Option<usize>,
+    /// Stores the idle connections ready to be checked out
+    idle: IdleConnections<Managed<T>>,
+    /// Reservations waiting for an incoming connection
+    reservations: VecDeque<Reservation<T>>,
     instrumentation: PoolInstrumentation,
-    connected_to: Vec<String>,
+    /// Timestamp when the last clean up was done. Used
+    /// to only do a cleanup if `CLEANUP_INTERVAL` has already elapsed unless
+    /// the reservation queue is already full in which case a cleanup attempt is
+    /// always made.
+    last_cleanup: Instant,
 }
 
 impl<T> InnerPool<T>
 where
     T: Poolable,
 {
-    pub fn new(
-        connected_to: Vec<String>,
-        config: &Config,
-        request_new_conn: mpsc::UnboundedSender<NewConnMessage>,
-        instrumentation: PoolInstrumentation,
-    ) -> Self {
-        let sync_core = SyncCore::new(Core::new(
-            config.desired_pool_size,
-            config.activation_order,
-            instrumentation.clone(),
-        ));
-
-        instrumentation.pool_added();
-
+    pub fn new(config: &Config, instrumentation: PoolInstrumentation) -> Self {
         Self {
-            sync_core,
-            request_new_conn,
-            reservation_limit: config.reservation_limit,
+            idle: IdleConnections::new(config.desired_pool_size, config.activation_order),
+            reservations: VecDeque::with_capacity(config.reservation_limit),
             instrumentation,
-            connected_to,
+            last_cleanup: Instant::now(),
         }
     }
 
-    pub(super) fn check_in(
-        &self,
-        parcel: CheckInParcel<T>,
-    ) -> impl Future<Item = (), Error = ()> + Send {
-        match parcel {
-            CheckInParcel::Alive(managed) => Box::new(self.check_in_alive(managed)),
-            CheckInParcel::Dropped(in_flight_time, life_time) => {
-                if let Some(in_flight_time) = in_flight_time {
-                    self.instrumentation
-                        .connection_dropped(Some(in_flight_time), life_time);
-                    self.instrumentation.in_flight_dec();
-                } else {
-                    warn!("no in flight time for dropped connection - this is a bug");
-                }
+    /// Process a PoolMessage
+    pub fn process(&mut self, message: PoolMessage<T>) {
+        let started_at = Instant::now();
 
-                Box::new(future::ok(())) as Box<dyn Future<Item = _, Error = _> + Send>
+        match message.is_checkout_and_created_at() {
+            (true, created_at) => self
+                .instrumentation
+                .checkout_message_received(created_at.elapsed()),
+            (false, created_at) => self
+                .instrumentation
+                .internal_message_received(created_at.elapsed()),
+        }
+
+        match message {
+            PoolMessage::CheckIn { conn, .. } => {
+                self.check_in(conn);
+                self.instrumentation
+                    .relevant_message_processed(started_at.elapsed());
             }
+            PoolMessage::CheckOut { payload, .. } => {
+                self.check_out(payload);
+                self.instrumentation
+                    .relevant_message_processed(started_at.elapsed());
+            }
+            PoolMessage::CleanupReservations(_) => {
+                self.cleanup_reservations();
+                self.instrumentation
+                    .relevant_message_processed(started_at.elapsed());
+            }
+            PoolMessage::CheckAlive(_) => {}
         }
     }
 
-    fn check_in_alive(&self, mut managed: Managed<T>) -> impl Future<Item = (), Error = ()> + Send {
+    fn check_in(&mut self, mut managed: Managed<T>) {
         let checked_out_at = managed.checked_out_at.take();
 
         if let Some(checked_out_at) = checked_out_at {
@@ -87,357 +128,311 @@ where
             self.instrumentation.checked_in_new_connection();
         }
 
-        self.sync_core.lock().map(|mut core| {
-            if core.reservations.is_empty() {
-                core.put_idle(managed);
-                trace!(
-                    "check in - no reservations - added to idle - idle: {}",
-                    core.idle_count()
-                );
-            } else {
-                // Do not let this one get dropped!
-                let mut to_fulfill = managed;
-                while let Some(one_waiting) = core.reservations.pop_front() {
-                    match one_waiting.try_fulfill(to_fulfill) {
-                        Fulfillment::Reservation(waited_for) => {
-                            trace!("fulfill reservation - fulfilled - in-flight");
+        if self.reservations.is_empty() {
+            self.put_idle(managed);
+            trace!(
+                "check in - no reservations - added to idle - idle: {}",
+                self.idle.len()
+            );
+        } else {
+            // Do not let this one get dropped!
+            let mut ready_for_fulfillment = managed;
+            while let Some(one_waiting) = self.reservations.pop_front() {
+                match one_waiting.try_fulfill(ready_for_fulfillment) {
+                    Fulfillment::Fulfilled {
+                        reservation_time,
+                        time_since_checkout_request,
+                    } => {
+                        trace!("fulfill reservation - fulfilled");
 
-                            core.instrumentation
-                                .checked_out_connection(Duration::from_secs(0));
-                            core.instrumentation.reservation_fulfilled(waited_for);
-                            core.instrumentation.in_flight_inc();
+                        self.instrumentation.checked_out_connection(
+                            Duration::from_secs(0),
+                            time_since_checkout_request,
+                        );
+                        self.instrumentation
+                            .reservation_fulfilled(reservation_time, time_since_checkout_request);
+                        self.instrumentation.in_flight_inc();
 
-                            return;
-                        }
-                        Fulfillment::NotFulfilled(not_fulfilled, waited_for) => {
-                            trace!("fulfill reservation - not fulfilled");
-                            core.instrumentation.reservation_not_fulfilled(waited_for);
+                        return;
+                    }
+                    Fulfillment::NotFulfilled {
+                        conn,
+                        reservation_time,
+                        time_since_checkout_request,
+                    } => {
+                        trace!("fulfill reservation - not fulfilled");
+                        self.instrumentation.reservation_not_fulfilled(
+                            reservation_time,
+                            time_since_checkout_request,
+                        );
 
-                            to_fulfill = not_fulfilled;
-                        }
+                        ready_for_fulfillment = conn;
                     }
                 }
-
-                core.put_idle(to_fulfill);
-                trace!(
-                    "check in - none fulfilled - added to idle {}",
-                    core.idle_count()
-                );
             }
-        })
+
+            self.put_idle(ready_for_fulfillment);
+            trace!(
+                "check in - none fulfilled - added to idle {}",
+                self.idle.len()
+            );
+        }
     }
 
-    pub(super) fn check_out(&self, constraint: CheckoutConstraint) -> CheckoutManaged<T> {
-        if constraint.is_deadline_elapsed() {
-            return CheckoutManaged::new(future::err(CheckoutError::new(
-                CheckoutErrorKind::CheckoutTimeout,
-            )));
+    fn check_out(&mut self, payload: CheckoutPayload<T>) {
+        if payload.sender.is_closed() {
+            return;
         }
 
-        let reservation_limit = self.reservation_limit;
-        CheckoutManaged::new(
-            self.sync_core
-                .lock()
-                .map_err(|()| CheckoutError::from(CheckoutErrorKind::TaskExecution))
-                .and_then(move |mut core| {
-                    if let Some((mut managed, idle_since)) = core.get_idle() {
-                        trace!("check out - checking out idle connection");
-                        managed.checked_out_at = Some(Instant::now());
+        if let Some((mut managed, idle_since)) = self.get_idle() {
+            trace!("check out - checking out idle connection");
+            managed.checked_out_at = Some(Instant::now());
 
-                        core.instrumentation.checked_out_connection(idle_since);
-                        core.instrumentation.in_flight_inc();
+            if let Err(Ok(not_send)) = payload.sender.send(Ok(managed)) {
+                // The sender is already closed. Put the message back to
+                // the idle queue.
+                self.put_idle(not_send);
+            } else {
+                self.instrumentation
+                    .checked_out_connection(idle_since, payload.checkout_requested_at.elapsed());
+                self.instrumentation.in_flight_inc();
+            }
+        } else {
+            trace!("check out - no idle connection");
 
-                        CheckoutManaged::new(future::ok(managed))
-                    } else {
-                        trace!("check out - no idle connection");
-                        match constraint {
-                            CheckoutConstraint::Immediately => {
-                                // This failed. There was no connection to delivery immediately...
-                                CheckoutManaged::new(future::err(CheckoutError::new(
-                                    CheckoutErrorKind::NoConnection,
-                                )))
-                            }
-                            CheckoutConstraint::Wait => {
-                                Self::create_reservation(core, None, reservation_limit)
-                            }
-                            CheckoutConstraint::Until(until) => {
-                                if let Some(timeout) = until.checked_duration_since(Instant::now())
-                                {
-                                    Self::create_reservation(core, Some(timeout), reservation_limit)
-                                } else {
-                                    // Already overdue
-                                    CheckoutManaged::new(future::err(CheckoutError::new(
-                                        CheckoutErrorKind::CheckoutTimeout,
-                                    )))
-                                }
-                            }
-                        }
-                    }
-                }),
-        )
+            if payload.reservation_allowed {
+                self.create_reservation(payload.sender, payload.checkout_requested_at)
+            } else {
+                // There was no connection to delivery immediately...
+                let _ = payload
+                    .sender
+                    .send(Err(CheckoutError::new(CheckoutErrorKind::NoConnection)));
+            }
+        }
     }
 
     fn create_reservation(
-        mut core: CoreGuard<T>,
-        timeout: Option<Duration>,
-        reservation_limit: Option<usize>,
-    ) -> CheckoutManaged<T> {
-        if let Some(reservation_limit) = reservation_limit {
-            if core.reservations.len() == reservation_limit {
-                trace!(
-                    "check out - reservation limit reached \
-                     - returning error"
-                );
-
-                if reservation_limit == 0 {
-                    return CheckoutManaged::new(future::err(CheckoutError::new(
-                        CheckoutErrorKind::NoConnection,
-                    )));
-                } else {
-                    core.instrumentation.reservation_limit_reached();
-                    return CheckoutManaged::new(future::err(CheckoutError::new(
-                        CheckoutErrorKind::QueueLimitReached,
-                    )));
-                }
-            }
-        }
-
-        let (tx, rx) = oneshot::channel();
-        let waiting = Reservation::checkout(tx);
-        core.reservations.push_back(waiting);
-
-        let fut = rx
-            .map(From::from)
-            .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::NoConnection, err));
-        let fut = if let Some(timeout) = timeout {
-            let timeout_fut = Timeout::new(fut, timeout)
-                .map_err(|err| CheckoutError::with_cause(CheckoutErrorKind::CheckoutTimeout, err));
-            CheckoutManaged::new(timeout_fut)
-        } else {
-            CheckoutManaged::new(fut)
-        };
-
-        core.instrumentation.reservation_added();
-
-        drop(core);
-
-        fut
-    }
-
-    pub(super) fn request_new_conn(&self) {
-        if self
-            .request_new_conn
-            .unbounded_send(NewConnMessage::RequestNewConn)
-            .is_err()
-        {
-            error!("could not request a new connection")
-        }
-    }
-
-    // ==== Instrumentation ====
-
-    #[inline]
-    pub(super) fn notify_connection_created(
-        &self,
-        connected_after: Duration,
-        total_time: Duration,
+        &mut self,
+        sender: oneshot::Sender<Result<Managed<T>, CheckoutError>>,
+        checkout_requested_at: Instant,
     ) {
-        self.instrumentation
-            .connection_created(connected_after, total_time)
-    }
+        if self.reservations.capacity() == 0 {
+            let _ = sender.send(Err(CheckoutErrorKind::NoConnection.into()));
+            return;
+        }
 
-    #[inline]
-    pub(super) fn notify_connection_factory_failed(&self) {
-        self.instrumentation.connection_factory_failed();
-    }
-
-    // === OTHER ===
-
-    pub fn connected_to(&self) -> &[String] {
-        &self.connected_to
-    }
-
-    pub fn contention(&self) -> usize {
-        self.instrumentation.contention()
-    }
-}
-
-impl InnerPool<ConnectionFlavour> {
-    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
-        use crate::commands::Commands;
-
-        #[derive(Debug)]
-        struct PingError(String);
-
-        impl fmt::Display for PingError {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}", self.0)
+        if self.reservations.len() == self.reservations.capacity() {
+            self.cleanup_reservations();
+            self.instrumentation.reservation_limit_reached();
+            if self.reservations.len() == self.reservations.capacity() {
+                let _ = sender.send(Err(CheckoutErrorKind::ReservationLimitReached.into()));
+                return;
             }
         }
 
-        impl StdError for PingError {
-            fn description(&self) -> &str {
-                "ping failed"
-            }
+        let reservation = Reservation::new(sender, checkout_requested_at);
+        self.reservations.push_back(reservation);
 
-            fn cause(&self) -> Option<&dyn StdError> {
-                None
-            }
+        self.instrumentation.reservation_added();
+    }
+
+    pub fn get_idle(&mut self) -> Option<(Managed<T>, Duration)> {
+        let idle = self.idle.get();
+
+        if idle.is_some() {
+            self.instrumentation.idle_dec();
         }
 
-        let started_at = Instant::now();
+        idle
+    }
 
-        let single_connected_to = if self.connected_to.len() == 1 {
-            Some(self.connected_to[0].to_string())
-        } else {
-            None
-        };
+    pub fn put_idle(&mut self, conn: Managed<T>) {
+        self.instrumentation.idle_inc();
+        self.idle.put(conn)
+    }
 
-        let f = crate::Checkout(self.check_out(CheckoutConstraint::Until(timeout)))
-            .map_err(|err| (Box::new(err) as Box<dyn StdError + Send>, None))
-            .and_then(|conn| {
-                let connected_to = conn.connected_to().to_owned();
-                conn.ping().then(|r| match r {
-                    Ok(_) => Ok(connected_to),
-                    Err(err) => Err((
-                        Box::new(err) as Box<dyn StdError + Send>,
-                        Some(connected_to),
-                    )),
-                })
-            });
+    fn cleanup_reservations(&mut self) {
+        if self.reservations.is_empty() {
+            // If reservation limit is zero reservations will always be empty
+            self.last_cleanup = Instant::now();
+            return;
+        }
 
-        Timeout::new_at(f, timeout).then(move |r| {
-            let (uri, state) = match r {
-                Ok(uri) => (Some(uri), PingState::Ok),
-                Err(err) => {
-                    if err.is_inner() {
-                        let (err, uri) = err.into_inner().unwrap();
-                        (uri, PingState::Failed(err))
-                    } else if err.is_elapsed() {
-                        (
-                            single_connected_to,
-                            PingState::Failed(Box::new(PingError(format!(
-                                "ping time out of {:?} reached",
-                                timeout
-                            )))),
-                        )
-                    } else {
-                        (
-                            single_connected_to,
-                            PingState::Failed(Box::new(PingError(
-                                "a timer error occurred".to_string(),
-                            ))),
-                        )
-                    }
+        let cleanup_necessary = self.reservations.len() == self.reservations.capacity()
+            || self.last_cleanup.elapsed() > CLEANUP_INTERVAL;
+
+        if cleanup_necessary {
+            let instrumentation = self.instrumentation.clone();
+            self.reservations.retain(|reservation| {
+                if reservation.sender.is_closed() {
+                    instrumentation.reservation_not_fulfilled(
+                        reservation.created_at.elapsed(),
+                        reservation.checkout_requested_at.elapsed(),
+                    );
+                    return false;
                 }
-            };
 
-            Ok(Ping {
-                uri,
-                latency: started_at.elapsed(),
-                state,
-            })
-        })
+                true
+            });
+        }
+
+        self.last_cleanup = Instant::now();
     }
 }
 
 impl<T: Poolable> Drop for InnerPool<T> {
     fn drop(&mut self) {
-        let _ = self
-            .request_new_conn
-            .unbounded_send(NewConnMessage::Shutdown);
-
-        self.instrumentation.pool_removed();
+        trace!("dropping inner pool");
 
         let in_flight = self.instrumentation.in_flight();
 
         for _ in 0..in_flight {
+            // These connections will not be able to
+            // return to the pool since they are orphans now
             self.instrumentation.in_flight_dec();
         }
 
-        debug!("inner pool dropped - all connections will be terminated when returned");
+        let instrumentation = self.instrumentation.clone();
+        self.idle.drain().for_each(|slot| {
+            instrumentation.idle_dec();
+            // These connections will trigger the instrumentation
+            // since tey are orphans now
+            instrumentation.connection_dropped(None, slot.conn.created_at.elapsed());
+        });
+
+        trace!("inner pool dropped - all connections will be terminated when returned");
+        trace!(
+            "inner pool dropped - final state: {:?}",
+            self.instrumentation.state()
+        );
     }
 }
 
-// ===== CHECK IN PARCEL =====
+/// ===== RESERVATION =====
 
-pub(super) enum CheckInParcel<T: Poolable> {
-    Alive(Managed<T>),
-    Dropped(Option<Duration>, Duration),
+/// A reservations waits for a connection to be checked in so that
+/// the reservation can be fulfilled
+pub(super) struct Reservation<T: Poolable> {
+    /// The sender to fulfill the checkout with
+    pub sender: oneshot::Sender<Result<Managed<T>, CheckoutError>>,
+    /// The instant the reservation was created
+    pub created_at: Instant,
+    /// The Instant the initial checkout was created at
+    pub checkout_requested_at: Instant,
 }
 
-// ==== CHECKOUT CONSTRAINT ====
-
-/// The checkout options a pool really has
-#[derive(Debug, Copy, Clone)]
-pub enum CheckoutConstraint {
-    Immediately,
-    Until(Instant),
-    Wait,
-}
-
-impl CheckoutConstraint {
-    pub fn is_deadline_elapsed(self) -> bool {
-        match self {
-            CheckoutConstraint::Until(deadline) => deadline < Instant::now(),
-            _ => false,
+impl<T: Poolable> Reservation<T> {
+    pub fn new(
+        sender: oneshot::Sender<Result<Managed<T>, CheckoutError>>,
+        checkout_requested_at: Instant,
+    ) -> Self {
+        Reservation {
+            sender,
+            created_at: Instant::now(),
+            checkout_requested_at,
         }
     }
 }
 
-impl From<Immediately> for CheckoutConstraint {
-    fn from(_: Immediately) -> Self {
-        CheckoutConstraint::Immediately
+impl<T: Poolable> Reservation<T> {
+    /// Try to send the connection. If successful the reservation was fulfilled.
+    /// If failed the reservation was not fulfilled since the receiver
+    /// was not there anymore.
+    pub fn try_fulfill(self, mut managed: Managed<T>) -> Fulfillment<T> {
+        managed.checked_out_at = Some(Instant::now());
+        if let Err(Ok(mut managed)) = self.sender.send(Ok(managed)) {
+            managed.checked_out_at = None;
+            Fulfillment::NotFulfilled {
+                conn: managed,
+                time_since_checkout_request: self.checkout_requested_at.elapsed(),
+                reservation_time: self.created_at.elapsed(),
+            }
+        } else {
+            Fulfillment::Fulfilled {
+                time_since_checkout_request: self.checkout_requested_at.elapsed(),
+                reservation_time: self.created_at.elapsed(),
+            }
+        }
     }
-}
-
-impl From<Wait> for CheckoutConstraint {
-    fn from(_: Wait) -> Self {
-        CheckoutConstraint::Wait
-    }
-}
-
-impl From<Duration> for CheckoutConstraint {
-    fn from(d: Duration) -> Self {
-        let timeout = Instant::now() + d;
-        timeout.into()
-    }
-}
-
-impl From<Instant> for CheckoutConstraint {
-    fn from(until: Instant) -> Self {
-        CheckoutConstraint::Until(until)
-    }
-}
-
-// ===== RESERVATION =====
-
-pub(super) enum Reservation<T: Poolable> {
-    Checkout(oneshot::Sender<Managed<T>>, Instant),
 }
 
 pub(super) enum Fulfillment<T: Poolable> {
-    NotFulfilled(Managed<T>, Duration),
-    Reservation(Duration),
+    Fulfilled {
+        /// The time it took until the reservation was processed
+        reservation_time: Duration,
+        /// The time it took from the checkout request being
+        /// made until the checkout was actually fulfilled
+        time_since_checkout_request: Duration,
+    },
+    NotFulfilled {
+        conn: Managed<T>,
+        /// The time it took until the reservation was processed
+        reservation_time: Duration,
+        /// The time it took from the checkout request being
+        /// made until the reservation was processed
+        time_since_checkout_request: Duration,
+    },
 }
 
-impl<T: Poolable> Reservation<T> {
-    pub fn checkout(sender: oneshot::Sender<Managed<T>>) -> Self {
-        Reservation::Checkout(sender, Instant::now())
+// ===== IDLE SLOT =====
+
+pub struct IdleSlot<T> {
+    conn: T,
+    idle_since: Instant,
+}
+
+impl<T> IdleSlot<T> {
+    pub fn new(conn: T) -> Self {
+        Self {
+            conn,
+            idle_since: Instant::now(),
+        }
     }
 }
 
-impl<T: Poolable> Reservation<T> {
-    pub fn try_fulfill(self, mut managed: Managed<T>) -> Fulfillment<T> {
+pub(super) enum IdleConnections<T> {
+    FiFo(VecDeque<IdleSlot<T>>),
+    LiFo(Vec<IdleSlot<T>>),
+}
+
+impl<T> IdleConnections<T> {
+    pub fn new(size: usize, activation_order: ActivationOrder) -> Self {
+        match activation_order {
+            ActivationOrder::FiFo => IdleConnections::FiFo(VecDeque::with_capacity(size)),
+            ActivationOrder::LiFo => IdleConnections::LiFo(Vec::with_capacity(size)),
+        }
+    }
+
+    #[inline]
+    pub fn put(&mut self, conn: T) {
         match self {
-            Reservation::Checkout(sender, waiting_since) => {
-                managed.checked_out_at = Some(Instant::now());
-                if let Err(mut managed) = sender.send(managed) {
-                    managed.checked_out_at = None;
-                    Fulfillment::NotFulfilled(managed, waiting_since.elapsed())
-                } else {
-                    Fulfillment::Reservation(waiting_since.elapsed())
-                }
+            IdleConnections::FiFo(idle) => idle.push_back(IdleSlot::new(conn)),
+            IdleConnections::LiFo(idle) => idle.push(IdleSlot::new(conn)),
+        }
+    }
+
+    #[inline]
+    pub fn get(&mut self) -> Option<(T, Duration)> {
+        match self {
+            IdleConnections::FiFo(idle) => idle.pop_front(),
+            IdleConnections::LiFo(idle) => idle.pop(),
+        }
+        .map(|IdleSlot { conn, idle_since }| (conn, idle_since.elapsed()))
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            IdleConnections::FiFo(idle) => idle.len(),
+            IdleConnections::LiFo(idle) => idle.len(),
+        }
+    }
+
+    pub fn drain<'a>(&'a mut self) -> impl Iterator<Item = IdleSlot<T>> + 'a {
+        match self {
+            IdleConnections::FiFo(ref mut idle) => Box::new(idle.drain(..)),
+            IdleConnections::LiFo(ref mut idle) => {
+                Box::new(idle.drain(..)) as Box<dyn Iterator<Item = IdleSlot<T>>>
             }
         }
     }

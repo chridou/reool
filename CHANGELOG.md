@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.21.0 (BREAKING CHANGE) - Read the documentation
+
+    * Use a stream for the internals instead of an async lock
+    * Using new configuration parameters and env vars
+    * Adjusted the metrics
+    * Ping works directly on connections
+
 ## 0.20.0 (BREAKING CHANGE)
     * `PoolCheckoutMode` became `DefaultPoolCheckoutMode`
     * Use an `Instant` instead of a `Duration` to define a checkout timeout

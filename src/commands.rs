@@ -5,7 +5,7 @@ impl<T> Commands for T where T: ConnectionLike + Sized + Send + 'static {}
 
 /// A helper trait to easily execute common
 /// asynchronous Redis commands on a
-/// `redis::async::ConnectionLike`
+/// `redis::aio::ConnectionLike`
 pub trait Commands: Sized + ConnectionLike + Send + 'static {
     /// Execute a command and expect a result
     fn query<T>(self, cmd: &Cmd) -> RedisFuture<(Self, T)>

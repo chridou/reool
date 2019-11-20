@@ -3,31 +3,22 @@ use std::fmt;
 
 use redis::{ErrorKind as RedisErrorKind, RedisError};
 
-pub type CheckoutResult<T> = Result<T, CheckoutError>;
 pub type InitializationResult<T> = Result<T, InitializationError>;
 
+/// An error specifying what went wrong
+/// on a failed checkout
 #[derive(Debug)]
 pub struct CheckoutError {
     kind: CheckoutErrorKind,
-    cause: Option<Box<dyn StdError + Send + Sync>>,
 }
 
 /// An error returned from `reool` when a checkout failed
 impl CheckoutError {
     pub(crate) fn new(kind: CheckoutErrorKind) -> Self {
-        Self { kind, cause: None }
+        Self { kind }
     }
 
-    pub(crate) fn with_cause<E: StdError + Send + Sync + 'static>(
-        kind: CheckoutErrorKind,
-        cause: E,
-    ) -> Self {
-        Self {
-            kind,
-            cause: Some(Box::new(cause)),
-        }
-    }
-
+    /// The kind of the error which can be matched
     pub fn kind(&self) -> CheckoutErrorKind {
         self.kind
     }
@@ -42,13 +33,13 @@ pub enum CheckoutErrorKind {
     CheckoutTimeout,
     /// No connection immediately available and no more
     /// requests can be enqueued to wait for a connection
-    /// because the queue has reached it`s limit
-    QueueLimitReached,
+    /// because the reservation queue has reached it`s limit
+    ReservationLimitReached,
     /// No connection because there is no pool available.
     NoPool,
-    /// If maximum contention for a pool was set, no connection was
-    /// checked out because the limit was reached
-    ContentionLimitReached,
+    /// If maximum number of checkout that can be
+    /// enqueued has been reached
+    CheckoutLimitReached,
     /// Something went wrong executing a task. Keep in
     /// mind that it depends on the `Executor` whether
     /// this error is returned. Some `Executor`s might simply
@@ -56,13 +47,25 @@ pub enum CheckoutErrorKind {
     TaskExecution,
 }
 
+impl fmt::Display for CheckoutErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            CheckoutErrorKind::NoConnection => "there are no connections available",
+            CheckoutErrorKind::CheckoutTimeout => {
+                "there was no connection to checkout available in time"
+            }
+            CheckoutErrorKind::ReservationLimitReached => "the reservation limit has been reached",
+            CheckoutErrorKind::NoPool => "there was no pool available",
+            CheckoutErrorKind::CheckoutLimitReached => "checkout limit limit reached",
+            CheckoutErrorKind::TaskExecution => "task execution failed",
+        };
+        f.write_str(s)
+    }
+}
+
 impl fmt::Display for CheckoutError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(ref cause) = self.cause {
-            write!(f, "{}: {}", self.description(), cause)
-        } else {
-            f.write_str(self.description())
-        }
+        f.write_str(self.description())
     }
 }
 
@@ -73,21 +76,21 @@ impl StdError for CheckoutError {
             CheckoutErrorKind::CheckoutTimeout => {
                 "there was no connection to checkout available in time"
             }
-            CheckoutErrorKind::QueueLimitReached => "the queue limit has been reached",
+            CheckoutErrorKind::ReservationLimitReached => "the reservation limit has been reached",
             CheckoutErrorKind::NoPool => "there was no pool available",
-            CheckoutErrorKind::ContentionLimitReached => "contention limit reached",
+            CheckoutErrorKind::CheckoutLimitReached => "checkout limit limit reached",
             CheckoutErrorKind::TaskExecution => "task execution failed",
         }
     }
 
     fn cause(&self) -> Option<&dyn StdError> {
-        self.cause.as_ref().map(|cause| &**cause as &dyn StdError)
+        None
     }
 }
 
 impl From<CheckoutErrorKind> for CheckoutError {
     fn from(kind: CheckoutErrorKind) -> Self {
-        Self { kind, cause: None }
+        Self { kind }
     }
 }
 
