@@ -1,4 +1,5 @@
 //! A connection pool for connecting to a single node
+use std::sync::Arc;
 use std::time::Instant;
 
 use futures::future::{self, Future};
@@ -24,7 +25,7 @@ use super::pool_internal::{
 /// The pool is cloneable and all clones share their connections.
 /// Once the last instance drops the shared connections will be dropped.
 pub(crate) struct SinglePool<T: Poolable> {
-    pool: PoolInternal<T>,
+    pool: Arc<PoolInternal<T>>,
 }
 
 impl<T: Poolable> SinglePool<T> {
@@ -74,7 +75,9 @@ impl<T: Poolable> SinglePool<T> {
             PoolInstrumentation::new(instrumentation, PoolId::new(0)),
         );
 
-        Ok(SinglePool { pool })
+        Ok(SinglePool {
+            pool: Arc::new(pool),
+        })
     }
 
     pub fn connected_to(&self) -> &str {

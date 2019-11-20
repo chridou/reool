@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.2
+
+    * BUGFIX: Single pool: Inner dropped when one of multiple clones was dropped
+
+## 0.21.1
+
+    * BUGFIX: Pinged failed always
+
 ## 0.21.0 (BREAKING CHANGE) - Read the documentation
 
     * Use a stream for the internals instead of an async lock
