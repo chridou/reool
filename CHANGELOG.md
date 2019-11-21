@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.3
+
+    * REFACTOR: Avoid unnecessary checkouts
+
 ## 0.21.2
 
     * BUGFIX: Single pool: Inner dropped when one of multiple clones was dropped
