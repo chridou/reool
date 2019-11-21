@@ -1,6 +1,6 @@
 [package]
 name = "reool"
-version = "0.21.2"
+version = "0.21.3"
 authors = ["Christian Douven <chridou@users.noreply.github.com>"]
 readme = "README.md"
 license = "Apache-2.0/MIT"
