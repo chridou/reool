@@ -19,6 +19,7 @@ use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::ConnectionFactory;
 use crate::error::{CheckoutError, CheckoutErrorKind};
 use crate::executor_flavour::*;
+#[cfg(test)]
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::PoolState;
 use crate::{Ping, Poolable};
@@ -216,10 +217,23 @@ where
     ///
     /// On a failure return the created future and also the sender that was not sent to the inner
     /// pool to reuse it for a subsequent attempt
-    pub fn check_out<M: Into<CheckoutConstraint>>(
+    pub(crate) fn check_out<M: Into<CheckoutConstraint>>(
         &self,
         constraint: M,
-    ) -> Result<CheckoutManaged<T>, FailedCheckout<T>> {
+    ) -> Result<CheckoutManaged<T>, FailedCheckout> {
+        let checkout_requested_at = Instant::now();
+        self.check_out2(checkout_requested_at, constraint)
+    }
+
+    // Takes a checkout future and a `CheckoutPackage`.
+    // If the package can be sent to the inner pool the future will be returned immediately.
+    // Otherwise the future will be returned alongside the package to use the parts for
+    // a retry.
+    pub(crate) fn check_out2<M: Into<CheckoutConstraint>>(
+        &self,
+        checkout_requested_at: Instant,
+        constraint: M,
+    ) -> Result<CheckoutManaged<T>, FailedCheckout> {
         let constraint = constraint.into();
         if constraint.is_deadline_elapsed() {
             return Ok(CheckoutManaged::new(future::err(
@@ -261,23 +275,10 @@ where
         // to send to the inner pool to complete the checkout
         let checkout = CheckoutManaged::new(rx);
         let payload = CheckoutPayload {
-            checkout_requested_at: Instant::now(),
+            checkout_requested_at,
             sender: tx,
             reservation_allowed,
         };
-
-        self.check_out_payload(payload, checkout)
-    }
-
-    // Takes a checkout future and a `CheckoutPackage`.
-    // If the package can be sent to the inner pool the future will be returned immediately.
-    // Otherwise the future will be returned alongside the package to use the parts for
-    // a retry.
-    pub(crate) fn check_out_payload(
-        &self,
-        payload: CheckoutPayload<T>,
-        checkout: CheckoutManaged<T>,
-    ) -> Result<CheckoutManaged<T>, FailedCheckout<T>> {
         let mut checkout_sink = self.checkout_sink.clone();
         if let Err(err) = checkout_sink.try_send(CheckoutRequest {
             created_at: Instant::now(),
@@ -291,7 +292,7 @@ where
 
             let CheckoutRequest { payload, .. } = err.into_inner();
 
-            return Err(FailedCheckout::new(payload, checkout, error_kind));
+            return Err(FailedCheckout::new(payload, error_kind));
         }
 
         Ok(checkout)
@@ -349,21 +350,12 @@ where
     }
 }
 
-impl<T: Poolable> Clone for PoolInternal<T> {
-    fn clone(&self) -> Self {
-        Self {
-            extended_connection_factory: Arc::clone(&self.extended_connection_factory),
-            checkout_sink: self.checkout_sink.clone(),
-        }
-    }
-}
-
 impl<T: Poolable> Drop for PoolInternal<T> {
     fn drop(&mut self) {
         trace!("Dropping PoolInternal {}", self.connected_to());
         let mut sender = self.extended_connection_factory.send_back_cloned();
         // Stop the internal stream manually and forcefully. Otherwise it
-        // wll stay alive as long as a client does not return a connection.
+        // will stay alive as long as a client does not return a connection.
         let _ = sender.try_send(PoolMessageEnvelope::Stop);
         self.extended_connection_factory
             .instrumentation
@@ -378,29 +370,17 @@ impl<T: Poolable> fmt::Debug for PoolInternal<T> {
 }
 
 /// An attempt to send a checkout to the inner pool failed.
-pub(crate) struct FailedCheckout<T: Poolable> {
-    payload: CheckoutPayload<T>,
+pub(crate) struct FailedCheckout {
     pub error_kind: CheckoutErrorKind,
-    checkout: CheckoutManaged<T>,
+    pub checkout_requested_at: Instant,
 }
 
-impl<T: Poolable> FailedCheckout<T> {
-    pub fn new(
-        payload: CheckoutPayload<T>,
-        checkout: CheckoutManaged<T>,
-        error_kind: CheckoutErrorKind,
-    ) -> Self {
+impl FailedCheckout {
+    pub fn new<T: Poolable>(payload: CheckoutPayload<T>, error_kind: CheckoutErrorKind) -> Self {
         Self {
-            payload,
+            checkout_requested_at: payload.checkout_requested_at,
             error_kind,
-            checkout,
         }
-    }
-
-    /// Give us the future for the client and the payload we can send to the inner pool
-    /// over the stream.
-    pub fn explode(self) -> (CheckoutPayload<T>, CheckoutManaged<T>) {
-        (self.payload, self.checkout)
     }
 }
 
