@@ -189,7 +189,7 @@ where
             managed.checked_out_at = Some(Instant::now());
 
             if let Err(Ok(not_send)) = payload.sender.send(Ok(managed)) {
-                // The sender is already closed. Put the message back to
+                // The sender is already closed. Put the connection back to
                 // the idle queue.
                 self.put_idle(not_send);
             } else {
@@ -223,8 +223,8 @@ where
 
         if self.reservations.len() == self.reservations.capacity() {
             self.cleanup_reservations();
-            self.instrumentation.reservation_limit_reached();
             if self.reservations.len() == self.reservations.capacity() {
+                self.instrumentation.reservation_limit_reached();
                 let _ = sender.send(Err(CheckoutErrorKind::ReservationLimitReached.into()));
                 return;
             }
@@ -292,7 +292,7 @@ impl<T: Poolable> Drop for InnerPool<T> {
             self.instrumentation.in_flight_dec();
         }
 
-        let instrumentation = self.instrumentation.clone();
+        let instrumentation = &self.instrumentation;
         self.idle.drain().for_each(|slot| {
             instrumentation.idle_dec();
             // These connections will trigger the instrumentation
