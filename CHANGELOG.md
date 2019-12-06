@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.4
+
+    * BUGFIX: In flight must be decreased if a checked out connection gets dropped.
+
 ## 0.21.3
 
     * REFACTOR: Avoid unnecessary checkouts
