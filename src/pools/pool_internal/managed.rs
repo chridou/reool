@@ -87,6 +87,12 @@ impl<T: Poolable> Drop for Managed<T> {
                 self.checked_out_at.map(|d| d.elapsed()),
                 self.created_at.elapsed(),
             );
+
+            if self.checked_out_at.is_some() {
+                // This connection was checked out!
+                factory.instrumentation.in_flight_dec();
+            }
+
             debug!("no value - drop connection and request new one");
             // factory and value are already `None` so we can safely continue
             // dropping here
