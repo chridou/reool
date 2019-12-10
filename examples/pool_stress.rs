@@ -231,36 +231,36 @@ enum ResultMetric {
 }
 
 fn create_result_metrics(metrix: &mut TelemetryDriver) -> ResultCollector {
-    let mut cockpit = Cockpit::without_name(None);
+    let mut cockpit = Cockpit::without_name();
 
-    let mut panel = Panel::with_name(ResultMetric::Checkout, "checkout");
+    let mut panel = Panel::named(ResultMetric::Checkout, "checkout");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(ResultMetric::NoConnection, "no_connection");
+    let mut panel = Panel::named(ResultMetric::NoConnection, "no_connection");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(ResultMetric::CheckoutTimeout, "checkout_timeout");
+    let mut panel = Panel::named(ResultMetric::CheckoutTimeout, "checkout_timeout");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(
+    let mut panel = Panel::named(
         ResultMetric::ReservationLimitReached,
         "reservation_limit_reached",
     );
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(ResultMetric::NoPool, "no_pool");
+    let mut panel = Panel::named(ResultMetric::NoPool, "no_pool");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(ResultMetric::CheckoutLimitReached, "checkout_limit_reached");
+    let mut panel = Panel::named(ResultMetric::CheckoutLimitReached, "checkout_limit_reached");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(ResultMetric::TaskExecution, "task_execution");
+    let mut panel = Panel::named(ResultMetric::TaskExecution, "task_execution");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
