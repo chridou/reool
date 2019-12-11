@@ -169,9 +169,14 @@ fn report_stats(driver: &TelemetryDriver) {
         reservations_bottom, reservations_peak
     );
 
+    let connections = snapshot.find("connections/count");
     let connections_bottom = snapshot.find("connections/count_bottom");
     let connections_peak = snapshot.find("connections/count_peak");
-    info!("connections: {}/{}", connections_bottom, connections_peak);
+    let connections_avg = snapshot.find("connections/count_avg");
+    info!(
+        "connections(current/bottom/peak/avg): {}/{}/{}/{}",
+        connections, connections_bottom, connections_peak, connections_avg
+    );
 
     let internal_messages = snapshot.find("internal_messages");
     let rate = internal_messages.find("per_second/one_minute/rate");
