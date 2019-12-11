@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.22.0 (BREAKING CHANGE)
+
+    * Upgraded `metrix` feature to 0.10 which is incompatible to previous version
+
 ## 0.21.4
 
     * BUGFIX: In flight must be decreased if a checked out connection gets dropped.

@@ -1,10 +1,9 @@
 use std::time::Duration;
 
 use metrix::cockpit::Cockpit;
-use metrix::instruments::switches::StaircaseTimer;
 use metrix::instruments::*;
 use metrix::processor::{AggregatesProcessors, TelemetryProcessor};
-use metrix::{TelemetryTransmitter, TransmitsTelemetryData, DECR, INCR};
+use metrix::{Decrement, Increment, TelemetryTransmitter, TimeUnit, TransmitsTelemetryData};
 
 use super::{Instrumentation, PoolId};
 
@@ -77,14 +76,18 @@ impl MetrixConfig {
         }
     }
 
-    fn configure_histogram(&self, histogram: &mut Histogram) {
+    fn configure_histogram(&self, histogram: &mut Histogram, display_unit: TimeUnit) {
         if let Some(inactivity_limit) = self.inactivity_limit {
             histogram.set_inactivity_limit(inactivity_limit);
-            histogram.reset_after_inactivity(self.reset_histograms_after_inactivity);
+            histogram.set_reset_after_inactivity(self.reset_histograms_after_inactivity);
         }
+        histogram.set_display_time_unit(display_unit);
     }
 
-    fn add_alert<L>(&self, panel: &mut Panel<L>) {
+    fn add_alert<L>(&self, panel: &mut Panel<L>)
+    where
+        L: Eq + Send + 'static,
+    {
         let mut alert = StaircaseTimer::new_with_defaults("alert");
         alert.set_switch_off_after(self.alert_duration);
         panel.add_instrument(alert);
@@ -145,12 +148,12 @@ impl MetrixInstrumentation {
 impl Instrumentation for MetrixInstrumentation {
     fn pool_added(&self, _pool: PoolId) {
         self.transmitter
-            .observed_one_value_now(Metric::PoolCountChanged, INCR);
+            .observed_one_value_now(Metric::PoolCountChanged, Increment);
     }
 
     fn pool_removed(&self, _pool: PoolId) {
         self.transmitter
-            .observed_one_value_now(Metric::PoolCountChanged, DECR);
+            .observed_one_value_now(Metric::PoolCountChanged, Decrement);
     }
 
     fn checked_out_connection(
@@ -172,7 +175,7 @@ impl Instrumentation for MetrixInstrumentation {
     fn checked_in_new_connection(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_now(Metric::CheckedInNewConnection)
-            .observed_one_value_now(Metric::ConnectionsChanged, INCR);
+            .observed_one_value_now(Metric::ConnectionsChanged, Increment);
     }
 
     fn connection_dropped(&self, flight_time: Option<Duration>, lifetime: Duration, _pool: PoolId) {
@@ -182,7 +185,7 @@ impl Instrumentation for MetrixInstrumentation {
                 flight_time.unwrap_or_else(|| Duration::from_secs(0)),
             )
             .observed_one_duration_now(Metric::LifeTime, lifetime)
-            .observed_one_value_now(Metric::ConnectionsChanged, DECR);
+            .observed_one_value_now(Metric::ConnectionsChanged, Decrement);
     }
 
     fn connection_created(&self, connected_after: Duration, total_time: Duration, _pool: PoolId) {
@@ -193,28 +196,28 @@ impl Instrumentation for MetrixInstrumentation {
 
     fn idle_inc(&self, _pool: PoolId) {
         self.transmitter
-            .observed_one_value_now(Metric::IdleConnectionsChanged, INCR);
+            .observed_one_value_now(Metric::IdleConnectionsChanged, Increment);
     }
 
     fn idle_dec(&self, _pool: PoolId) {
         self.transmitter
-            .observed_one_value_now(Metric::IdleConnectionsChanged, DECR);
+            .observed_one_value_now(Metric::IdleConnectionsChanged, Decrement);
     }
 
     fn in_flight_inc(&self, _pool: PoolId) {
         self.transmitter
-            .observed_one_value_now(Metric::InFlightConnectionsChanged, INCR);
+            .observed_one_value_now(Metric::InFlightConnectionsChanged, Increment);
     }
 
     fn in_flight_dec(&self, _pool: PoolId) {
         self.transmitter
-            .observed_one_value_now(Metric::InFlightConnectionsChanged, DECR);
+            .observed_one_value_now(Metric::InFlightConnectionsChanged, Decrement);
     }
 
     fn reservation_added(&self, _pool: PoolId) {
         self.transmitter
             .observed_one_now(Metric::ReservationAdded)
-            .observed_one_value_now(Metric::ReservationsChanged, INCR);
+            .observed_one_value_now(Metric::ReservationsChanged, Increment);
     }
 
     fn reservation_fulfilled(
@@ -226,7 +229,7 @@ impl Instrumentation for MetrixInstrumentation {
         self.transmitter
             .observed_one_duration_now(Metric::ReservationFulfilled, reservation_time)
             .observed_one_duration_now(Metric::Fulfillment, checkout_request_time)
-            .observed_one_value_now(Metric::ReservationsChanged, DECR);
+            .observed_one_value_now(Metric::ReservationsChanged, Decrement);
     }
 
     fn reservation_not_fulfilled(
@@ -237,7 +240,7 @@ impl Instrumentation for MetrixInstrumentation {
     ) {
         self.transmitter
             .observed_one_duration_now(Metric::ReservationNotFulfilled, reservation_time)
-            .observed_one_value_now(Metric::ReservationsChanged, DECR);
+            .observed_one_value_now(Metric::ReservationsChanged, Decrement);
     }
 
     fn reservation_limit_reached(&self, _pool: PoolId) {
@@ -270,155 +273,145 @@ fn create<A: AggregatesProcessors>(
     aggregates_processors: &mut A,
     config: MetrixConfig,
 ) -> MetrixInstrumentation {
-    let mut cockpit = Cockpit::without_name(None);
+    let mut cockpit = Cockpit::without_name();
 
-    let mut panel = Panel::with_name(Metric::CheckOutConnection, "checked_out_connections");
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut panel = Panel::named(Metric::CheckOutConnection, "checked_out_connections");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("idle_time_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::Fulfillment, "fulfillment");
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut panel = Panel::named(Metric::Fulfillment, "fulfillment");
     let mut histogram = Histogram::new_with_defaults("after_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(
+    let mut panel = Panel::named(
         Metric::CheckedInReturnedConnection,
         "checked_in_returned_connections",
     );
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("flight_time_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::CheckedInNewConnection, "checked_in_new_connections");
+    let mut panel = Panel::named(Metric::CheckedInNewConnection, "checked_in_new_connections");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ConnectionDropped, "connections_dropped");
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut panel = Panel::named(Metric::ConnectionDropped, "connections_dropped");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("flight_time_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     config.add_alert(&mut panel);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ConnectionCreated, "connections_created");
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut panel = Panel::named(Metric::ConnectionCreated, "connections_created");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("connect_time_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(
+    let mut panel = Panel::named(
         Metric::ConnectionCreatedTotalTime,
         "connections_created_total",
     );
-    panel.set_value_scaling(ValueScaling::NanosToMillis);
-    let mut histogram = Histogram::new_with_defaults("time_ms");
-    config.configure_histogram(&mut histogram);
+    let mut histogram = Histogram::new("time_ms");
+    config.configure_histogram(&mut histogram, TimeUnit::Milliseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ReservationAdded, "reservations_added");
+    let mut panel = Panel::named(Metric::ReservationAdded, "reservations_added");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ReservationFulfilled, "reservations_fulfilled");
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut panel = Panel::named(Metric::ReservationFulfilled, "reservations_fulfilled");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("fulfilled_after_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(
+    let mut panel = Panel::named(
         Metric::ReservationNotFulfilled,
         "reservations_not_fulfilled",
     );
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("not_fulfilled_after_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ReservationLimitReached, "reservation_limit_reached");
+    let mut panel = Panel::named(Metric::ReservationLimitReached, "reservation_limit_reached");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     config.add_alert(&mut panel);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ConnectionFactoryFailed, "connection_factory_failed");
+    let mut panel = Panel::named(Metric::ConnectionFactoryFailed, "connection_factory_failed");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     config.add_alert(&mut panel);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::LifeTime, "life_times");
-    panel.set_value_scaling(ValueScaling::NanosToMillis);
+    let mut panel = Panel::named(Metric::LifeTime, "life_times");
     panel.set_meter(Meter::new_with_defaults("lifes_ended_per_second"));
-    panel.set_histogram(Histogram::new_with_defaults("life_time_ms"));
+    panel.set_histogram(
+        Histogram::new_with_defaults("life_time_ms").display_time_unit(TimeUnit::Milliseconds),
+    );
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ConnectionsChanged, "connections");
+    let mut panel = Panel::named(Metric::ConnectionsChanged, "connections");
     let mut gauge = Gauge::new_with_defaults("count");
     config.configure_gauge(&mut gauge);
     panel.set_gauge(gauge);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::IdleConnectionsChanged, "idle");
+    let mut panel = Panel::named(Metric::IdleConnectionsChanged, "idle");
     let mut gauge = Gauge::new_with_defaults("count");
     config.configure_gauge(&mut gauge);
     panel.set_gauge(gauge);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::InFlightConnectionsChanged, "in_flight");
+    let mut panel = Panel::named(Metric::InFlightConnectionsChanged, "in_flight");
     let mut gauge = Gauge::new_with_defaults("count");
     config.configure_gauge(&mut gauge);
     panel.set_gauge(gauge);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ReservationsChanged, "reservations");
+    let mut panel = Panel::named(Metric::ReservationsChanged, "reservations");
     let mut gauge = Gauge::new_with_defaults("count");
     config.configure_gauge(&mut gauge);
     panel.set_gauge(gauge);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::PoolCountChanged, "pools");
+    let mut panel = Panel::named(Metric::PoolCountChanged, "pools");
     let mut gauge = Gauge::new_with_defaults("count");
     config.configure_gauge(&mut gauge);
     panel.set_gauge(gauge);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::InternalMessageReceived, "internal_messages");
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut panel = Panel::named(Metric::InternalMessageReceived, "internal_messages");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("latency_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::CheckoutMessageReceived, "checkout_messages");
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut panel = Panel::named(Metric::CheckoutMessageReceived, "checkout_messages");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("latency_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
-    let mut panel = Panel::with_name(Metric::ProcessedRelevantMessage, "processed_messages");
-    panel.set_value_scaling(ValueScaling::NanosToMicros);
+    let mut panel = Panel::named(Metric::ProcessedRelevantMessage, "processed_messages");
     panel.set_meter(Meter::new_with_defaults("per_second"));
     let mut histogram = Histogram::new_with_defaults("latency_us");
-    config.configure_histogram(&mut histogram);
+    config.configure_histogram(&mut histogram, TimeUnit::Microseconds);
     panel.set_histogram(histogram);
     cockpit.add_panel(panel);
 
