@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.22.0 (BREAKING CHANGE)
+
+    * DNS resolution is async now
+    * Unix domain sockets are not supported currently
+
 ## 0.21.4
 
     * BUGFIX: In flight must be decreased if a checked out connection gets dropped.
