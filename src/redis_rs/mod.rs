@@ -1,31 +1,24 @@
+use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::future::{self, Future};
-use redis::Client;
+use futures::future::{self, Future, IntoFuture};
+use redis::IntoConnectionInfo;
 use tokio::timer::Timeout;
 
 use crate::connection_factory::{ConnectionFactory, NewConnection, NewConnectionError};
-use crate::error::{InitializationError, InitializationResult};
+use crate::error::InitializationResult;
+use crate::executor_flavour::ExecutorFlavour;
 use crate::pool_connection::ConnectionFlavour;
 use crate::{Ping, PingState};
 
 pub struct RedisRsFactory {
-    client: Client,
     connects_to: Arc<String>,
 }
 
 impl RedisRsFactory {
     pub fn new(connect_to: String) -> InitializationResult<Self> {
-        let client = Client::open(&*connect_to).map_err(|err| {
-            InitializationError::new(
-                format!("Could not create a redis-rs client to {}", connect_to),
-                Some(Box::new(err)),
-            )
-        })?;
-
         Ok(Self {
-            client,
             connects_to: (Arc::new(connect_to)),
         })
     }
@@ -35,13 +28,55 @@ impl ConnectionFactory for RedisRsFactory {
     type Connection = ConnectionFlavour;
 
     fn create_connection(&self) -> NewConnection<Self::Connection> {
-        let connected_to = Arc::clone(&self.connects_to);
-        NewConnection::new(
-            self.client
-                .get_async_connection()
-                .map(|conn| ConnectionFlavour::RedisRs(conn, connected_to))
-                .map_err(NewConnectionError::new),
-        )
+        let connects_to1 = self.connects_to.clone();
+        let connects_to2 = self.connects_to.clone();
+
+        // FIXME: Doesn't work with URLs without host (e.g. unix sockets)
+        // This should ideally be implemented in the redis crate.
+        let connection_future = future::lazy(move || -> Result<_, Box<dyn Error + Send + Sync>> {
+            let mut url = redis::parse_redis_url(&connects_to1)
+                .map_err(|_| format!("Invalid redis url: {}", connects_to1))?;
+
+            let (resolver, background_task) = trust_dns_resolver::AsyncResolver::from_system_conf()
+                .map_err(|err| format!("Cannot create resolver: {}", err))?;
+
+            ExecutorFlavour::Runtime
+                .spawn(background_task)
+                .map_err(|err| format!("Failed to spawn resolver background task: {}", err))?;
+
+            let host = url.host_str().ok_or_else(|| "Redis url has no host part")?;
+
+            let url_future = resolver
+                .lookup_ip(host)
+                .map_err(|err| format!("Failed to look up address: {}", err))
+                .map_err(Box::<dyn Error + Send + Sync>::from)
+                .and_then(|addrs| {
+                    addrs
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| "No addresses were returned")
+                        .into_future()
+                        .from_err()
+                })
+                .map(move |addr| {
+                    url.set_ip_host(addr).ok();
+                    url
+                });
+
+            Ok(url_future)
+        })
+        .flatten()
+        .and_then(|url| {
+            url.into_connection_info()
+                .map_err(|err| format!("Failed to turn redis url into connection info: {}", err))
+                .into_future()
+                .from_err()
+        })
+        .and_then(|connection_info| redis::aio::connect(connection_info).from_err())
+        .map(|connection| ConnectionFlavour::RedisRs(connection, connects_to2))
+        .map_err(NewConnectionError::from);
+
+        NewConnection::new(connection_future)
     }
 
     fn connecting_to(&self) -> &str {

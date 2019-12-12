@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.22.1 (BREAKING CHANGE)
+
+    * DNS resolution is non-blocking now
+    * Unix domain sockets are not supported currently
+
 ## 0.22.0 (BREAKING CHANGE)
 
     * Upgraded `metrix` feature to 0.10 which is incompatible to previous version
