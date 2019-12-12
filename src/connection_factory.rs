@@ -47,6 +47,12 @@ impl NewConnectionError {
     }
 }
 
+impl From<Box<dyn StdError + Send + Sync + 'static>> for NewConnectionError {
+    fn from(cause: Box<dyn StdError + Send + Sync + 'static>) -> Self {
+        Self { cause }
+    }
+}
+
 impl fmt::Display for NewConnectionError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "could not create a new connection: {}", self.cause)
