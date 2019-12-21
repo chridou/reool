@@ -38,6 +38,11 @@ use crate::pools::pool_internal::CheckoutManaged;
 pub mod config;
 pub mod instrumentation;
 
+pub use redis::{
+    aio::ConnectionLike, cmd, Cmd, FromRedisValue, NumericBehavior, RedisError, RedisFuture,
+    ToRedisArgs, Value,
+};
+
 pub use crate::error::{CheckoutError, CheckoutErrorKind};
 pub use commands::Commands;
 pub use pool_connection::{ConnectionFlavour, PoolConnection};

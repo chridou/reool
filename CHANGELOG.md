@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.22.2
+    * reexport of `redis-rs` types
+
 ## 0.22.1 (BREAKING CHANGE)
 
     * DNS resolution is non-blocking now
