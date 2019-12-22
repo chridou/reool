@@ -72,7 +72,7 @@ impl MetrixConfig {
 
     fn configure_gauge(&self, gauge: &mut Gauge) {
         if let Some(ext_dur) = self.track_extrema_in_gauges {
-            gauge.set_memorize_extrema(ext_dur);
+            gauge.set_tracking(ext_dur.as_secs() as usize);
         }
     }
 
