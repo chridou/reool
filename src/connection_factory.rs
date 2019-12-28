@@ -1,3 +1,4 @@
+//! Building blocks for creating a `ConnectionFactory`
 use std::error::Error as StdError;
 use std::fmt;
 use std::time::Instant;
@@ -21,7 +22,7 @@ pub trait ConnectionFactory {
     /// The node this factory will connect to when a new
     /// connection is requested.
     fn connecting_to(&self) -> &str;
-    /// Ping the connection
+    /// Ping the Redis node
     ///
     /// This will create a new connection and try a ping on it.
     ///
@@ -31,12 +32,17 @@ pub trait ConnectionFactory {
     }
 }
 
+/// Creating a new connection failed
+///
+/// This struct is just a wrapper around an arbitrary
+/// `std::error::Error`.
 #[derive(Debug)]
 pub struct NewConnectionError {
     cause: Box<dyn StdError + Send + 'static>,
 }
 
 impl NewConnectionError {
+    /// Create a new instance with the given cause.
     pub fn new<E>(cause: E) -> Self
     where
         E: StdError + Send + 'static,
@@ -69,6 +75,7 @@ impl StdError for NewConnectionError {
     }
 }
 
+/// A `Future` that might complete with a new connection
 pub struct NewConnection<T: Poolable> {
     inner: Box<dyn Future<Item = T, Error = NewConnectionError> + Send + 'static>,
 }

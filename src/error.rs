@@ -24,6 +24,7 @@ impl CheckoutError {
     }
 }
 
+/// Further specifies the kind of a `CheckoutError`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckoutErrorKind {
     /// Currently there is no connection available

@@ -123,8 +123,6 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 
     drop(pool);
 
-    // TODO: Sometimes fails with pools == 1!
-    // See issue https://github.com/chridou/reool/issues/36
     thread::sleep(Duration::from_millis(10));
 
     let state = counters.state();
@@ -147,9 +145,9 @@ fn checkout_one() {
 
     let counters = StateCounters::new();
     let pool = PoolInternal::custom_instrumentation(
-        config.clone(),
+        config,
         U32Factory::default(),
-        executor.clone().into(),
+        executor.into(),
         counters.instrumentation(),
     );
 
@@ -173,7 +171,7 @@ fn checkout_twice_with_one_not_reusable() {
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = PoolInternal::no_instrumentation(config.clone(), U32Factory::default(), executor);
+    let pool = PoolInternal::no_instrumentation(config, U32Factory::default(), executor);
 
     thread::sleep(Duration::from_millis(10));
 
@@ -199,8 +197,7 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(1);
 
-    let pool =
-        PoolInternal::no_instrumentation(config.clone(), U32DelayFactory::default(), executor);
+    let pool = PoolInternal::no_instrumentation(config, U32DelayFactory::default(), executor);
 
     // We do not return the con with managed
     let checked_out = check_out_fut(&pool, Wait).map(|mut c| c.value.take().unwrap());
@@ -225,7 +222,7 @@ fn with_empty_pool_checkout_returns_timeout() {
     let executor = runtime.executor().into();
     let config = Config::default().desired_pool_size(0);
 
-    let pool = PoolInternal::no_instrumentation(config.clone(), UnitFactory, executor);
+    let pool = PoolInternal::no_instrumentation(config, UnitFactory, executor);
 
     let checked_out = check_out_fut(&pool, Duration::from_millis(10));
     let err = runtime.block_on(checked_out).err().unwrap();
@@ -243,7 +240,7 @@ fn create_connection_fails_some_times() {
     let config = Config::default().desired_pool_size(1);
 
     let pool = PoolInternal::no_instrumentation(
-        config.clone(),
+        config,
         U32FactoryFailsThreeTimesInARow::default(),
         executor,
     );
@@ -276,9 +273,9 @@ fn reservations_should_be_fulfilled() {
 
         let counters = StateCounters::default();
         let pool = PoolInternal::custom_instrumentation(
-            config.clone(),
+            config,
             U32Factory::default(),
-            executor.clone().into(),
+            executor.into(),
             counters.instrumentation(),
         );
 

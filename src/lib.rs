@@ -59,7 +59,9 @@ mod pool_connection;
 mod pools;
 mod redis_rs;
 
+/// Something that can be put into the connection pool
 pub trait Poolable: Send + Sized + 'static {
+    /// The host/addr this connection is connected to.
     fn connected_to(&self) -> &str;
 }
 
@@ -95,10 +97,10 @@ impl<T: Poolable> Future for Checkout<T> {
 
 /// Various options on retrieving a connection
 ///
-/// ## `From` implementations
+/// ## Special `From` implementations
 ///
-/// * `Duration`: `Until`
-/// * `Instant`: `Until`
+/// * `Duration`: `Until` with a deadline from now until the durations elapsed.
+/// * `Instant`: `Until` the given instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckoutMode {
     /// Expect a connection to be returned immediately.
@@ -374,6 +376,7 @@ pub struct Ping {
     /// Total elapsed time
     pub total_time: Duration,
     pub uri: String,
+    /// `Failed` or `Ok`
     pub state: PingState,
 }
 

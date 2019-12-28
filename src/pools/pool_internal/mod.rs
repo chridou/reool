@@ -172,7 +172,7 @@ where
         let extended_connection_factory = Arc::new(ExtendedConnectionFactory::new(
             Arc::clone(&wrapped_connection_factory),
             internal_tx.clone(),
-            instrumentation.clone(),
+            instrumentation,
             config.backoff_strategy,
         ));
 
