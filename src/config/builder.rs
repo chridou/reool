@@ -272,7 +272,21 @@ impl Builder {
 
     /// Build a new `RedisPool`
     pub fn finish_redis_rs(self) -> InitializationResult<RedisPool> {
-        self.finish(RedisRsFactory::new)
+        let (resolver, background_task) = trust_dns_resolver::AsyncResolver::from_system_conf()
+            .map_err(|err| {
+                InitializationError::message_only(format!("Cannot create resolver: {}", err))
+            })?;
+
+        self.executor_flavour
+            .spawn(background_task)
+            .map_err(|err| {
+                InitializationError::message_only(format!(
+                    "Cannot spawn dns resolver background task: {}",
+                    err
+                ))
+            })?;
+
+        self.finish(|connect_to| RedisRsFactory::new(connect_to, resolver.clone()))
     }
 }
 

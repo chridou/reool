@@ -5,21 +5,23 @@ use std::time::Instant;
 use futures::future::{self, Future, IntoFuture};
 use redis::IntoConnectionInfo;
 use tokio::timer::Timeout;
+use trust_dns_resolver::AsyncResolver;
 
 use crate::connection_factory::{ConnectionFactory, NewConnection, NewConnectionError};
 use crate::error::InitializationResult;
-use crate::executor_flavour::ExecutorFlavour;
 use crate::pool_connection::ConnectionFlavour;
 use crate::{Ping, PingState};
 
 pub struct RedisRsFactory {
     connects_to: Arc<String>,
+    dns_resolver: AsyncResolver,
 }
 
 impl RedisRsFactory {
-    pub fn new(connect_to: String) -> InitializationResult<Self> {
+    pub fn new(connect_to: String, dns_resolver: AsyncResolver) -> InitializationResult<Self> {
         Ok(Self {
-            connects_to: (Arc::new(connect_to)),
+            connects_to: Arc::new(connect_to),
+            dns_resolver,
         })
     }
 }
@@ -28,8 +30,9 @@ impl ConnectionFactory for RedisRsFactory {
     type Connection = ConnectionFlavour;
 
     fn create_connection(&self) -> NewConnection<Self::Connection> {
-        let connects_to1 = self.connects_to.clone();
-        let connects_to2 = self.connects_to.clone();
+        let connects_to1 = Arc::clone(&self.connects_to);
+        let connects_to2 = Arc::clone(&self.connects_to);
+        let dns_resolver = self.dns_resolver.clone();
 
         // FIXME: Doesn't work with URLs without host (e.g. unix sockets)
         // This should ideally be implemented in the redis crate.
@@ -37,16 +40,9 @@ impl ConnectionFactory for RedisRsFactory {
             let mut url = redis::parse_redis_url(&connects_to1)
                 .map_err(|_| format!("Invalid redis url: {}", connects_to1))?;
 
-            let (resolver, background_task) = trust_dns_resolver::AsyncResolver::from_system_conf()
-                .map_err(|err| format!("Cannot create resolver: {}", err))?;
-
-            ExecutorFlavour::Runtime
-                .spawn(background_task)
-                .map_err(|err| format!("Failed to spawn resolver background task: {}", err))?;
-
             let host = url.host_str().ok_or_else(|| "Redis url has no host part")?;
 
-            let url_future = resolver
+            let url_future = dns_resolver
                 .lookup_ip(host)
                 .map_err(|err| format!("Failed to look up address: {}", err))
                 .map_err(Box::<dyn Error + Send + Sync>::from)

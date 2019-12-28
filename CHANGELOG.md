@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.22.3
+    * share the dns resolver between connection factories
+
 ## 0.22.2
     * reexport of `redis-rs` types
 
