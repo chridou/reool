@@ -133,7 +133,7 @@ impl<T: Poolable> Inner<T> {
         };
 
         let iteration_bound = position + self.pools.len();
-        let last_iteration = position - 1;
+        let last_iteration = iteration_bound - 1;
         // Iterate over all but the first pool because we already tried that.
         for position in position + 1..iteration_bound {
             if constraint.is_deadline_elapsed() {
