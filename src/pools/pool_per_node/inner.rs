@@ -115,26 +115,43 @@ impl<T: Poolable> Inner<T> {
         let position = self.count.fetch_add(1, Ordering::SeqCst);
         let first_pool_index = position % self.pools.len();
 
-        // Do the first attempt
-        let failed_checkout = match self.pools[first_pool_index].check_out(constraint) {
-            Ok(checkout) => return checkout,
-            Err(failed_checkout) if self.pools.len() == 1 => {
-                return CheckoutManaged::error(failed_checkout.error_kind)
+        // Do the first attempt as Immediate since we can still apply original constraint
+        // later if we have more then one pool
+        let mut last_failed_checkout = {
+            let effective_constraint = if self.pools.len() == 1 {
+                constraint
+            } else {
+                CheckoutConstraint::Immediately
+            };
+            match self.pools[first_pool_index].check_out(effective_constraint) {
+                Ok(checkout) => return checkout,
+                Err(failed_checkout) if self.pools.len() == 1 => {
+                    return CheckoutManaged::error(failed_checkout.error_kind)
+                }
+                Err(failed_checkout) => failed_checkout,
             }
-            Err(failed_checkout) => failed_checkout,
         };
 
-        let mut last_failed_checkout = failed_checkout;
+        let iteration_bound = position + self.pools.len();
+        let last_iteration = iteration_bound - 1;
         // Iterate over all but the first pool because we already tried that.
-        for position in position + 1..position + self.pools.len() {
+        for position in position + 1..iteration_bound {
             if constraint.is_deadline_elapsed() {
                 return CheckoutManaged::error(CheckoutErrorKind::CheckoutTimeout);
             }
 
             let idx = position % self.pools.len();
 
-            match self.pools[idx].check_out2(last_failed_checkout.checkout_requested_at, constraint)
-            {
+            let current_constraint = if position >= last_iteration {
+                constraint
+            } else {
+                CheckoutConstraint::Immediately
+            };
+
+            match self.pools[idx].check_out2(
+                last_failed_checkout.checkout_requested_at,
+                current_constraint,
+            ) {
                 Ok(checkout) => return checkout,
                 Err(failed_checkout) => {
                     last_failed_checkout = failed_checkout;

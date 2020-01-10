@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.22.3
+    * When there are multiple pools, try to immediately check out on all but the last
+
 ## 0.22.2
     * reexport of `redis-rs` types
 
