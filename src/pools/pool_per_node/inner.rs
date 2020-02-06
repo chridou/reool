@@ -13,7 +13,7 @@ use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::pools::pool_internal::instrumentation::PoolInstrumentation;
 use crate::pools::pool_internal::{Config as PoolConfig, PoolInternal, Managed};
-use crate::{Ping, PoolState, Poolable, PoolConnection};
+use crate::{Ping, PoolState, Poolable};
 
 use super::super::CheckoutConstraint;
 

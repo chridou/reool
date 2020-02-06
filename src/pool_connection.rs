@@ -117,13 +117,13 @@ impl ConnectionLike for ConnectionFlavour {
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>> {
         match self {
-            ConnectionFlavour::RedisRs(conn, c) => conn.req_packed_commands(pipeline, offset, count),
+            ConnectionFlavour::RedisRs(conn, _) => conn.req_packed_commands(pipeline, offset, count),
         }
     }
 
     fn get_db(&self) -> i64 {
         match self {
-            ConnectionFlavour::RedisRs(ref conn, _) => conn.get_db(),
+            ConnectionFlavour::RedisRs(conn, _) => conn.get_db(),
         }
     }
 }

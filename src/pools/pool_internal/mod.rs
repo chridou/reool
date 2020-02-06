@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use futures::prelude::*;
 use future::BoxFuture;
-use log::{error, trace};
+use log::trace;
 use tokio::sync::{mpsc, oneshot};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::time;
@@ -123,7 +123,7 @@ where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
     {
         // We want to send inner messages in an unbounded manner.
-        let (mut internal_tx, internal_receiver) =
+        let (internal_tx, internal_receiver) =
             mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
         // Checkout messages should be capped so that we do not get flooded.
         let (checkout_sink, checkout_receiver) =
@@ -316,7 +316,7 @@ impl<T: Poolable> Drop for PoolInternal<T> {
     fn drop(&mut self) {
         trace!("Dropping PoolInternal {}", self.connected_to());
 
-        let mut sender = self.extended_connection_factory.send_back_cloned();
+        let sender = self.extended_connection_factory.send_back_cloned();
         // Stop the internal stream manually and forcefully. Otherwise it
         // will stay alive as long as a client does not return a connection.
         let _ = sender.send(PoolMessageEnvelope::Stop);
@@ -345,10 +345,6 @@ impl FailedCheckout {
             checkout_requested_at,
             error_kind,
         }
-    }
-
-    pub fn from_checkout_payload<T: Poolable>(payload: CheckoutPayload<T>, error_kind: CheckoutErrorKind) -> Self {
-        Self::new(payload.checkout_requested_at, error_kind)
     }
 }
 

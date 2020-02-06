@@ -1,8 +1,6 @@
-use std::error::Error as StdError;
-use std::fmt;
 use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use failure::{Fallible, format_err};
 use futures::prelude::*;
@@ -278,7 +276,7 @@ fn reservations_should_be_fulfilled() {
             let pool = pool.clone();
 
             runtime.spawn(async move {
-                check_out_fut(&pool, Wait).await;
+                let _ = check_out_fut(&pool, Wait).await;
             });
         }
 

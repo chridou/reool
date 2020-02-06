@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use log::error;
 use tokio::time::delay_for;
 
 use crate::{CheckoutError, CheckoutErrorKind, Poolable};
