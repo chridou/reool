@@ -36,14 +36,13 @@ fn given_no_runtime_the_pool_can_sill_be_created() {
         PoolInternal::no_instrumentation(Config::default(), UnitFactory, ExecutorFlavour::Runtime);
 }
 
-#[test]
-fn given_a_runtime_the_pool_can_be_created() {
+#[tokio::test]
+async fn given_a_runtime_the_pool_can_be_created() {
     let _ = pretty_env_logger::try_init();
-    let runtime = Runtime::new().unwrap();
 
-    let (tx, mut rx) = oneshot::channel();
+    let (tx, rx) = oneshot::channel();
 
-    runtime.spawn(async {
+    tokio::spawn(async {
         let pool = PoolInternal::no_instrumentation(
             Config::default().desired_pool_size(1),
             UnitFactory,
@@ -53,7 +52,7 @@ fn given_a_runtime_the_pool_can_be_created() {
         let _ = tx.send(pool);
     });
 
-    let pool = rx.try_recv().unwrap();
+    let pool = rx.await.unwrap();
     drop(pool);
 }
 
