@@ -1,18 +1,22 @@
 use std::env;
 use std::time::{Duration, Instant};
 
-use futures::future::{join_all, Future};
+use failure::Fallible;
+use futures::prelude::*;
+use futures::future::join_all;
 use log::{debug, error, info};
 use metrix::driver::DriverBuilder;
 use pretty_env_logger;
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
+use tokio::time;
 
 use reool::config::ActivationOrder;
 use reool::{Commands, RedisPool};
 
 /// Do many ping commands where many will faile because either
 /// the checkout ties out or the checkout queue is full
-fn main() {
+#[tokio::main]
+async fn main() {
     env::set_var("RUST_LOG", "reool=debug,metrix_single_node=info");
     let _ = pretty_env_logger::try_init();
 
@@ -21,60 +25,50 @@ fn main() {
         .set_driver_metrics(false)
         .build();
 
-    let mut runtime = Runtime::new().unwrap();
-
     let pool = RedisPool::builder()
         .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(200)
         .reservation_limit(10_000)
         .default_checkout_mode(Duration::from_secs(10))
         .activation_order(ActivationOrder::LiFo)
-        .task_executor(runtime.executor())
+        .task_executor(Handle::current())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish_redis_rs()
         .unwrap();
 
     // create idle time
-    std::thread::sleep(Duration::from_secs(1));
+    time::delay_for(Duration::from_secs(1)).await;
 
     info!("Do 20000 pings concurrently");
-    let futs: Vec<_> = (0..20_000)
-        .map(|i| {
-            pool.check_out_default()
-                .from_err()
-                .and_then(Commands::ping)
-                .then(move |res| match res {
-                    Err(err) => {
-                        error!("PING {} failed: {}", i, err);
-                        Ok(())
-                    }
-                    Ok(_) => {
-                        debug!("PING {} OK", i);
-                        Ok::<_, ()>(())
-                    }
-                })
-        })
-        .collect();
-
-    let fut = join_all(futs).map(|_| {
-        info!("finished pinging");
-    });
+    let futs = (0..20_000)
+        .map(|i: usize|
+            async {
+                let mut check_out = pool.check_out_default().await?;
+                check_out.ping().await?;
+                Fallible::Ok(())
+            }
+            .map(move |res| match res {
+                Err(err) => error!("PING {} failed: {}", i, err),
+                Ok(()) => debug!("PING {} OK", i),
+            })
+        );
 
     let start = Instant::now();
-    runtime.block_on(fut).unwrap();
+
+    join_all(futs).await;
+
+    info!("finished pinging");
     info!("PINGED 20000 times concurrently in {:?}", start.elapsed());
 
     let metrics_snapshot = driver.snapshot(false).unwrap();
 
     println!("{}", metrics_snapshot.to_default_json());
 
-    std::thread::sleep(Duration::from_millis(1500));
+    time::delay_for(Duration::from_millis(1_500)).await;
 
-    runtime
-        .block_on(pool.check_out_default().from_err().and_then(Commands::ping))
-        .unwrap();
+    let mut conn = pool.check_out_default().await.unwrap();
+    conn.ping().await.unwrap();
 
     drop(pool);
     info!("pool dropped");
-    runtime.shutdown_on_idle().wait().unwrap();
 }

@@ -12,8 +12,8 @@ use crate::error::{InitializationError, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::pools::pool_internal::instrumentation::PoolInstrumentation;
-use crate::pools::pool_internal::{CheckoutManaged, Config as PoolConfig, PoolInternal};
-use crate::{Ping, PoolState, Poolable};
+use crate::pools::pool_internal::{Config as PoolConfig, PoolInternal, Managed};
+use crate::{Ping, PoolState, Poolable, PoolConnection};
 
 use super::super::CheckoutConstraint;
 
@@ -99,17 +99,13 @@ impl<T: Poolable> Inner<T> {
         Ok(inner)
     }
 
-    pub fn check_out(&self, constraint: CheckoutConstraint) -> CheckoutManaged<T> {
+    pub async fn check_out(&self, constraint: CheckoutConstraint) -> Result<Managed<T>, CheckoutError> {
         if self.pools.is_empty() {
-            return CheckoutManaged::new(future::err(CheckoutError::new(
-                CheckoutErrorKind::NoPool,
-            )));
+            return Err(CheckoutErrorKind::NoPool.into());
         }
 
         if constraint.is_deadline_elapsed() {
-            return CheckoutManaged::new(future::err(CheckoutError::new(
-                CheckoutErrorKind::CheckoutTimeout,
-            )));
+            return Err(CheckoutErrorKind::CheckoutTimeout.into());
         }
 
         let position = self.count.fetch_add(1, Ordering::SeqCst);
@@ -123,10 +119,11 @@ impl<T: Poolable> Inner<T> {
             } else {
                 CheckoutConstraint::Immediately
             };
-            match self.pools[first_pool_index].check_out(effective_constraint) {
-                Ok(checkout) => return checkout,
+
+            match self.pools[first_pool_index].check_out(effective_constraint).await {
+                Ok(checkout) => return Ok(checkout),
                 Err(failed_checkout) if self.pools.len() == 1 => {
-                    return CheckoutManaged::error(failed_checkout.error_kind)
+                    return Err(failed_checkout.error_kind.into());
                 }
                 Err(failed_checkout) => failed_checkout,
             }
@@ -137,7 +134,7 @@ impl<T: Poolable> Inner<T> {
         // Iterate over all but the first pool because we already tried that.
         for position in position + 1..iteration_bound {
             if constraint.is_deadline_elapsed() {
-                return CheckoutManaged::error(CheckoutErrorKind::CheckoutTimeout);
+                return Err(CheckoutErrorKind::CheckoutTimeout.into());
             }
 
             let idx = position % self.pools.len();
@@ -151,15 +148,15 @@ impl<T: Poolable> Inner<T> {
             match self.pools[idx].check_out2(
                 last_failed_checkout.checkout_requested_at,
                 current_constraint,
-            ) {
-                Ok(checkout) => return checkout,
+            ).await {
+                Ok(checkout) => return Ok(checkout),
                 Err(failed_checkout) => {
                     last_failed_checkout = failed_checkout;
                 }
             }
         }
 
-        CheckoutManaged::error(last_failed_checkout.error_kind)
+        Err(last_failed_checkout.error_kind.into())
     }
 
     pub fn state(&self) -> PoolState {
@@ -169,8 +166,8 @@ impl<T: Poolable> Inner<T> {
             .fold(PoolState::default(), |a, b| a + b)
     }
 
-    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
-        let futs: Vec<_> = self.pools.iter().map(|p| p.ping(timeout)).collect();
+    pub fn ping<'a>(&'a self, timeout: Instant) -> impl Future<Output = Vec<Ping>> + Send + 'a {
+        let futs = self.pools.iter().map(|p| p.ping(timeout));
         future::join_all(futs)
     }
 }

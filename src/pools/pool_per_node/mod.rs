@@ -2,7 +2,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::future::Future;
+use futures::prelude::*;
+use future::BoxFuture;
 use log::info;
 
 use crate::config::Config;
@@ -10,10 +11,9 @@ use crate::connection_factory::ConnectionFactory;
 use crate::error::InitializationResult;
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::InstrumentationFlavour;
-use crate::pools::pool_internal::CheckoutManaged;
-use crate::{Ping, PoolState, Poolable};
+use crate::{Ping, PoolState, Poolable, CheckoutError};
 
-use super::{CanCheckout, CheckoutConstraint};
+use super::{CanCheckout, CheckoutConstraint, pool_internal::Managed};
 
 mod inner;
 
@@ -73,14 +73,14 @@ impl<T: Poolable> PoolPerNode<T> {
         self.inner.0.state()
     }
 
-    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub fn ping<'a>(&'a self, timeout: Instant) -> impl Future<Output = Vec<Ping>> + 'a {
         self.inner.0.ping(timeout)
     }
 }
 
 impl<T: Poolable> CanCheckout<T> for PoolPerNode<T> {
-    fn check_out<M: Into<CheckoutConstraint>>(&self, constraint: M) -> CheckoutManaged<T> {
-        self.inner.0.check_out(constraint.into())
+    fn check_out<'a, M: Into<CheckoutConstraint> + Send + 'static>(&'a self, constraint: M) -> BoxFuture<'a, Result<Managed<T>, CheckoutError>> {
+        self.inner.0.check_out(constraint.into()).boxed()
     }
 }
 

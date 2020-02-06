@@ -125,8 +125,8 @@ impl Builder {
 
     /// The executor to use for spawning tasks. If not set it is assumed
     /// that the pool is created on the default runtime.
-    pub fn task_executor(mut self, executor: ::tokio::runtime::TaskExecutor) -> Self {
-        self.executor_flavour = ExecutorFlavour::TokioTaskExecutor(executor);
+    pub fn task_executor(mut self, handle: ::tokio::runtime::Handle) -> Self {
+        self.executor_flavour = ExecutorFlavour::TokioTaskExecutor(handle);
         self
     }
 

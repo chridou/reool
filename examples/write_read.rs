@@ -1,58 +1,50 @@
 use std::env;
 
-use futures::future::{self, Future};
+use failure::Fallible;
 use log::info;
 use pretty_env_logger;
-use tokio::runtime::Runtime;
+use tokio::runtime::Handle;
 
 use reool::*;
 
 const MY_KEY: &str = "my_key";
 
 /// Write and read a single key.
-fn main() {
+#[tokio::main]
+async fn main() -> Fallible<()> {
     env::set_var("RUST_LOG", "reool=debug,write_read=info");
     let _ = pretty_env_logger::try_init();
-
-    let mut runtime = Runtime::new().unwrap();
 
     let pool = RedisPool::builder()
         .connect_to_node("redis://127.0.0.1:6379")
         .desired_pool_size(1)
-        .task_executor(runtime.executor())
+        .task_executor(Handle::current())
         .finish_redis_rs()
         .unwrap();
 
-    let fut = pool.check_out(PoolDefault).from_err().and_then(|conn| {
-        conn.exists(MY_KEY).and_then(|(conn, exists)| {
-            if exists {
-                info!("Key already exist");
-                Box::new(conn.del::<_, ()>(MY_KEY).map(|(conn, _)| {
-                    info!("key deleted");
-                    conn
-                })) as Box<dyn Future<Item = PoolConnection, Error = _> + Send>
-            } else {
-                info!("Key does not exist");
-                Box::new(future::ok(conn)) as Box<dyn Future<Item = _, Error = _> + Send>
-            }
-            .and_then(|conn| {
-                conn.set::<_, _, ()>(MY_KEY, "some data")
-                    .and_then(|(conn, _)| {
-                        info!("data written");
-                        conn.get::<_, String>(MY_KEY).map(|(_, data)| {
-                            info!("read '{}'", data);
-                            data == "some data"
-                        })
-                    })
-            })
-        })
-    });
+    let mut conn = pool.check_out(PoolDefault).await?;
+    let exists = conn.exists(MY_KEY).await?;
 
-    if runtime.block_on(fut).unwrap() {
-        info!("data is equal")
+    if exists {
+        info!("Key already exist");
+        conn.del::<_, ()>(MY_KEY).await?;
+        info!("key deleted");
+    } else {
+        info!("Key does not exist");
     }
+
+    conn.set::<_, _, ()>(MY_KEY, "some data").await?;
+
+    info!("data written");
+
+    let data = conn.get::<_, String>(MY_KEY).await?;
+
+    info!("read '{}'", data);
+    assert_eq!(data, "some data");
+    info!("data is equal");
 
     drop(pool);
     info!("pool dropped");
-    runtime.shutdown_on_idle().wait().unwrap();
+    
+    Ok(())
 }

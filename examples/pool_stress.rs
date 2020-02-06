@@ -4,12 +4,11 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use futures::{
-    future::{self, Future},
-    stream::{self, Stream},
-};
+use failure::Fallible;
+use futures::*;
+use future::BoxFuture;
 use log::info;
 use metrix::cockpit::Cockpit;
 use metrix::instruments::*;
@@ -21,7 +20,7 @@ use metrix::{
 
 use pretty_env_logger;
 use tokio::runtime::Builder as RuntimeBuilder;
-use tokio::timer::Delay;
+use tokio::time;
 
 use reool::connection_factory::*;
 use reool::CheckoutErrorKind;
@@ -30,13 +29,14 @@ use reool::*;
 /// Simply use an artificial connection factory
 /// that does not create real connections and hammer the
 /// pool with checkout requests.
-fn main() {
+#[tokio::main]
+async fn main() {
     env::set_var("RUST_LOG", "info");
     let _ = pretty_env_logger::try_init();
 
     let mut driver = DriverBuilder::default().set_driver_metrics(false).build();
 
-    let mut runtime = RuntimeBuilder::new().core_threads(1).build().unwrap();
+    let runtime = RuntimeBuilder::new().core_threads(1).build().unwrap();
 
     let pool = RedisPool::builder()
         //.connect_to_nodes(vec!["C1".to_string()])
@@ -53,7 +53,7 @@ fn main() {
         .retry_on_checkout_limit(true)
         .pool_multiplier(1)
         .default_checkout_mode(Duration::from_millis(30))
-        .task_executor(runtime.executor())
+        .task_executor(runtime.handle().clone())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish(|conn| Ok(MyConnectionFactory(Arc::new(conn), AtomicUsize::new(0))))
         .unwrap();
@@ -74,7 +74,7 @@ fn main() {
         }
     });
 
-    let num_clients = 1_000;
+    let num_clients = 1_000usize;
     //let delay_dur: Option<Duration> = None;
     let delay_dur: Option<Duration> = Some(Duration::from_millis(15));
     //let checkout_mode = Wait;
@@ -82,53 +82,39 @@ fn main() {
     let checkout_mode = PoolDefault;
     //let checkout_mode = Duration::from_millis(1);
 
-    let clients = future::lazy({
+    for _ in 0..num_clients {
         let running = Arc::clone(&running);
         let pool = pool.clone();
         let collect_result_metrics = collect_result_metrics.clone();
-        move || {
-            (0..num_clients).for_each(|_n| {
-                let running = Arc::clone(&running);
-                let pool = pool.clone();
-                let collect_result_metrics = collect_result_metrics.clone();
-                let f = stream::repeat(()).for_each(move |_| {
-                    if !running.load(Ordering::Relaxed) {
-                        Box::new(future::err(()))
-                    } else {
-                        let f = collect_result_metrics
-                            .collect(pool.check_out(checkout_mode))
-                            .map_err(|_err| ())
-                            .and_then(move |_c| {
-                                if let Some(delay) = delay_dur {
-                                    Box::new(Delay::new(Instant::now() + delay))
-                                } else {
-                                    Box::new(future::ok(()))
-                                        as Box<dyn Future<Item = _, Error = _> + Send>
-                                }
-                                .map(move |_c| ())
-                                .or_else(|_| Ok(()))
-                            });
-                        Box::new(f) as Box<dyn Future<Item = _, Error = _> + Send>
-                    }
-                });
-                tokio::spawn(f);
-            });
-            Ok(())
-        }
-    });
 
-    runtime.spawn(clients);
+        runtime.spawn(async move {
+            while running.load(Ordering::Relaxed) {
+                let check_out = pool.check_out(checkout_mode).await;
+                
+                if collect_result_metrics.collect(check_out).is_err() {
+                    break;
+                }
 
-    thread::sleep(Duration::from_secs(60));
+                if let Some(delay) = delay_dur {
+                    time::delay_for(delay).await;
+                }
+            }
+        });
+    }
+
+    time::delay_for(Duration::from_secs(60)).await;
     info!("Finished");
+
     let state = pool.state();
     drop(pool);
     info!("pool dropped");
+
     running.store(false, Ordering::Relaxed);
-    runtime.shutdown_on_idle().wait().unwrap();
-    thread::sleep(Duration::from_secs(2));
+    time::delay_for(Duration::from_secs(2)).await;
+
     info!("final state:\n{:#?}", state);
     report_stats(&driver);
+
     info!("=== FINISHED ===");
 }
 
@@ -145,9 +131,10 @@ struct MyConnectionFactory(Arc<String>, AtomicUsize);
 impl ConnectionFactory for MyConnectionFactory {
     type Connection = MyConn;
 
-    fn create_connection(&self) -> NewConnection<Self::Connection> {
+    fn create_connection(&self) -> BoxFuture<Fallible<Self::Connection>> {
         let count = self.1.fetch_add(1, Ordering::SeqCst);
-        NewConnection::new(future::ok(MyConn(count, Arc::clone(&self.0))))
+        
+        future::ok(MyConn(count, Arc::clone(&self.0))).boxed()
     }
 
     fn connecting_to(&self) -> &str {
@@ -239,34 +226,34 @@ fn create_result_metrics(metrix: &mut TelemetryDriver) -> ResultCollector {
     let mut cockpit = Cockpit::without_name();
 
     let mut panel = Panel::named(ResultMetric::Checkout, "checkout");
-    panel.set_meter(Meter::new_with_defaults("per_second"));
+    panel.add_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(ResultMetric::NoConnection, "no_connection");
-    panel.set_meter(Meter::new_with_defaults("per_second"));
+    panel.add_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(ResultMetric::CheckoutTimeout, "checkout_timeout");
-    panel.set_meter(Meter::new_with_defaults("per_second"));
+    panel.add_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(
         ResultMetric::ReservationLimitReached,
         "reservation_limit_reached",
     );
-    panel.set_meter(Meter::new_with_defaults("per_second"));
+    panel.add_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(ResultMetric::NoPool, "no_pool");
-    panel.set_meter(Meter::new_with_defaults("per_second"));
+    panel.add_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(ResultMetric::CheckoutLimitReached, "checkout_limit_reached");
-    panel.set_meter(Meter::new_with_defaults("per_second"));
+    panel.add_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(ResultMetric::TaskExecution, "task_execution");
-    panel.set_meter(Meter::new_with_defaults("per_second"));
+    panel.add_meter(Meter::new_with_defaults("per_second"));
     cockpit.add_panel(panel);
 
     let (tx, mut rx) = TelemetryProcessor::new_pair("checkout_results");
@@ -283,10 +270,11 @@ struct ResultCollector(TelemetryTransmitter<ResultMetric>);
 impl ResultCollector {
     pub fn collect<T: Poolable>(
         &self,
-        c: Checkout<T>,
-    ) -> impl Future<Item = PoolConnection<T>, Error = CheckoutError> + Send {
+        conn: Result<PoolConnection<T>, CheckoutError>,
+    ) -> Result<PoolConnection<T>, CheckoutError> {
         let tx = self.0.clone();
-        c.then(move |r| match r {
+
+        match conn {
             Ok(conn) => {
                 tx.observed_one_now(ResultMetric::Checkout);
                 Ok(conn)
@@ -312,6 +300,6 @@ impl ResultCollector {
                 };
                 Err(err)
             }
-        })
+        }
     }
 }

@@ -2,10 +2,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::future::{self, Future, Loop};
+use futures::prelude::*;
+use future::BoxFuture;
 use log::{trace, warn};
 use tokio::sync::mpsc;
-use tokio::{self, timer::Delay};
+use tokio::time::delay_for;
 
 use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::ConnectionFactory;
@@ -63,34 +64,54 @@ impl<T: Poolable> ExtendedConnectionFactory<T> {
     /// Before each attempt this functions tries to send a probing message to the pool. If
     /// sending the message fails the channel to the pool is disconnected which
     /// means that the pool has been dropped.
-    pub fn create_connection(self, initiated_at: Instant) {
-        let f = future::loop_fn((self, 1), move |(mut factory, attempt)| {
-            // Probe the channel to the inner pool
-            if factory
-                .send_message(PoolMessage::CheckAlive(Instant::now()))
-                .is_err()
-            {
-                Box::new(future::err("Pool is gone.".to_string()))
-            } else {
-                Box::new(factory.do_a_create_connection_attempt(initiated_at).then(
-                    move |r| match r {
-                        Ok(managed) => {
-                            drop(managed); // We send it to the pool by dropping it
-                            trace!("Dropped newly created connection to be sent to pool");
-                            Box::new(future::ok(Loop::Break(())))
+    pub fn create_connection(mut self, initiated_at: Instant) {
+        let f = async move {
+            let mut attempt = 1;
+
+            let result = loop {
+                // Probe the channel to the inner pool
+                if self
+                    .send_message(PoolMessage::CheckAlive(Instant::now()))
+                    .is_err()
+                {
+                    break Err("Pool is gone.".to_string());
+                }
+                
+                match self.do_a_create_connection_attempt(initiated_at).await {
+                    Ok(managed) => {
+                        drop(managed); // We send it to the pool by dropping it
+
+                        trace!("Dropped newly created connection to be sent to pool");
+
+                        break Ok(());
+                    }
+                    Err(this) => {
+                        self = this;
+
+                        // break delayed_by_backoff_strategy(&factory, &mut attempt).await
+                        if let Some(backoff) = self.back_off_strategy.get_next_backoff(attempt) {
+                            warn!(
+                                "Retry on in to create connection after attempt {} in {:?}",
+                                attempt, backoff
+                            );
+
+                            delay_for(backoff).await;
+                        } else {
+                            warn!(
+                                "Retry on in to create connection after attempt {} immediately",
+                                attempt
+                            );
                         }
-                        Err(factory) => Box::new(delayed_by_backoff_strategy(factory, attempt))
-                            as Box<dyn Future<Item = _, Error = String> + Send>,
+
+                        attempt += 1;
                     },
-                )) as Box<dyn Future<Item = _, Error = String> + Send>
-            }
-        })
-        .then(|r| {
-            if let Err(err) = r {
+                }
+            };
+
+            if let Err(err) = result {
                 warn!("Create connection finally failed: {}", err);
             }
-            Ok(())
-        });
+        };
 
         tokio::spawn(f);
     }
@@ -99,7 +120,7 @@ impl<T: Poolable> ExtendedConnectionFactory<T> {
         self.inner_factory.connecting_to()
     }
 
-    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
+    pub fn ping(&self, timeout: Instant) -> BoxFuture<Ping> {
         self.inner_factory.ping(timeout)
     }
 
@@ -108,49 +129,30 @@ impl<T: Poolable> ExtendedConnectionFactory<T> {
     fn do_a_create_connection_attempt(
         self,
         initiated_at: Instant,
-    ) -> impl Future<Item = Managed<T>, Error = Self> + Send {
+    ) -> impl Future<Output = Result<Managed<T>, Self>> {
         let start_connect = Instant::now();
         let inner_factory = Arc::clone(&self.inner_factory);
-        inner_factory
-            .create_connection()
-            .then(move |res| match res {
+
+        async move {
+            let conn = inner_factory.create_connection().await;
+
+            match conn {
                 Ok(conn) => {
                     trace!("new connection created");
+
                     self.instrumentation
                         .connection_created(initiated_at.elapsed(), start_connect.elapsed());
-                    future::ok(Managed::fresh(conn, self))
+
+                    Ok(Managed::fresh(conn, self))
                 }
                 Err(err) => {
                     self.instrumentation.connection_factory_failed();
-                    warn!("Connection factory failed: {}", err);
-                    future::err(self)
-                }
-            })
-    }
-}
 
-/// Applies a delay based on the backoff strategy. If there is no
-/// backoff we retry immediately.
-fn delayed_by_backoff_strategy<T: Poolable>(
-    factory: ExtendedConnectionFactory<T>,
-    attempt: usize,
-) -> impl Future<Item = Loop<(), (ExtendedConnectionFactory<T>, usize)>, Error = String> + Send {
-    if let Some(backoff) = factory.back_off_strategy.get_next_backoff(attempt) {
-        let delay = Delay::new(Instant::now() + backoff);
-        warn!(
-            "Retry on in to create connection after attempt {} in {:?}",
-            attempt, backoff
-        );
-        Box::new(
-            delay
-                .map_err(|err| err.to_string())
-                .and_then(move |()| future::ok(Loop::Continue((factory, attempt + 1)))),
-        ) as Box<dyn Future<Item = _, Error = _> + Send>
-    } else {
-        warn!(
-            "Retry on in to create connection after attempt {} immediately",
-            attempt
-        );
-        Box::new(future::ok(Loop::Continue((factory, attempt + 1))))
+                    warn!("Connection factory failed: {}", err);
+
+                    Err(self)
+                }
+            }
+        }
     }
 }

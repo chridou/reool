@@ -2,22 +2,17 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::{
-    future::{self, Future},
-    stream::Stream,
-    Poll,
-};
+use futures::prelude::*;
+use future::BoxFuture;
 use log::{error, trace};
 use tokio::sync::{mpsc, oneshot};
-use tokio::{
-    self,
-    timer::{Interval, Timeout},
-};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::time;
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::ConnectionFactory;
-use crate::error::{CheckoutError, CheckoutErrorKind};
+use crate::error::CheckoutErrorKind;
 use crate::executor_flavour::*;
 #[cfg(test)]
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
@@ -69,8 +64,8 @@ impl<T: Poolable> PoolMessage<T> {
         channel: &mut mpsc::UnboundedSender<PoolMessageEnvelope<T>>,
     ) -> Result<(), PoolMessage<T>> {
         let wrapped = PoolMessageEnvelope::PoolMessage(self);
-        channel.try_send(wrapped).map_err(|err| {
-            if let PoolMessageEnvelope::PoolMessage(msg) = err.into_inner() {
+        channel.send(wrapped).map_err(|err| {
+            if let PoolMessageEnvelope::PoolMessage(msg) = err.0 {
                 msg
             } else {
                 panic!("Did not send a PoolMessage - THIS IS A BUG");
@@ -114,13 +109,6 @@ pub(crate) struct PoolInternal<T: Poolable> {
     checkout_sink: mpsc::Sender<CheckoutRequest<T>>,
 }
 
-/// We use an bounded and unbounded channel and both have
-/// different error type. Map them to this type to make them the same.
-pub enum RecvError {
-    Unbounded(mpsc::error::UnboundedRecvError),
-    Bounded(mpsc::error::RecvError),
-}
-
 impl<T> PoolInternal<T>
 where
     T: Poolable,
@@ -158,14 +146,12 @@ where
                 instrumentation.clone(),
                 config.backoff_strategy,
             );
-            let f = future::lazy(move || {
-                extended_connection_factory.create_connection(Instant::now());
-                Ok(())
-            });
 
             // This triggers the creation of a connection.
             // Once these connections fail they will recreate themselves
-            let _ = executor.spawn(f);
+            let _ = executor.spawn(async {
+                extended_connection_factory.create_connection(Instant::now());
+            });
         });
 
         // We keep one for this pool to access it.
@@ -176,28 +162,25 @@ where
             config.backoff_strategy,
         ));
 
-        // A stream driven by an interval to send periodic messages to the inner pool.
+        // A loop driven by an interval to send periodic messages to the inner pool.
         // Since this stream tries to send to the pool stream it will
         // end once it fails to send a message to the pool stream.
-        let cleanup_ticker = Interval::new_interval(self::inner_pool::CLEANUP_INTERVAL)
-            .map_err(|err| {
-                error!("timer error in cleanup ticker: {}", err);
-            })
-            .for_each(move |_| {
+        let cleanup_ticker = async move {
+            let mut interval = time::interval(self::inner_pool::CLEANUP_INTERVAL);
+
+            loop {
+                interval.tick().await;
+
                 let wrapped = PoolMessageEnvelope::PoolMessage(PoolMessage::CleanupReservations(
                     Instant::now(),
                 ));
-                if let Err(_err) = internal_tx.try_send(wrapped) {
+
+                if let Err(_err) = internal_tx.send(wrapped) {
                     trace!("pool gone - cleanup ticker stopping");
-                    Err(())
-                } else {
-                    Ok(())
+                    break
                 }
-            })
-            .then(move |_r| {
-                trace!("cleanup ticker stream stopped");
-                Ok(())
-            });
+            }
+        };
 
         let _ = executor.spawn(cleanup_ticker);
 
@@ -217,10 +200,10 @@ where
     ///
     /// On a failure return the created future and also the sender that was not sent to the inner
     /// pool to reuse it for a subsequent attempt
-    pub(crate) fn check_out<M: Into<CheckoutConstraint>>(
-        &self,
+    pub(crate) fn check_out<'a, M: Into<CheckoutConstraint> + 'a>(
+        &'a self,
         constraint: M,
-    ) -> Result<CheckoutManaged<T>, FailedCheckout> {
+    ) -> impl Future<Output = Result<Managed<T>, FailedCheckout>> + 'a {
         let checkout_requested_at = Instant::now();
         self.check_out2(checkout_requested_at, constraint)
     }
@@ -229,73 +212,52 @@ where
     // If the package can be sent to the inner pool the future will be returned immediately.
     // Otherwise the future will be returned alongside the package to use the parts for
     // a retry.
-    pub(crate) fn check_out2<M: Into<CheckoutConstraint>>(
+    pub(crate) async fn check_out2<M: Into<CheckoutConstraint>>(
         &self,
         checkout_requested_at: Instant,
         constraint: M,
-    ) -> Result<CheckoutManaged<T>, FailedCheckout> {
+    ) -> Result<Managed<T>, FailedCheckout> {
         let constraint = constraint.into();
+
         if constraint.is_deadline_elapsed() {
-            return Ok(CheckoutManaged::new(future::err(
-                CheckoutErrorKind::CheckoutTimeout.into(),
-            )));
+            return Err(FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::CheckoutTimeout));
         }
 
         let (deadline, reservation_allowed) = constraint.deadline_and_reservation_allowed();
 
         let (tx, rx) = oneshot::channel();
 
-        // This will be passed to the client as a `Future`
-        let rx = rx.then(|r| match r {
-            Ok(from_pool) => from_pool,
-            Err(_receive_error) => {
-                // The pool dropped the reservation because it was dropped itself
-                Err(CheckoutErrorKind::NoPool.into())
-            }
-        });
-
-        // Maybe we need to wrap it in a timeout ...
-        let rx = if let Some(deadline) = deadline {
-            Box::new(Timeout::new_at(rx, deadline).map_err(|err| {
-                if err.is_inner() {
-                    return err.into_inner().unwrap();
-                }
-
-                if err.is_elapsed() {
-                    return CheckoutError::new(CheckoutErrorKind::CheckoutTimeout);
-                }
-
-                CheckoutError::new(CheckoutErrorKind::TaskExecution)
-            }))
-        } else {
-            Box::new(rx) as Box<dyn Future<Item = _, Error = _> + Send>
-        };
-
         // We need a future to return to the client and a `CheckoutPackage`
         // to send to the inner pool to complete the checkout
-        let checkout = CheckoutManaged::new(rx);
         let payload = CheckoutPayload {
             checkout_requested_at,
             sender: tx,
             reservation_allowed,
         };
-        let mut checkout_sink = self.checkout_sink.clone();
-        if let Err(err) = checkout_sink.try_send(CheckoutRequest {
+        let request = CheckoutRequest {
             created_at: Instant::now(),
             payload,
-        }) {
-            let error_kind = if err.is_full() {
-                CheckoutErrorKind::CheckoutLimitReached
-            } else {
-                CheckoutErrorKind::NoPool
+        };
+        let mut checkout_sink = self.checkout_sink.clone();
+
+        if let Err(err) = checkout_sink.try_send(request) {
+            let error_kind = match err {
+                TrySendError::Full(_) => CheckoutErrorKind::CheckoutLimitReached,
+                TrySendError::Closed(_) => CheckoutErrorKind::NoPool,
             };
 
-            let CheckoutRequest { payload, .. } = err.into_inner();
-
-            return Err(FailedCheckout::new(payload, error_kind));
+            return Err(FailedCheckout::new(checkout_requested_at, error_kind));
         }
 
-        Ok(checkout)
+        let managed = match deadline {
+            None => rx.await,
+            Some(deadline) => time::timeout_at(deadline.into(), rx).await
+                .map_err(|_timeout| FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::CheckoutTimeout))?
+        }
+        .map_err(|_receive_error| FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::NoPool))?
+        .map_err(|checkout_error| FailedCheckout::new(checkout_requested_at, checkout_error.kind()))?;
+
+        Ok(managed)
     }
 
     pub fn connected_to(&self) -> &str {
@@ -306,7 +268,7 @@ where
         self.extended_connection_factory.instrumentation.state()
     }
 
-    pub fn ping(&self, timeout: Instant) -> impl Future<Item = Ping, Error = ()> + Send {
+    pub fn ping(&self, timeout: Instant) -> BoxFuture<Ping> {
         self.extended_connection_factory.ping(timeout)
     }
 
@@ -353,10 +315,12 @@ where
 impl<T: Poolable> Drop for PoolInternal<T> {
     fn drop(&mut self) {
         trace!("Dropping PoolInternal {}", self.connected_to());
+
         let mut sender = self.extended_connection_factory.send_back_cloned();
         // Stop the internal stream manually and forcefully. Otherwise it
         // will stay alive as long as a client does not return a connection.
-        let _ = sender.try_send(PoolMessageEnvelope::Stop);
+        let _ = sender.send(PoolMessageEnvelope::Stop);
+
         self.extended_connection_factory
             .instrumentation
             .pool_removed();
@@ -376,40 +340,15 @@ pub(crate) struct FailedCheckout {
 }
 
 impl FailedCheckout {
-    pub fn new<T: Poolable>(payload: CheckoutPayload<T>, error_kind: CheckoutErrorKind) -> Self {
+    pub fn new(checkout_requested_at: Instant, error_kind: CheckoutErrorKind) -> Self {
         Self {
-            checkout_requested_at: payload.checkout_requested_at,
+            checkout_requested_at,
             error_kind,
         }
     }
-}
 
-/// A future containing a checked out connection or an error
-pub(crate) struct CheckoutManaged<T: Poolable> {
-    inner: Box<dyn Future<Item = Managed<T>, Error = CheckoutError> + Send + 'static>,
-}
-
-impl<T: Poolable> CheckoutManaged<T> {
-    pub fn new<F>(fut: F) -> Self
-    where
-        F: Future<Item = Managed<T>, Error = CheckoutError> + Send + 'static,
-    {
-        Self {
-            inner: Box::new(fut),
-        }
-    }
-
-    pub fn error<E: Into<CheckoutError>>(err: E) -> Self {
-        Self::new(future::err(err.into()))
-    }
-}
-
-impl<T: Poolable> Future for CheckoutManaged<T> {
-    type Item = Managed<T>;
-    type Error = CheckoutError;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.inner.poll()
+    pub fn from_checkout_payload<T: Poolable>(payload: CheckoutPayload<T>, error_kind: CheckoutErrorKind) -> Self {
+        Self::new(payload.checkout_requested_at, error_kind)
     }
 }
 
@@ -419,40 +358,29 @@ fn start_inner_pool_consumer<T: Poolable>(
     internal_receiver: mpsc::UnboundedReceiver<PoolMessageEnvelope<T>>,
     executor: &ExecutorFlavour,
 ) {
-    let checkout_stream = checkout_receiver
-        .map(|rq| {
-            PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
-                created_at: rq.created_at,
-                payload: rq.payload,
-            })
-        })
-        .map_err(RecvError::Bounded)
-        .fuse();
+    executor.spawn(async move {
+        let checkout_stream = checkout_receiver
+            .map(|rq| {
+                PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
+                    created_at: rq.created_at,
+                    payload: rq.payload,
+                })
+            });
 
-    let internal_stream = internal_receiver.map_err(RecvError::Unbounded).fuse();
+        let mut merged_stream = stream::select(internal_receiver, checkout_stream);
 
-    let merged_stream = internal_stream
-        .select(checkout_stream)
-        .fuse()
-        .map_err(|_err| ());
-
-    let consumer_fut = merged_stream
-        .for_each(move |message| match message {
-            PoolMessageEnvelope::PoolMessage(message) => {
-                pool.process(message);
-                Ok(())
+        while let Some(message) = merged_stream.next().await {
+            match message {
+                PoolMessageEnvelope::PoolMessage(message) => pool.process(message),
+                PoolMessageEnvelope::Stop => {
+                    trace!("Stopping message stream");
+                    break;
+                }
             }
-            PoolMessageEnvelope::Stop => {
-                trace!("Stopping message stream");
-                Err(())
-            }
-        })
-        .then(move |_r| {
-            trace!("pool message stream stopped");
-            Ok(())
-        });
+        }
 
-    let _ = executor.spawn(consumer_fut);
+        trace!("pool message stream stopped");
+    });
 }
 
 #[cfg(test)]

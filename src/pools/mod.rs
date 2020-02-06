@@ -1,12 +1,12 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use futures::future::{self, Future, Loop};
+use futures::future::BoxFuture;
 use log::error;
-use tokio::timer::Delay;
+use tokio::time::delay_for;
 
 use crate::{CheckoutError, CheckoutErrorKind, Poolable};
 
-use pool_internal::CheckoutManaged;
+use pool_internal::Managed;
 
 mod checkout_constraint;
 pub(crate) mod pool_internal;
@@ -20,70 +20,63 @@ pub(crate) use self::single_pool::SinglePool;
 /// Something that can checkout
 pub(crate) trait CanCheckout<T: Poolable> {
     /// Directly do a checkout
-    fn check_out<M: Into<CheckoutConstraint>>(&self, constraint: M) -> CheckoutManaged<T>;
+    fn check_out<'a, M: Into<CheckoutConstraint> + Send + 'static>(&'a self, constraint: M) -> BoxFuture<'a, Result<Managed<T>, CheckoutError>>;
 }
 
 /// Retry the checkout if the checkout failed with a
 /// `CheckoutLimitReached` as long as a retry is allowed
 /// by the constraint
-pub(crate) fn check_out_maybe_retry_on_queue_limit_reached<P, T, M>(
+pub(crate) async fn check_out_maybe_retry_on_queue_limit_reached<P, T, M>(
     pool: &P,
     constraint: M,
     retry_enabled: bool,
-) -> CheckoutManaged<T>
+) -> Result<Managed<T>, CheckoutError>
 where
     P: CanCheckout<T> + Clone + Send + 'static,
     T: Poolable,
-    M: Into<CheckoutConstraint>,
+    M: Into<CheckoutConstraint> + Send + 'static,
 {
     if !retry_enabled {
-        pool.check_out(constraint)
-    } else {
-        let pool = pool.clone();
-        let constraint = constraint.into();
-        CheckoutManaged::new(pool.check_out(constraint).or_else(move |err| {
+        return pool.check_out(constraint).await;
+    }
+
+    let constraint = constraint.into();
+
+    match pool.check_out(constraint).await {
+        Ok(conn) => Ok(conn),
+        Err(err) => {
             if err.kind() != CheckoutErrorKind::CheckoutLimitReached {
-                CheckoutManaged::error(err.kind())
+                Err(err)
             } else {
-                retry_on_queue_limit_reached(pool, constraint, err.kind())
+                retry_on_queue_limit_reached(pool, constraint, err.kind()).await
             }
-        }))
+        }
     }
 }
 
-fn retry_on_queue_limit_reached<P, T>(
-    pool: P,
+async fn retry_on_queue_limit_reached<P, T>(
+    pool: &P,
     constraint: CheckoutConstraint,
     last_err: CheckoutErrorKind,
-) -> CheckoutManaged<T>
+) -> Result<Managed<T>, CheckoutError>
 where
     P: CanCheckout<T> + Send + 'static,
     T: Poolable,
 {
-    CheckoutManaged::new(future::loop_fn(
-        (pool, last_err),
-        move |(pool, last_err)| {
-            if !constraint.can_wait_for_dispatch() {
-                Box::new(future::err(CheckoutError::from(last_err)))
-            } else {
-                let f = pool.check_out(constraint).then(|r| match r {
-                    Ok(conn) => Box::new(future::ok(Loop::Break(conn))),
-                    Err(err) => {
-                        if err.kind() != CheckoutErrorKind::CheckoutLimitReached {
-                            Box::new(future::err(err))
-                        } else {
-                            let delayed = Delay::new(Instant::now() + Duration::from_millis(1))
-                                .map_err(|err| {
-                                    error!("A timer error occurred: {}", err);
-                                    CheckoutError::new(CheckoutErrorKind::TaskExecution)
-                                })
-                                .map(move |()| Loop::Continue((pool, err.kind())));
-                            Box::new(delayed) as Box<dyn Future<Item = _, Error = _> + Send>
-                        }
-                    }
-                });
-                Box::new(f) as Box<dyn Future<Item = _, Error = _> + Send>
+    loop {
+        if !constraint.can_wait_for_dispatch() {
+            return Err(CheckoutError::from(last_err));
+        }
+
+        match pool.check_out(constraint).await {
+            Ok(conn) => return Ok(conn),
+            Err(err) => {
+                if err.kind() != CheckoutErrorKind::CheckoutLimitReached {
+                    return Err(err);
+                }
+
+                delay_for(Duration::from_millis(1)).await;
             }
-        },
-    ))
+        }
+    }
 }
