@@ -358,7 +358,7 @@ fn start_inner_pool_consumer<T: Poolable>(
     internal_receiver: mpsc::UnboundedReceiver<PoolMessageEnvelope<T>>,
     executor: &ExecutorFlavour,
 ) {
-    executor.spawn(async move {
+    let _ = executor.spawn(async move {
         let checkout_stream = checkout_receiver
             .map(|rq| {
                 PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
