@@ -26,7 +26,7 @@ default = []
 
 [dev-dependencies]
 pretty_env_logger = "0.3"
-tokio = { version = "0.2", features = ["macros"] }
+tokio = { version = "0.2", features = ["rt-threaded", "macros"] }
 
 [[example]]
 name = "metrix_single_node"
