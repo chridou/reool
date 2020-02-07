@@ -19,7 +19,6 @@ use metrix::{
 };
 
 use pretty_env_logger;
-use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::time;
 
 use reool::connection_factory::*;
@@ -29,14 +28,12 @@ use reool::*;
 /// Simply use an artificial connection factory
 /// that does not create real connections and hammer the
 /// pool with checkout requests.
-#[tokio::main]
+#[tokio::main(core_threads = 1)]
 async fn main() {
     env::set_var("RUST_LOG", "info");
     let _ = pretty_env_logger::try_init();
 
     let mut driver = DriverBuilder::default().set_driver_metrics(false).build();
-
-    let runtime = RuntimeBuilder::new().core_threads(1).build().unwrap();
 
     let pool = RedisPool::builder()
         //.connect_to_nodes(vec!["C1".to_string()])
@@ -53,7 +50,6 @@ async fn main() {
         .retry_on_checkout_limit(true)
         .pool_multiplier(1)
         .default_checkout_mode(Duration::from_millis(30))
-        .task_executor(runtime.handle().clone())
         .with_mounted_metrix_instrumentation(&mut driver, Default::default())
         .finish(|conn| Ok(MyConnectionFactory(Arc::new(conn), AtomicUsize::new(0))))
         .unwrap();
@@ -87,7 +83,7 @@ async fn main() {
         let pool = pool.clone();
         let collect_result_metrics = collect_result_metrics.clone();
 
-        runtime.spawn(async move {
+        tokio::spawn(async move {
             while running.load(Ordering::Relaxed) {
                 let check_out = pool.check_out(checkout_mode).await;
                 
