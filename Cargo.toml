@@ -16,7 +16,7 @@ log = "0.4"
 failure = "0.1"
 futures = "0.3"
 trust-dns-resolver = "0.19"
-tokio = { version = "0.2", features = ["time", "sync"] }
+tokio = { version = "0.2", features = ["rt-core", "time", "sync"] }
 redis = "0.15"
 rand = "0.7"
 metrix = { version = "0.13", optional = true, features = ["log"] }
