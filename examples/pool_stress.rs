@@ -6,9 +6,8 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-use failure::Fallible;
-use futures::*;
 use future::BoxFuture;
+use futures::*;
 use log::info;
 use metrix::cockpit::Cockpit;
 use metrix::instruments::*;
@@ -22,6 +21,7 @@ use pretty_env_logger;
 use tokio::time;
 
 use reool::connection_factory::*;
+use reool::error::Error;
 use reool::CheckoutErrorKind;
 use reool::*;
 
@@ -86,7 +86,6 @@ async fn main() {
         tokio::spawn(async move {
             while running.load(Ordering::Relaxed) {
                 let check_out = pool.check_out(checkout_mode).await;
-                
                 if collect_result_metrics.collect(check_out).is_err() {
                     break;
                 }
@@ -127,9 +126,8 @@ struct MyConnectionFactory(Arc<String>, AtomicUsize);
 impl ConnectionFactory for MyConnectionFactory {
     type Connection = MyConn;
 
-    fn create_connection(&self) -> BoxFuture<Fallible<Self::Connection>> {
+    fn create_connection(&self) -> BoxFuture<Result<Self::Connection, Error>> {
         let count = self.1.fetch_add(1, Ordering::SeqCst);
-        
         future::ok(MyConn(count, Arc::clone(&self.0))).boxed()
     }
 

@@ -2,7 +2,7 @@ use std::env;
 
 use crate::activation_order::ActivationOrder;
 use crate::config::*;
-use crate::error::{InitializationError, InitializationResult};
+use crate::error::{Error, InitializationResult};
 
 fn make_prefix<T: Into<String>>(prefix: Option<T>) -> String {
     prefix
@@ -20,12 +20,11 @@ where
     let key = format!("{}_{}", prefix, "DESIRED_POOL_SIZE");
     match env::var(&key) {
         Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
             Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
+        Err(err) => Err(Error::new(key, Some(err))),
     }
 }
 
@@ -39,12 +38,11 @@ where
     let key = format!("{}_{}", prefix, "DEFAULT_POOL_CHECKOUT_MODE");
     match env::var(&key).map(|s| s.to_uppercase()) {
         Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
             Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
+        Err(err) => Err(Error::new(key, Some(err))),
     }
 }
 
@@ -58,12 +56,11 @@ where
     let key = format!("{}_{}", prefix, "RESERVATION_LIMIT");
     match env::var(&key).map(|s| s.to_uppercase()) {
         Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
             Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
+        Err(err) => Err(Error::new(key, Some(err))),
     }
 }
 
@@ -77,12 +74,11 @@ where
     let key = format!("{}_{}", prefix, "MIN_REQUIRED_NODES");
     match env::var(&key) {
         Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
             Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
+        Err(err) => Err(Error::new(key, Some(err))),
     }
 }
 
@@ -98,11 +94,11 @@ where
         Ok(s) => {
             f(s.to_lowercase()
                 .parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
+                .map_err(|err| Error::new(key, Some(err)))?);
             Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
+        Err(err) => Err(Error::new(key, Some(err))),
     }
 }
 
@@ -116,12 +112,11 @@ where
     let key = format!("{}_{}", prefix, "ACTIVATION_ORDER");
     match env::var(&key) {
         Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
             Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
+        Err(err) => Err(Error::new(key, Some(err))),
     }
 }
 
@@ -135,7 +130,7 @@ where
     let s = match env::var(&key) {
         Ok(s) => s,
         Err(env::VarError::NotPresent) => return Ok(None),
-        Err(err) => return Err(InitializationError::new(key, Some(err))),
+        Err(err) => return Err(Error::new(key, Some(err))),
     };
 
     let parts = parse_connect_to(&s);
@@ -143,10 +138,7 @@ where
     if !parts.is_empty() {
         Ok(Some(parts))
     } else {
-        Err(InitializationError::message_only(format!(
-            "Found '{}' but it is empty",
-            key
-        )))
+        Err(Error::message(format!("Found '{}' but it is empty", key)))
     }
 }
 
@@ -160,12 +152,11 @@ where
     let key = format!("{}_{}", prefix, "POOL_MULTIPLIER");
     match env::var(&key) {
         Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
             Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
+        Err(err) => Err(Error::new(key, Some(err))),
     }
 }
 
@@ -179,12 +170,11 @@ where
     let key = format!("{}_{}", prefix, "CHECKOUT_QUEUE_SIZE");
     match env::var(&key) {
         Ok(s) => {
-            f(s.parse()
-                .map_err(|err| InitializationError::new(key, Some(err)))?);
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
             Ok(())
         }
         Err(env::VarError::NotPresent) => Ok(()),
-        Err(err) => Err(InitializationError::new(key, Some(err))),
+        Err(err) => Err(Error::new(key, Some(err))),
     }
 }
 

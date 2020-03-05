@@ -8,11 +8,11 @@ use log::{debug, info};
 use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
 use crate::error::{CheckoutError, CheckoutErrorKind};
-use crate::error::{InitializationError, InitializationResult};
+use crate::error::{Error, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::pools::pool_internal::instrumentation::PoolInstrumentation;
-use crate::pools::pool_internal::{Config as PoolConfig, PoolInternal, Managed};
+use crate::pools::pool_internal::{Config as PoolConfig, Managed, PoolInternal};
 use crate::{Ping, PoolState, Poolable};
 
 use super::super::CheckoutConstraint;
@@ -34,9 +34,7 @@ impl<T: Poolable> Inner<T> {
         F: Fn(String) -> InitializationResult<CF>,
     {
         if config.pool_multiplier == 0 {
-            return Err(InitializationError::message_only(
-                "'pool_multiplier' may not be zero",
-            ));
+            return Err(Error::message("'pool_multiplier' may not be zero"));
         }
 
         let multiplier = config.pool_multiplier as usize;
@@ -99,7 +97,10 @@ impl<T: Poolable> Inner<T> {
         Ok(inner)
     }
 
-    pub async fn check_out(&self, constraint: CheckoutConstraint) -> Result<Managed<T>, CheckoutError> {
+    pub async fn check_out(
+        &self,
+        constraint: CheckoutConstraint,
+    ) -> Result<Managed<T>, CheckoutError> {
         if self.pools.is_empty() {
             return Err(CheckoutErrorKind::NoPool.into());
         }
@@ -120,7 +121,10 @@ impl<T: Poolable> Inner<T> {
                 CheckoutConstraint::Immediately
             };
 
-            match self.pools[first_pool_index].check_out(effective_constraint).await {
+            match self.pools[first_pool_index]
+                .check_out(effective_constraint)
+                .await
+            {
                 Ok(checkout) => return Ok(checkout),
                 Err(failed_checkout) if self.pools.len() == 1 => {
                     return Err(failed_checkout.error_kind.into());
@@ -145,10 +149,13 @@ impl<T: Poolable> Inner<T> {
                 CheckoutConstraint::Immediately
             };
 
-            match self.pools[idx].check_out2(
-                last_failed_checkout.checkout_requested_at,
-                current_constraint,
-            ).await {
+            match self.pools[idx]
+                .check_out2(
+                    last_failed_checkout.checkout_requested_at,
+                    current_constraint,
+                )
+                .await
+            {
                 Ok(checkout) => return Ok(checkout),
                 Err(failed_checkout) => {
                     last_failed_checkout = failed_checkout;

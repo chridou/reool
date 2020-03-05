@@ -3,7 +3,7 @@ use std::fmt;
 
 use redis::{ErrorKind as RedisErrorKind, RedisError};
 
-pub type InitializationResult<T> = Result<T, InitializationError>;
+pub type InitializationResult<T> = Result<T, Error>;
 
 /// An error specifying what went wrong
 /// on a failed checkout
@@ -108,30 +108,27 @@ impl From<CheckoutError> for RedisError {
 
 /// An initialization has failed
 #[derive(Debug)]
-pub struct InitializationError {
+pub struct Error {
     message: Option<String>,
-    cause: Option<Box<dyn StdError + Send + Sync>>,
+    cause: Option<Box<dyn StdError + Send>>,
 }
 
-impl InitializationError {
-    pub fn new<T: Into<String>, E: StdError + Send + Sync + 'static>(
-        msg: T,
-        cause: Option<E>,
-    ) -> Self {
+impl Error {
+    pub fn new<T: Into<String>, E: StdError + Send + 'static>(msg: T, cause: Option<E>) -> Self {
         Self {
             message: Some(msg.into()),
-            cause: cause.map(|cause| Box::new(cause) as Box<dyn StdError + Send + Sync>),
+            cause: cause.map(|cause| Box::new(cause) as Box<dyn StdError + Send>),
         }
     }
 
-    pub fn message_only<T: Into<String>>(msg: T) -> Self {
+    pub fn message<T: Into<String>>(msg: T) -> Self {
         Self {
             message: Some(msg.into()),
             cause: None,
         }
     }
 
-    pub fn cause_only<E: StdError + Send + Sync + 'static>(cause: E) -> Self {
+    pub fn cause_by<E: StdError + Send + Sync + 'static>(cause: E) -> Self {
         Self {
             message: None,
             cause: Some(Box::new(cause)),
@@ -139,7 +136,7 @@ impl InitializationError {
     }
 }
 
-impl fmt::Display for InitializationError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match (self.message.as_ref(), self.cause.as_ref()) {
             (Some(msg), Some(cause)) => write!(f, "{}: {}", msg, cause),
@@ -150,12 +147,14 @@ impl fmt::Display for InitializationError {
     }
 }
 
-impl StdError for InitializationError {
-    fn description(&self) -> &str {
-        "initialization failed"
-    }
-
-    fn cause(&self) -> Option<&dyn StdError> {
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
         self.cause.as_ref().map(|cause| &**cause as &dyn StdError)
+    }
+}
+
+impl From<CheckoutError> for Error {
+    fn from(error: CheckoutError) -> Self {
+        Error::new("checkout error", Some(error))
     }
 }

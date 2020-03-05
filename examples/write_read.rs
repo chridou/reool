@@ -1,17 +1,17 @@
 use std::env;
 
-use failure::Fallible;
 use log::info;
 use pretty_env_logger;
 use tokio::runtime::Handle;
 
+use reool::error::Error;
 use reool::*;
 
 const MY_KEY: &str = "my_key";
 
 /// Write and read a single key.
 #[tokio::main]
-async fn main() -> Fallible<()> {
+async fn main() -> Result<(), Error> {
     env::set_var("RUST_LOG", "reool=debug,write_read=info");
     let _ = pretty_env_logger::try_init();
 
@@ -45,6 +45,5 @@ async fn main() -> Fallible<()> {
 
     drop(pool);
     info!("pool dropped");
-    
     Ok(())
 }

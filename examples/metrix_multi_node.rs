@@ -1,14 +1,14 @@
 use std::env;
 use std::time::Instant;
 
-use failure::Fallible;
-use futures::prelude::*;
 use futures::future::join_all;
+use futures::prelude::*;
 use log::{debug, error, info};
 use metrix::driver::DriverBuilder;
 use pretty_env_logger;
 use tokio::runtime::Handle;
 
+use reool::error::Error;
 use reool::*;
 
 /// Do many ping commands where many will fail because either
@@ -38,24 +38,21 @@ async fn main() {
         .unwrap();
 
     info!("Do 10000 pings concurrently");
-    let futs = (0..10_000)
-        .map(|i|
-            async {
-                let mut check_out = pool.check_out_default().await?;
-                check_out.ping().await?;
-                Fallible::Ok(())
-            }
-            .map(move |res| match res {
-                Err(err) => error!("PING {} failed: {}", i, err),
-                Ok(()) => debug!("PING {} OK", i),
-            })
-        );
-
+    let futs = (0..10_000).map(|i| {
+        async {
+            let mut check_out = pool.check_out_default().await?;
+            check_out.ping().await?;
+            Result::<(), Error>::Ok(())
+        }
+        .map(move |res| match res {
+            Err(err) => error!("PING {} failed: {}", i, err),
+            Ok(()) => debug!("PING {} OK", i),
+        })
+    });
 
     let start = Instant::now();
 
     join_all(futs).await;
-    
     info!("PINGED 10000 times concurrently in {:?}", start.elapsed());
 
     let metrics_snapshot = driver.snapshot(false).unwrap();

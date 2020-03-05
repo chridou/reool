@@ -45,13 +45,13 @@ pub use commands::Commands;
 pub use pool_connection::{ConnectionFlavour, PoolConnection};
 
 pub mod connection_factory;
+pub mod error;
 pub(crate) mod executor_flavour;
 pub(crate) mod helpers;
 
 mod activation_order;
 mod backoff_strategy;
 mod commands;
-mod error;
 mod pool_connection;
 mod pools;
 mod redis_rs;
@@ -203,13 +203,18 @@ impl<T: Poolable> RedisPool<T> {
 
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the pool as a default.
-    pub fn check_out_default<'a>(&'a self) -> impl Future<Output = Result<PoolConnection<T>, CheckoutError>> + 'a {
+    pub fn check_out_default<'a>(
+        &'a self,
+    ) -> impl Future<Output = Result<PoolConnection<T>, CheckoutError>> + 'a {
         self.check_out(CheckoutMode::PoolDefault)
     }
 
     /// Checkout a new connection and choose whether to wait for a connection or not
     /// as defined by the `CheckoutMode`.
-    pub async fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> Result<PoolConnection<T>, CheckoutError> {
+    pub async fn check_out<M: Into<CheckoutMode>>(
+        &self,
+        mode: M,
+    ) -> Result<PoolConnection<T>, CheckoutError> {
         let constraint = pools::CheckoutConstraint::from_checkout_mode_and_pool_default(
             mode,
             self.default_checkout_mode,
@@ -221,19 +226,21 @@ impl<T: Poolable> RedisPool<T> {
                     pool,
                     constraint,
                     self.retry_on_checkout_limit,
-                ).await?
+                )
+                .await?
             }
             RedisPoolFlavour::PerNode(ref pool) => {
                 pools::check_out_maybe_retry_on_queue_limit_reached(
                     pool,
                     constraint,
                     self.retry_on_checkout_limit,
-                ).await?
+                )
+                .await?
             }
             RedisPoolFlavour::Empty => {
                 let err = CheckoutError::new(CheckoutErrorKind::NoPool);
                 return Err(err);
-            },
+            }
         };
 
         Ok(PoolConnection {
@@ -265,10 +272,7 @@ impl<T: Poolable> RedisPool<T> {
     /// This method only fails with `()` if the underlying connection
     /// does not support pinging. All other errors will be contained
     /// in the returned `Ping` struct.
-    pub fn ping<TO: Into<Timeout>>(
-        &self,
-        timeout: TO,
-    ) -> BoxFuture<Vec<Ping>> {
+    pub fn ping<TO: Into<Timeout>>(&self, timeout: TO) -> BoxFuture<Vec<Ping>> {
         let deadline = timeout.into().0;
 
         match self.flavour {

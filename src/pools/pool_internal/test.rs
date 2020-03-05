@@ -1,17 +1,19 @@
-use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::Duration;
 
-use failure::{Fallible, format_err};
-use futures::prelude::*;
 use future::BoxFuture;
+use futures::prelude::*;
 use pretty_env_logger;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::time;
 
 use crate::backoff_strategy::BackoffStrategy;
-use crate::error::CheckoutErrorKind;
+use crate::error::{CheckoutErrorKind, Error};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::StateCounters;
 use crate::pools::pool_internal::{Config, ConnectionFactory, PoolInternal};
@@ -24,7 +26,8 @@ async fn check_out_fut<T: Poolable, M: Into<CheckoutConstraint>>(
     pool: &PoolInternal<T>,
     constraint: M,
 ) -> Result<Managed<T>, CheckoutError> {
-    pool.check_out(constraint).await
+    pool.check_out(constraint)
+        .await
         .map_err(|failure_package| failure_package.error_kind.into())
 }
 
@@ -159,7 +162,8 @@ fn checkout_twice_with_one_not_reusable() {
     let mut runtime = Runtime::new().unwrap();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = PoolInternal::no_instrumentation(config, U32Factory::default(), runtime.handle().into());
+    let pool =
+        PoolInternal::no_instrumentation(config, U32Factory::default(), runtime.handle().into());
 
     thread::sleep(Duration::from_millis(10));
 
@@ -187,7 +191,11 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
     let mut runtime = Runtime::new().unwrap();
     let config = Config::default().desired_pool_size(1);
 
-    let pool = PoolInternal::no_instrumentation(config, U32DelayFactory::default(), runtime.handle().into());
+    let pool = PoolInternal::no_instrumentation(
+        config,
+        U32DelayFactory::default(),
+        runtime.handle().into(),
+    );
 
     // We do not return the con with managed
     let v = runtime.block_on(async {
@@ -272,7 +280,7 @@ fn reservations_should_be_fulfilled() {
 
         thread::sleep(Duration::from_millis(10));
 
-        while counters.reservations() < 1_000 {
+        for _ in 0..100_000 {
             let pool = pool.clone();
 
             runtime.spawn(async move {
@@ -291,7 +299,6 @@ fn reservations_should_be_fulfilled() {
         assert_eq!(counters.reservations(), 0, "reservations");
 
         drop(pool);
-
     });
 }
 
@@ -341,7 +348,7 @@ struct UnitFactory;
 impl ConnectionFactory for UnitFactory {
     type Connection = ();
 
-    fn create_connection(&self) -> BoxFuture<Fallible<Self::Connection>> {
+    fn create_connection(&self) -> BoxFuture<Result<Self::Connection, Error>> {
         future::ok(()).boxed()
     }
 
@@ -370,7 +377,7 @@ impl Default for U32Factory {
 
 impl ConnectionFactory for U32Factory {
     type Connection = u32;
-    fn create_connection(&self) -> BoxFuture<Fallible<Self::Connection>> {
+    fn create_connection(&self) -> BoxFuture<Result<Self::Connection, Error>> {
         future::ok(self.counter.fetch_add(1, Ordering::SeqCst)).boxed()
     }
     fn connecting_to(&self) -> &str {
@@ -382,13 +389,13 @@ struct U32FactoryFailsThreeTimesInARow(AtomicU32);
 impl ConnectionFactory for U32FactoryFailsThreeTimesInARow {
     type Connection = u32;
 
-    fn create_connection(&self) -> BoxFuture<Fallible<Self::Connection>> {
+    fn create_connection(&self) -> BoxFuture<Result<Self::Connection, Error>> {
         let current_count = self.0.fetch_add(1, Ordering::SeqCst);
 
         if current_count % 4 == 0 {
             future::ok(current_count).boxed()
         } else {
-            future::err(format_err!("hups, no connection")).boxed()
+            future::err(Error::message("hups, no connection")).boxed()
         }
     }
 
@@ -405,8 +412,8 @@ impl Default for U32FactoryFailsThreeTimesInARow {
 struct UnitFactoryAlwaysFails;
 impl ConnectionFactory for UnitFactoryAlwaysFails {
     type Connection = u32;
-    fn create_connection(&self) -> BoxFuture<Fallible<Self::Connection>> {
-        future::err(format_err!("i have no connections")).boxed()
+    fn create_connection(&self) -> BoxFuture<Result<Self::Connection, Error>> {
+        future::err(Error::message("i have no connections")).boxed()
     }
 
     fn connecting_to(&self) -> &str {
@@ -431,7 +438,7 @@ impl Default for U32DelayFactory {
 impl ConnectionFactory for U32DelayFactory {
     type Connection = u32;
 
-    fn create_connection(&self) -> BoxFuture<Fallible<Self::Connection>> {
+    fn create_connection(&self) -> BoxFuture<Result<Self::Connection, Error>> {
         let next = self.counter.fetch_add(1, Ordering::SeqCst);
 
         async move {

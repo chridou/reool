@@ -1,11 +1,10 @@
 //! Building blocks for creating a `ConnectionFactory`
 use std::time::{Duration, Instant};
 
-use failure::Fallible;
-use futures::prelude::*;
 use future::{self, BoxFuture};
+use futures::prelude::*;
 
-use crate::{Ping, Poolable, PingState};
+use crate::{error::Error, Ping, PingState, Poolable};
 
 /// A factory for connections that always creates
 /// connections to the same node.
@@ -15,7 +14,7 @@ use crate::{Ping, Poolable, PingState};
 pub trait ConnectionFactory {
     type Connection: Poolable;
     /// Create a new connection
-    fn create_connection(&self) -> BoxFuture<Fallible<Self::Connection>>;
+    fn create_connection(&self) -> BoxFuture<Result<Self::Connection, Error>>;
     /// The node this factory will connect to when a new
     /// connection is requested.
     fn connecting_to(&self) -> &str;
@@ -30,7 +29,7 @@ pub trait ConnectionFactory {
             latency: None,
             total_time: Duration::default(),
             uri: self.connecting_to().to_owned(),
-            state: PingState::failed_msg("pinging is not supported by this connection factory")
+            state: PingState::failed_msg("pinging is not supported by this connection factory"),
         })
         .boxed()
     }

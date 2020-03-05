@@ -1,17 +1,17 @@
 use std::env;
 
-use failure::{Fallible, ResultExt};
-use futures::prelude::*;
 use future::join_all;
+use futures::prelude::*;
 use log::{debug, error, info};
 use pretty_env_logger;
 
+use reool::error::Error;
 use reool::*;
 
 /// Do many ping commands with no checkout timeout
 /// and an unbounded checkout queue runing on the default runtime
 #[tokio::main]
-async fn main() -> Fallible<()> {
+async fn main() -> Result<(), Error> {
     env::set_var("RUST_LOG", "reool=debug,runtime=debug");
     let _ = pretty_env_logger::try_init();
 
@@ -21,23 +21,21 @@ async fn main() -> Fallible<()> {
         .reservation_limit(1_000_000)
         .default_checkout_mode(Immediately)
         //.task_executor(runtime.executor()) no explicit executor!
-        .finish_redis_rs()
-        .context("Failed to create pool")?;
+        .finish_redis_rs()?;
 
     info!("Do one 1000 pings concurrently");
 
-    let futs = (0..1_000)
-        .map(|i|
-            async {
-                let mut check_out = pool.check_out(PoolDefault).await?;
-                check_out.ping().await?;
-                Fallible::Ok(())
-            }
-            .map(move |res| match res {
-                Err(err) => error!("PING {} failed: {}", i, err),
-                Ok(()) => debug!("PING {} OK", i),
-            })
-        );
+    let futs = (0..1_000).map(|i| {
+        async {
+            let mut check_out = pool.check_out(PoolDefault).await?;
+            check_out.ping().await?;
+            Result::<(), Error>::Ok(())
+        }
+        .map(move |res| match res {
+            Err(err) => error!("PING {} failed: {}", i, err),
+            Ok(()) => debug!("PING {} OK", i),
+        })
+    });
 
     join_all(futs).await;
 

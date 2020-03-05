@@ -19,7 +19,7 @@ use crate::Poolable;
 
 pub use crate::activation_order::ActivationOrder;
 pub use crate::backoff_strategy::BackoffStrategy;
-pub use crate::error::InitializationError;
+pub use crate::error::Error;
 pub use builder::Builder;
 pub use config_types::*;
 

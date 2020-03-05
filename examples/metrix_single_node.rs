@@ -1,9 +1,8 @@
 use std::env;
 use std::time::{Duration, Instant};
 
-use failure::Fallible;
-use futures::prelude::*;
 use futures::future::join_all;
+use futures::prelude::*;
 use log::{debug, error, info};
 use metrix::driver::DriverBuilder;
 use pretty_env_logger;
@@ -11,6 +10,7 @@ use tokio::runtime::Handle;
 use tokio::time;
 
 use reool::config::ActivationOrder;
+use reool::error::Error;
 use reool::{Commands, RedisPool};
 
 /// Do many ping commands where many will faile because either
@@ -40,18 +40,17 @@ async fn main() {
     time::delay_for(Duration::from_secs(1)).await;
 
     info!("Do 20000 pings concurrently");
-    let futs = (0..20_000)
-        .map(|i: usize|
-            async {
-                let mut check_out = pool.check_out_default().await?;
-                check_out.ping().await?;
-                Fallible::Ok(())
-            }
-            .map(move |res| match res {
-                Err(err) => error!("PING {} failed: {}", i, err),
-                Ok(()) => debug!("PING {} OK", i),
-            })
-        );
+    let futs = (0..20_000).map(|i: usize| {
+        async {
+            let mut check_out = pool.check_out_default().await?;
+            check_out.ping().await?;
+            Result::<(), Error>::Ok(())
+        }
+        .map(move |res| match res {
+            Err(err) => error!("PING {} failed: {}", i, err),
+            Ok(()) => debug!("PING {} OK", i),
+        })
+    });
 
     let start = Instant::now();
 

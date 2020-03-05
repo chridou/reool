@@ -2,22 +2,22 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::prelude::*;
 use future::BoxFuture;
+use futures::prelude::*;
 use log::info;
 
 use crate::config::Config;
 use crate::connection_factory::ConnectionFactory;
-use crate::error::{InitializationError, InitializationResult};
+use crate::error::{Error, InitializationResult};
 use crate::executor_flavour::ExecutorFlavour;
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 
-use crate::{Ping, PoolState, Poolable, CheckoutError};
+use crate::{CheckoutError, Ping, PoolState, Poolable};
 
 use super::{CanCheckout, CheckoutConstraint};
 
 use super::pool_internal::{
-    instrumentation::PoolInstrumentation, Config as PoolConfig, PoolInternal, Managed,
+    instrumentation::PoolInstrumentation, Config as PoolConfig, Managed, PoolInternal,
 };
 
 /// A connection pool that maintains multiple connections
@@ -41,9 +41,7 @@ impl<T: Poolable> SinglePool<T> {
         F: Fn(String) -> InitializationResult<CF>,
     {
         if config.desired_pool_size == 0 {
-            return Err(InitializationError::message_only(
-                "'desired_pool_size' must be at least one",
-            ));
+            return Err(Error::message("'desired_pool_size' must be at least one"));
         }
 
         let pool_conf = PoolConfig {
@@ -63,7 +61,7 @@ impl<T: Poolable> SinglePool<T> {
 
             create_connection_factory(connect_to)?
         } else {
-            return Err(InitializationError::message_only(format!(
+            return Err(Error::message(format!(
                 "there must be exactly 1 connection string given - found {}",
                 config.connect_to_nodes.len()
             )));
@@ -95,8 +93,12 @@ impl<T: Poolable> SinglePool<T> {
 }
 
 impl<T: Poolable> CanCheckout<T> for SinglePool<T> {
-    fn check_out<'a, M: Into<CheckoutConstraint> + Send + 'static>(&'a self, constraint: M) -> BoxFuture<'a, Result<Managed<T>, CheckoutError>> {
-        self.pool.check_out(constraint)
+    fn check_out<'a, M: Into<CheckoutConstraint> + Send + 'static>(
+        &'a self,
+        constraint: M,
+    ) -> BoxFuture<'a, Result<Managed<T>, CheckoutError>> {
+        self.pool
+            .check_out(constraint)
             .map_err(|error_package| error_package.error_kind.into())
             .boxed()
     }
