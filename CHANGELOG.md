@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.23.0 (BREAKING CHANGE)
+    * Transition to async/await and futures 0.3.
+
 ## 0.22.3
     * When there are multiple pools, try to immediately check out on all but the last
 
