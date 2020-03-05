@@ -1,36 +1,38 @@
 use std::error::Error;
 
 use futures::future::Future;
-use tokio::executor::{DefaultExecutor, Executor};
-use tokio::runtime::TaskExecutor;
+use tokio::runtime::Handle;
 
 /// Compatibility for different executors
 #[derive(Clone)]
 pub enum ExecutorFlavour {
     Runtime,
-    TokioTaskExecutor(TaskExecutor),
+    TokioTaskExecutor(Handle),
 }
 
 impl ExecutorFlavour {
     pub fn spawn<F>(&self, task: F) -> Result<(), Box<dyn Error>>
     where
-        F: Future<Item = (), Error = ()> + Send + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
         match self {
-            ExecutorFlavour::Runtime => DefaultExecutor::current()
-                .spawn(Box::new(task))
-                .map_err(|err| Box::new(err) as Box<dyn Error>),
-            ExecutorFlavour::TokioTaskExecutor(executor) => {
-                executor.spawn(Box::new(task));
-                Ok(())
-            }
-        }
+            ExecutorFlavour::Runtime => Handle::try_current()?.spawn(task),
+            ExecutorFlavour::TokioTaskExecutor(handle) => handle.spawn(task),
+        };
+
+        Ok(())
     }
 }
 
-impl From<TaskExecutor> for ExecutorFlavour {
-    fn from(exec: TaskExecutor) -> Self {
-        ExecutorFlavour::TokioTaskExecutor(exec)
+impl From<Handle> for ExecutorFlavour {
+    fn from(handle: Handle) -> Self {
+        ExecutorFlavour::TokioTaskExecutor(handle)
+    }
+}
+
+impl From<&Handle> for ExecutorFlavour {
+    fn from(handle: &Handle) -> Self {
+        ExecutorFlavour::TokioTaskExecutor(handle.clone())
     }
 }
 

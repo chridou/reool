@@ -1,14 +1,10 @@
 //! Building blocks for creating a `ConnectionFactory`
-use std::error::Error as StdError;
-use std::fmt;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use futures::{
-    future::{self, Future},
-    Poll,
-};
+use future::{self, BoxFuture};
+use futures::prelude::*;
 
-use crate::{Ping, Poolable};
+use crate::{error::Error, Ping, PingState, Poolable};
 
 /// A factory for connections that always creates
 /// connections to the same node.
@@ -18,7 +14,7 @@ use crate::{Ping, Poolable};
 pub trait ConnectionFactory {
     type Connection: Poolable;
     /// Create a new connection
-    fn create_connection(&self) -> NewConnection<Self::Connection>;
+    fn create_connection(&self) -> BoxFuture<Result<Self::Connection, Error>>;
     /// The node this factory will connect to when a new
     /// connection is requested.
     fn connecting_to(&self) -> &str;
@@ -27,73 +23,14 @@ pub trait ConnectionFactory {
     /// This will create a new connection and try a ping on it.
     ///
     /// If a factory does not support `ping` it will simply fail with `()`.
-    fn ping(&self, _timeout: Instant) -> Box<dyn Future<Item = Ping, Error = ()> + Send> {
-        Box::new(future::err(()))
-    }
-}
-
-/// Creating a new connection failed
-///
-/// This struct is just a wrapper around an arbitrary
-/// `std::error::Error`.
-#[derive(Debug)]
-pub struct NewConnectionError {
-    cause: Box<dyn StdError + Send + 'static>,
-}
-
-impl NewConnectionError {
-    /// Create a new instance with the given cause.
-    pub fn new<E>(cause: E) -> Self
-    where
-        E: StdError + Send + 'static,
-    {
-        Self {
-            cause: Box::new(cause),
-        }
-    }
-}
-
-impl From<Box<dyn StdError + Send + Sync + 'static>> for NewConnectionError {
-    fn from(cause: Box<dyn StdError + Send + Sync + 'static>) -> Self {
-        Self { cause }
-    }
-}
-
-impl fmt::Display for NewConnectionError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "could not create a new connection: {}", self.cause)
-    }
-}
-
-impl StdError for NewConnectionError {
-    fn description(&self) -> &str {
-        "could not create a new connection"
-    }
-
-    fn cause(&self) -> Option<&dyn StdError> {
-        Some(&*self.cause)
-    }
-}
-
-/// A `Future` that might complete with a new connection
-pub struct NewConnection<T: Poolable> {
-    inner: Box<dyn Future<Item = T, Error = NewConnectionError> + Send + 'static>,
-}
-
-impl<T: Poolable> NewConnection<T> {
-    pub fn new<F>(f: F) -> Self
-    where
-        F: Future<Item = T, Error = NewConnectionError> + Send + 'static,
-    {
-        Self { inner: Box::new(f) }
-    }
-}
-
-impl<T: Poolable> Future for NewConnection<T> {
-    type Item = T;
-    type Error = NewConnectionError;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.inner.poll()
+    fn ping(&self, _timeout: Instant) -> BoxFuture<Ping> {
+        future::ready(Ping {
+            connect_time: None,
+            latency: None,
+            total_time: Duration::default(),
+            uri: self.connecting_to().to_owned(),
+            state: PingState::failed_msg("pinging is not supported by this connection factory"),
+        })
+        .boxed()
     }
 }

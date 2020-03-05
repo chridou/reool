@@ -26,18 +26,15 @@
 //! License: Apache-2.0/MIT
 use std::time::{Duration, Instant};
 
-use futures::{
-    future::{self, Future},
-    try_ready, Async, Poll,
-};
+use futures::prelude::*;
 
 use crate::config::Builder;
 use crate::config::DefaultPoolCheckoutMode;
-use crate::pools::pool_internal::CheckoutManaged;
 
 pub mod config;
 pub mod instrumentation;
 
+use future::BoxFuture;
 pub use redis::{
     aio::ConnectionLike, cmd, Cmd, FromRedisValue, NumericBehavior, RedisError, RedisFuture,
     ToRedisArgs, Value,
@@ -48,13 +45,13 @@ pub use commands::Commands;
 pub use pool_connection::{ConnectionFlavour, PoolConnection};
 
 pub mod connection_factory;
+pub mod error;
 pub(crate) mod executor_flavour;
 pub(crate) mod helpers;
 
 mod activation_order;
 mod backoff_strategy;
 mod commands;
-mod error;
 mod pool_connection;
 mod pools;
 mod redis_rs;
@@ -63,36 +60,6 @@ mod redis_rs;
 pub trait Poolable: Send + Sized + 'static {
     /// The host/addr this connection is connected to.
     fn connected_to(&self) -> &str;
-}
-
-/// A `Future` that represents a checkout.
-///
-/// A `Checkout` can fail for various reasons.
-///
-/// The most common ones are:
-/// * There was a timeout on the checkout and it timed out
-/// * The queue size was limited and the limit was reached
-/// * There are simply no connections available
-/// * There is no connected node
-pub struct Checkout<T: Poolable = ConnectionFlavour>(CheckoutManaged<T>);
-
-impl<T: Poolable> Checkout<T> {
-    pub fn error<E: Into<CheckoutError>>(err: E) -> Self {
-        Checkout(CheckoutManaged::error(err))
-    }
-}
-
-impl<T: Poolable> Future for Checkout<T> {
-    type Item = PoolConnection<T>;
-    type Error = CheckoutError;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let managed = try_ready!(self.0.poll());
-        Ok(Async::Ready(PoolConnection {
-            managed,
-            connection_state_ok: true,
-        }))
-    }
 }
 
 /// Various options on retrieving a connection
@@ -236,36 +203,50 @@ impl<T: Poolable> RedisPool<T> {
 
     /// Checkout a new connection and if the request has to be enqueued
     /// use a timeout as defined by the pool as a default.
-    pub fn check_out_default(&self) -> Checkout<T> {
+    pub fn check_out_default<'a>(
+        &'a self,
+    ) -> impl Future<Output = Result<PoolConnection<T>, CheckoutError>> + 'a {
         self.check_out(CheckoutMode::PoolDefault)
     }
 
     /// Checkout a new connection and choose whether to wait for a connection or not
     /// as defined by the `CheckoutMode`.
-    pub fn check_out<M: Into<CheckoutMode>>(&self, mode: M) -> Checkout<T> {
+    pub async fn check_out<M: Into<CheckoutMode>>(
+        &self,
+        mode: M,
+    ) -> Result<PoolConnection<T>, CheckoutError> {
         let constraint = pools::CheckoutConstraint::from_checkout_mode_and_pool_default(
             mode,
             self.default_checkout_mode,
         );
-        match self.flavour {
+
+        let managed = match self.flavour {
             RedisPoolFlavour::Single(ref pool) => {
-                Checkout(pools::check_out_maybe_retry_on_queue_limit_reached(
+                pools::check_out_maybe_retry_on_queue_limit_reached(
                     pool,
                     constraint,
                     self.retry_on_checkout_limit,
-                ))
+                )
+                .await?
             }
             RedisPoolFlavour::PerNode(ref pool) => {
-                Checkout(pools::check_out_maybe_retry_on_queue_limit_reached(
+                pools::check_out_maybe_retry_on_queue_limit_reached(
                     pool,
                     constraint,
                     self.retry_on_checkout_limit,
-                ))
+                )
+                .await?
             }
-            RedisPoolFlavour::Empty => Checkout(CheckoutManaged::new(future::err(
-                CheckoutError::new(CheckoutErrorKind::NoPool),
-            ))),
-        }
+            RedisPoolFlavour::Empty => {
+                let err = CheckoutError::new(CheckoutErrorKind::NoPool);
+                return Err(err);
+            }
+        };
+
+        Ok(PoolConnection {
+            managed,
+            connection_state_ok: true,
+        })
     }
 
     pub fn connected_to(&self) -> Vec<String> {
@@ -291,16 +272,13 @@ impl<T: Poolable> RedisPool<T> {
     /// This method only fails with `()` if the underlying connection
     /// does not support pinging. All other errors will be contained
     /// in the returned `Ping` struct.
-    pub fn ping<TO: Into<Timeout>>(
-        &self,
-        timeout: TO,
-    ) -> impl Future<Item = Vec<Ping>, Error = ()> + Send {
+    pub fn ping<TO: Into<Timeout>>(&self, timeout: TO) -> BoxFuture<Vec<Ping>> {
         let deadline = timeout.into().0;
+
         match self.flavour {
-            RedisPoolFlavour::Single(ref pool) => Box::new(pool.ping(deadline).map(|p| vec![p]))
-                as Box<dyn Future<Item = _, Error = ()> + Send>,
-            RedisPoolFlavour::PerNode(ref pool) => Box::new(pool.ping(deadline)),
-            RedisPoolFlavour::Empty => Box::new(future::ok(vec![])),
+            RedisPoolFlavour::Single(ref pool) => pool.ping(deadline).map(|p| vec![p]).boxed(),
+            RedisPoolFlavour::PerNode(ref pool) => pool.ping(deadline).boxed(),
+            RedisPoolFlavour::Empty => future::ready(vec![]).boxed(),
         }
     }
 }

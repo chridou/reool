@@ -14,7 +14,7 @@ use super::*;
 
 pub use crate::activation_order::ActivationOrder;
 pub use crate::backoff_strategy::BackoffStrategy;
-pub use crate::error::InitializationError;
+pub use crate::error::Error;
 
 /// A builder for a `RedisPool`
 pub struct Builder {
@@ -125,8 +125,8 @@ impl Builder {
 
     /// The executor to use for spawning tasks. If not set it is assumed
     /// that the pool is created on the default runtime.
-    pub fn task_executor(mut self, executor: ::tokio::runtime::TaskExecutor) -> Self {
-        self.executor_flavour = ExecutorFlavour::TokioTaskExecutor(executor);
+    pub fn task_executor(mut self, handle: ::tokio::runtime::Handle) -> Self {
+        self.executor_flavour = ExecutorFlavour::TokioTaskExecutor(handle);
         self
     }
 
@@ -210,19 +210,15 @@ impl Builder {
         let config = self.config;
 
         if config.pool_multiplier == 0 {
-            return Err(InitializationError::message_only(
-                "pool_multiplier must not be zero",
-            ));
+            return Err(Error::message("pool_multiplier must not be zero"));
         }
 
         if config.checkout_queue_size == 0 {
-            return Err(InitializationError::message_only(
-                "checkout_queue_size must be greater than 0",
-            ));
+            return Err(Error::message("checkout_queue_size must be greater than 0"));
         }
 
         if config.connect_to_nodes.len() < config.min_required_nodes {
-            return Err(InitializationError::message_only(format!(
+            return Err(Error::message(format!(
                 "There must be at least {} node(s) defined. There are only {} defined.",
                 config.min_required_nodes,
                 config.connect_to_nodes.len()

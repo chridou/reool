@@ -1,6 +1,6 @@
 [package]
 name = "reool"
-version = "0.22.3"
+version = "0.23.0"
 authors = ["Christian Douven <chridou@users.noreply.github.com>"]
 readme = "README.md"
 license = "Apache-2.0/MIT"
@@ -13,19 +13,19 @@ edition = "2018"
 
 [dependencies]
 log = "0.4"
-futures = "0.1"
-trust-dns-resolver = "0.12"
-tokio = "0.1"
-tokio-timer = "0.2"
-redis = "0.13"
+futures = "0.3"
+trust-dns-resolver = "0.19"
+tokio = { version = "0.2", features = ["rt-core", "time", "sync"] }
+redis = "0.15"
 rand = "0.7"
-metrix = { version = "0.10", optional = true, features=["log"] }
+metrix = { version = "0.13", optional = true, features = ["log"] }
 
 [features]
 default = []
 
 [dev-dependencies]
-pretty_env_logger = "0.3"
+pretty_env_logger = "0.4.0"
+tokio = { version = "0.2", features = ["rt-threaded", "macros"] }
 
 [[example]]
 name = "metrix_single_node"
