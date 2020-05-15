@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.24.0 (BREAKING CHANGE)
+    * update to `redis-rs` 0.16.
+
 ## 0.23.0 (BREAKING CHANGE)
     * Transition to async/await and futures 0.3.
 

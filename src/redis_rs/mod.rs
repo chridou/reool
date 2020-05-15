@@ -58,7 +58,7 @@ impl ConnectionFactory for RedisRsFactory {
             let connection_info = url.into_connection_info().map_err(|err| {
                 Error::new("Failed to turn redis url into connection inf", Some(err))
             })?;
-            let connection = redis::aio::connect(&connection_info).await?;
+            let connection = redis::aio::connect_tokio(&connection_info).await?;
             let connection = ConnectionFlavour::RedisRs(connection, self.connects_to.clone());
 
             Ok(connection)
