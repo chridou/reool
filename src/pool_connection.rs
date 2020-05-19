@@ -1,3 +1,4 @@
+use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::sync::Arc;
 
 use futures::prelude::*;
@@ -19,12 +20,38 @@ pub struct PoolConnection<T: Poolable = ConnectionFlavour> {
     /// is not in a valid state anymore. For stateless connections this
     /// field is useless.
     pub(crate) connection_state_ok: bool,
-    pub(crate) managed: Managed<T>,
+    pub(crate) managed: Option<Managed<T>>,
 }
 
 impl<T: Poolable> PoolConnection<T> {
-    pub fn connected_to(&self) -> &str {
-        self.managed.connected_to()
+    fn get_connection(&mut self) -> Result<&mut T, IoError> {
+        let managed = if let Some(managed) = &mut self.managed {
+            managed
+        } else {
+            return Err(IoError::new(
+                IoErrorKind::ConnectionAborted,
+                "connection is broken due to a previous io error",
+            ));
+        };
+
+        if let Some(connection) = managed.connection_mut() {
+            Ok(connection)
+        } else {
+            Err(IoError::new(
+                IoErrorKind::ConnectionAborted,
+                "inner connection is invalid. THIS IS A BUG!",
+            ))
+        }
+    }
+
+    /// Invalidate the managed internal connection to prevent it from returning
+    /// to the pool and also immediately drop the invalidated managed connection to
+    /// trigger the creation of a new one
+    fn invalidate(&mut self) {
+        if let Some(mut managed) = self.managed.take() {
+            managed.invalidate()
+        }
+        self.managed = None;
     }
 }
 
@@ -34,18 +61,9 @@ where
 {
     fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
         async move {
-            let conn = match &mut self.managed.value {
-                Some(conn) => conn,
-                None => {
-                    return Err((
-                        ErrorKind::IoError,
-                        "connection is broken due to a previous io error",
-                    )
-                        .into())
-                }
-            };
-
             self.connection_state_ok = false;
+
+            let conn = self.get_connection()?;
 
             match conn.req_packed_command(cmd).await {
                 Ok(value) => {
@@ -56,7 +74,7 @@ where
                 Err(err) => {
                     if err.is_io_error() {
                         // TODO: Can we get a new connection?
-                        self.managed.value.take();
+                        self.invalidate();
                     } else {
                         self.connection_state_ok = true;
                     }
@@ -74,28 +92,20 @@ where
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>> {
         async move {
-            let conn = match &mut self.managed.value {
-                Some(conn) => conn,
-                None => {
-                    return Err((
-                        ErrorKind::IoError,
-                        "connection is broken due to a previous io error",
-                    )
-                        .into())
-                }
-            };
-
             self.connection_state_ok = false;
+
+            let conn = self.get_connection()?;
 
             match conn.req_packed_commands(pipeline, offset, count).await {
                 Ok(values) => {
                     self.connection_state_ok = true;
+
                     Ok(values)
                 }
                 Err(err) => {
                     if err.is_io_error() {
                         // TODO: Can we get a new connection?
-                        self.managed.value.take();
+                        self.invalidate();
                     } else {
                         self.connection_state_ok = true;
                     }
@@ -107,7 +117,7 @@ where
     }
 
     fn get_db(&self) -> i64 {
-        if let Some(conn) = self.managed.value.as_ref() {
+        if let Some(conn) = self.managed.as_ref() {
             conn.get_db()
         } else {
             -1
@@ -118,7 +128,7 @@ where
 impl<T: Poolable> Drop for PoolConnection<T> {
     fn drop(&mut self) {
         if !self.connection_state_ok {
-            self.managed.value.take();
+            self.invalidate();
         }
     }
 }
@@ -169,7 +179,7 @@ where
 {
     fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
         async move {
-            let conn = match &mut self.value {
+            let conn = match self.connection_mut() {
                 Some(conn) => conn,
                 None => {
                     return Err(
@@ -192,7 +202,7 @@ where
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>> {
         async move {
-            let conn = match &mut self.value {
+            let conn = match self.connection_mut() {
                 Some(conn) => conn,
                 None => {
                     return Err(
@@ -209,7 +219,7 @@ where
     }
 
     fn get_db(&self) -> i64 {
-        if let Some(conn) = self.value.as_ref() {
+        if let Some(conn) = self.connection() {
             conn.get_db()
         } else {
             -1

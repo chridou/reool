@@ -244,7 +244,7 @@ impl<T: Poolable> RedisPool<T> {
         };
 
         Ok(PoolConnection {
-            managed,
+            managed: Some(managed),
             connection_state_ok: true,
         })
     }
