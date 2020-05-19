@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures::prelude::*;
-use redis::{aio::ConnectionLike, ErrorKind, RedisFuture, Value, Cmd, Pipeline};
+use redis::{aio::ConnectionLike, Cmd, ErrorKind, Pipeline, RedisFuture, Value};
 
 use crate::pools::pool_internal::Managed;
 use crate::Poolable;
@@ -36,16 +36,33 @@ where
         async move {
             let conn = match &mut self.managed.value {
                 Some(conn) => conn,
-                None => return Err((ErrorKind::IoError, "no connection - this is a bug of reool").into()),
+                None => {
+                    return Err((
+                        ErrorKind::IoError,
+                        "connection is broken due to a previous io error",
+                    )
+                        .into())
+                }
             };
 
             self.connection_state_ok = false;
 
-            let value = conn.req_packed_command(cmd).await?;
+            match conn.req_packed_command(cmd).await {
+                Ok(value) => {
+                    self.connection_state_ok = true;
 
-            self.connection_state_ok = true;
-
-            Ok(value)
+                    Ok(value)
+                }
+                Err(err) => {
+                    if err.is_io_error() {
+                        // TODO: Can we get a new connection?
+                        self.managed.value.take();
+                    } else {
+                        self.connection_state_ok = true;
+                    }
+                    Err(err)
+                }
+            }
         }
         .boxed()
     }
@@ -59,16 +76,32 @@ where
         async move {
             let conn = match &mut self.managed.value {
                 Some(conn) => conn,
-                None => return Err((ErrorKind::IoError, "no connection - this is a bug of reool").into()),
+                None => {
+                    return Err((
+                        ErrorKind::IoError,
+                        "connection is broken due to a previous io error",
+                    )
+                        .into())
+                }
             };
 
             self.connection_state_ok = false;
 
-            let values = conn.req_packed_commands(pipeline, offset, count).await?;
-
-            self.connection_state_ok = true;
-
-            Ok(values)
+            match conn.req_packed_commands(pipeline, offset, count).await {
+                Ok(values) => {
+                    self.connection_state_ok = true;
+                    Ok(values)
+                }
+                Err(err) => {
+                    if err.is_io_error() {
+                        // TODO: Can we get a new connection?
+                        self.managed.value.take();
+                    } else {
+                        self.connection_state_ok = true;
+                    }
+                    Err(err)
+                }
+            }
         }
         .boxed()
     }
@@ -117,7 +150,9 @@ impl ConnectionLike for ConnectionFlavour {
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>> {
         match self {
-            ConnectionFlavour::RedisRs(conn, _) => conn.req_packed_commands(pipeline, offset, count),
+            ConnectionFlavour::RedisRs(conn, _) => {
+                conn.req_packed_commands(pipeline, offset, count)
+            }
         }
     }
 
@@ -136,7 +171,11 @@ where
         async move {
             let conn = match &mut self.value {
                 Some(conn) => conn,
-                None => return Err((ErrorKind::IoError, "no connection - this is a bug of reool").into()),
+                None => {
+                    return Err(
+                        (ErrorKind::IoError, "no connection - this is a bug of reool").into(),
+                    )
+                }
             };
 
             let value = conn.req_packed_command(cmd).await?;
@@ -155,7 +194,11 @@ where
         async move {
             let conn = match &mut self.value {
                 Some(conn) => conn,
-                None => return Err((ErrorKind::IoError, "no connection - this is a bug of reool").into()),
+                None => {
+                    return Err(
+                        (ErrorKind::IoError, "no connection - this is a bug of reool").into(),
+                    )
+                }
             };
 
             let values = conn.req_packed_commands(pipeline, offset, count).await?;
