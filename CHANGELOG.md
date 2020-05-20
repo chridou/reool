@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.25.0 (BREAKING CHANGE)
+    * drop connections only on IO errors
+    * errors are now `Sync`
+
 ## 0.24.0 (BREAKING CHANGE)
     * update to `redis-rs` 0.16.
 

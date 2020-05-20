@@ -66,25 +66,13 @@ impl fmt::Display for CheckoutErrorKind {
 
 impl fmt::Display for CheckoutError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(self.description())
+        write!(f, "{}", self.kind())?;
+        Ok(())
     }
 }
 
 impl StdError for CheckoutError {
-    fn description(&self) -> &str {
-        match self.kind {
-            CheckoutErrorKind::NoConnection => "there are no connections available",
-            CheckoutErrorKind::CheckoutTimeout => {
-                "there was no connection to checkout available in time"
-            }
-            CheckoutErrorKind::ReservationLimitReached => "the reservation limit has been reached",
-            CheckoutErrorKind::NoPool => "there was no pool available",
-            CheckoutErrorKind::CheckoutLimitReached => "checkout limit limit reached",
-            CheckoutErrorKind::TaskExecution => "task execution failed",
-        }
-    }
-
-    fn cause(&self) -> Option<&dyn StdError> {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
         None
     }
 }
@@ -110,14 +98,17 @@ impl From<CheckoutError> for RedisError {
 #[derive(Debug)]
 pub struct Error {
     message: Option<String>,
-    cause: Option<Box<dyn StdError + Send>>,
+    cause: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
 impl Error {
-    pub fn new<T: Into<String>, E: StdError + Send + 'static>(msg: T, cause: Option<E>) -> Self {
+    pub fn new<T: Into<String>, E: StdError + Send + Sync + 'static>(
+        msg: T,
+        cause: Option<E>,
+    ) -> Self {
         Self {
             message: Some(msg.into()),
-            cause: cause.map(|cause| Box::new(cause) as Box<dyn StdError + Send>),
+            cause: cause.map(|cause| Box::new(cause) as Box<dyn StdError + Send + Sync + 'static>),
         }
     }
 
@@ -141,8 +132,8 @@ impl fmt::Display for Error {
         match (self.message.as_ref(), self.cause.as_ref()) {
             (Some(msg), Some(cause)) => write!(f, "{}: {}", msg, cause),
             (Some(msg), None) => write!(f, "{}", msg),
-            (None, Some(cause)) => write!(f, "{}: {}", self.description(), cause),
-            (None, None) => write!(f, "{}", self.description()),
+            (None, Some(cause)) => write!(f, "an error occurred: {}", cause),
+            (None, None) => write!(f, "an error occurred"),
         }
     }
 }

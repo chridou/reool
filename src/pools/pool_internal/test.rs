@@ -145,8 +145,8 @@ fn checkout_one() {
     thread::sleep(Duration::from_millis(10));
 
     let v = runtime.block_on(async {
-        let check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.value.unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 0);
@@ -169,15 +169,15 @@ fn checkout_twice_with_one_not_reusable() {
 
     // We do not return the conn with managed by taking it
     let v = runtime.block_on(async {
-        let mut check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.value.take().unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 0);
 
     let v = runtime.block_on(async {
-        let check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.value.unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 1);
@@ -199,15 +199,15 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
 
     // We do not return the con with managed
     let v = runtime.block_on(async {
-        let mut check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.value.take().unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 0);
 
     let v = runtime.block_on(async {
-        let check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.value.unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 1);
@@ -223,8 +223,8 @@ fn with_empty_pool_checkout_returns_timeout() {
 
     let pool = PoolInternal::no_instrumentation(config, UnitFactory, runtime.handle().into());
 
-    let checked_out = check_out_fut(&pool, Duration::from_millis(10));
-    let err = runtime.block_on(checked_out).err().unwrap();
+    let check_out_managed = check_out_fut(&pool, Duration::from_millis(10));
+    let err = runtime.block_on(check_out_managed).err().unwrap();
     assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
     drop(pool);
@@ -245,15 +245,15 @@ fn create_connection_fails_some_times() {
     thread::sleep(Duration::from_millis(10));
 
     let v = runtime.block_on(async {
-        let mut check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.value.take().unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 4);
 
     let v = runtime.block_on(async {
-        let check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.value.unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 8);
@@ -327,7 +327,7 @@ fn put_and_checkout_do_not_race() {
             inner_pool.put(managed);
         });
 
-        let checked_out = pool.inner_pool().checkout(None).map(|c| c.value.unwrap());
+        let checked_out = pool.inner_pool().checkout(None).map(|c| c.take_connection());
         let v = checked_out.wait().unwrap();
 
         assert_eq!(v, 0);

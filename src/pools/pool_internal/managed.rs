@@ -24,34 +24,46 @@ pub(crate) struct Managed<T: Poolable> {
     /// The actual connection. If `None` this
     /// `Managed` may not return to the pool and
     /// a new connection shall be created
-    pub value: Option<T>,
+    connection: Option<T>,
     /// If `None` the pool is gone and the life cycle definitely ends.
     /// No attempt to create a new connection may be made.
     pub factory: Option<ExtendedConnectionFactory<T>>,
 }
 
 impl<T: Poolable> Managed<T> {
-    pub fn fresh(value: T, factory: ExtendedConnectionFactory<T>) -> Self {
+    pub fn fresh(connection: T, factory: ExtendedConnectionFactory<T>) -> Self {
         Managed {
-            value: Some(value),
+            connection: Some(connection),
             created_at: Instant::now(),
             checked_out_at: None,
             factory: Some(factory),
         }
     }
 
-    pub fn connected_to(&self) -> &str {
-        self.value
-            .as_ref()
-            .expect("no value in managed - this is a bug")
-            .connected_to()
+    pub fn connection_mut(&mut self) -> Option<&mut T> {
+        self.connection.as_mut()
+    }
+
+    pub fn connection(&self) -> Option<&T> {
+        self.connection.as_ref()
+    }
+
+    /// Takes the connection which will prevent it from returning to the pool
+    #[cfg(test)]
+    pub fn take_connection(&mut self) -> Option<T> {
+        self.connection.take()
+    }
+
+    /// Invalidates the connection so that it will not return to the pool
+    pub fn invalidate(&mut self) {
+        self.connection = None
     }
 
     /// This must be called before finally dropping a connection
     /// to prevent an infinite loop when dropping
     pub fn drop_orphanized(mut self) {
         self.factory = None; // the marker for being orphanized
-        self.value = None; // just to make it complete. The actual connection can be closed
+        self.connection = None; // just to make it complete. The actual connection can be closed
         drop(self); // be explicit on this!
     }
 }
@@ -65,20 +77,20 @@ impl<T: Poolable> Drop for Managed<T> {
 
         let factory = self.factory.take().unwrap();
         let mut send_back = factory.send_back_cloned();
-        if let Some(value) = self.value.take() {
+        if let Some(connection) = self.connection.take() {
             let msg = PoolMessage::CheckIn {
                 created_at: Instant::now(),
                 conn: Managed {
-                    value: Some(value),
+                    connection: Some(connection),
                     created_at: self.created_at,
                     checked_out_at: self.checked_out_at,
                     factory: Some(factory), // Keeps it active
                 },
             };
-            if let Err(msg) = msg.send_on_internal_channel(&mut send_back) {
+            if let Err(unsent_connection) = msg.send_on_internal_channel(&mut send_back) {
                 debug!("inner pool gone - simply dropping");
                 // We must "orphanize" the connection to avoid a drop loop
-                drop_connection_orphanized(msg);
+                drop_connection_orphanized(unsent_connection);
             } else {
                 debug!("sent connection to pool");
             }
