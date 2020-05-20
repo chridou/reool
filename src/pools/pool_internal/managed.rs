@@ -49,7 +49,7 @@ impl<T: Poolable> Managed<T> {
     }
 
     /// Takes the connection which will prevent it from returning to the pool
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn take_connection(&mut self) -> Option<T> {
         self.connection.take()
     }

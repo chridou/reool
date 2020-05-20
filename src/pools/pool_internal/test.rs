@@ -145,8 +145,8 @@ fn checkout_one() {
     thread::sleep(Duration::from_millis(10));
 
     let v = runtime.block_on(async {
-        let mut check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.take_connection().unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 0);
@@ -206,8 +206,8 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
     assert_eq!(v, 0);
 
     let v = runtime.block_on(async {
-        let mut check_out = check_out_fut(&pool, Wait).await.unwrap();
-        check_out.take_connection().unwrap()
+        let mut checked_out_managed = check_out_fut(&pool, Wait).await.unwrap();
+        checked_out_managed.take_connection().unwrap()
     });
 
     assert_eq!(v, 1);
@@ -223,8 +223,8 @@ fn with_empty_pool_checkout_returns_timeout() {
 
     let pool = PoolInternal::no_instrumentation(config, UnitFactory, runtime.handle().into());
 
-    let checked_out = check_out_fut(&pool, Duration::from_millis(10));
-    let err = runtime.block_on(checked_out).err().unwrap();
+    let check_out_managed = check_out_fut(&pool, Duration::from_millis(10));
+    let err = runtime.block_on(check_out_managed).err().unwrap();
     assert_eq!(err.kind(), CheckoutErrorKind::CheckoutTimeout);
 
     drop(pool);
