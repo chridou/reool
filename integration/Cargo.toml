@@ -1,0 +1,8 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+
+[dependencies]
+reool = { version="*", path=".." }
+tokio = { version = "0.2", features = ["full"] }
+futures = "0.3"

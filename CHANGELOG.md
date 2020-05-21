@@ -1,5 +1,8 @@
 # Changelog
 
+## X
+    * reexport `redis` crate
+
 ## 0.25.0 (BREAKING CHANGE)
     * drop connections only on IO errors
     * errors are now `Sync`

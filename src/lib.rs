@@ -56,6 +56,8 @@ mod pool_connection;
 mod pools;
 mod redis_rs;
 
+pub use redis;
+
 /// Something that can be put into the connection pool
 pub trait Poolable: Send + Sized + 'static {
     /// The host/addr this connection is connected to.
