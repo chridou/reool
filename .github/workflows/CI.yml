@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
   build_nakadion:
-    name: Build Reeol
+    name: Build Reool
     strategy:
       matrix:
         features: ["--no-default-features", "--all-features", ""]
