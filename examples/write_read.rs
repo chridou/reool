@@ -5,6 +5,7 @@ use pretty_env_logger;
 use tokio::runtime::Handle;
 
 use reool::error::Error;
+use reool::AsyncCommands;
 use reool::*;
 
 const MY_KEY: &str = "my_key";

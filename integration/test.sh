@@ -12,10 +12,25 @@ echo "Redis Container Id: $REDIS_CONTAINER_ID"
 echo "Wait 5 seconds for Redis"
 sleep 5
 
+echo "===================================="
+echo "=== Test with threaded scheduler ==="
+echo "===================================="
 cargo run --release
 
-TEST_EXIT_CODE=$?
-if [ $TEST_EXIT_CODE -eq 0 ]; then
+TEST_EXIT_CODE_THREADED=$?
+if [ $TEST_EXIT_CODE_THREADED -eq 0 ]; then
+    echo "Integration test succeeded"
+else
+    echo "Integration test failed"
+fi
+
+echo "================================="
+echo "=== Test with basic scheduler ==="
+echo "================================="
+cargo run --release --features "basic_scheduler"
+
+TEST_EXIT_CODE_BASIC=$?
+if [ $TEST_EXIT_CODE_BASIC -eq 0 ]; then
     echo "Integration test succeeded"
 else
     echo "Integration test failed"
@@ -26,7 +41,7 @@ docker rm -f $REDIS_CONTAINER_ID
 
 echo "Test completed"
 
-if [ $TEST_EXIT_CODE -eq 0 ]; then
+if [ $TEST_EXIT_CODE_BASIC -eq 0 ] && [ $TEST_EXIT_CODE_THREADED -eq 0 ]; then
     echo "SUCCESS"
 else
     echo "FAILURE"

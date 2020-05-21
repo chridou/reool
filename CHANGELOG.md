@@ -1,6 +1,8 @@
 # Changelog
 
-## X
+## 0.26.0
+    * use `AsyncCommands` trait from `redis-rs` and remove own `Commands` trait
+    * add trait `RedisOps` to support specialized use cases like ping etc.
     * reexport `redis` crate
 
 ## 0.25.0 (BREAKING CHANGE)

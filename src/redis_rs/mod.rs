@@ -71,7 +71,7 @@ impl ConnectionFactory for RedisRsFactory {
     }
 
     fn ping(&self, timeout: Instant) -> BoxFuture<Ping> {
-        use crate::commands::Commands;
+        use crate::redis_ops::RedisOps;
 
         let started_at = Instant::now();
 
@@ -101,7 +101,7 @@ impl ConnectionFactory for RedisRsFactory {
             let latency = Some(ping_started_at.elapsed());
 
             let state = match ping_result {
-                Ok(()) => PingState::Ok,
+                Ok(_) => PingState::Ok,
                 Err(err) => PingState::failed_msg(format!("ping failed: {}", err)),
             };
 

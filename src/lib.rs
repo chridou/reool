@@ -36,13 +36,13 @@ pub mod instrumentation;
 
 use future::BoxFuture;
 pub use redis::{
-    aio::ConnectionLike, cmd, Cmd, FromRedisValue, NumericBehavior, RedisError, RedisFuture,
-    ToRedisArgs, Value,
+    aio::ConnectionLike, cmd, AsyncCommands, Cmd, FromRedisValue, NumericBehavior, RedisError,
+    RedisFuture, ToRedisArgs, Value,
 };
 
 pub use crate::error::{CheckoutError, CheckoutErrorKind};
-pub use commands::Commands;
 pub use pool_connection::{ConnectionFlavour, PoolConnection};
+pub use redis_ops::RedisOps;
 
 pub mod connection_factory;
 pub mod error;
@@ -51,9 +51,9 @@ pub(crate) mod helpers;
 
 mod activation_order;
 mod backoff_strategy;
-mod commands;
 mod pool_connection;
 mod pools;
+mod redis_ops;
 mod redis_rs;
 
 pub use redis;
