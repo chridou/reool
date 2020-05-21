@@ -30,10 +30,8 @@ jobs:
         with:
           path: target
           key: target-directory-${{ matrix.rust }}-${{ matrix.features }}-${{ hashFiles('Cargo.toml') }}
-      - run: cargo build --manifest-path=./nakadi-types/Cargo.toml
-      - run: cargo test --manifest-path=./nakadi-types/Cargo.toml
-      - run: cargo build  ${{ matrix.features }} --manifest-path=./nakadion/Cargo.toml
-      - run: cargo test  ${{ matrix.features }} --manifest-path=./nakadion/Cargo.toml
+      - run: cargo build  ${{ matrix.features }}
+      - run: cargo test  ${{ matrix.features }}
       - name: Run integration test against Redis
         if: matrix.rust != 'nightly' && matrix.features == ''
         run: |
