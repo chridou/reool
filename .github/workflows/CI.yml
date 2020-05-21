@@ -35,4 +35,4 @@ jobs:
       - name: Run integration test against Redis
         if: matrix.rust != 'nightly' && matrix.features == ''
         run: |
-          ./run_integration_test
+          ./run_integration_test.sh
