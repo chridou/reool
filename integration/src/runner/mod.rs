@@ -1,31 +1,23 @@
-use std::{error::Error, time::Instant};
+use std::time::Instant;
 
-use reool::{RedisOps, RedisPool};
+use reool::{error::Error, RedisOps, RedisPool};
 
 mod connections;
 mod data_ops;
 
-pub async fn run(pool: &RedisPool) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+pub async fn run(pool: &mut RedisPool) -> Result<(), Error> {
     let started = Instant::now();
-    let mut conn = pool.check_out_default().await?;
-    let _ = conn.ping().await?;
-    drop(conn);
 
-    flush(pool).await?;
+    RedisOps::ping(pool).await?;
+
+    pool.flushall().await?;
 
     connections::run(pool).await?;
-    flush(pool).await?;
+    pool.flushall().await?;
     data_ops::run(pool).await?;
-    flush(pool).await?;
+    pool.flushall().await?;
 
     println!("Test run took {:?}", started.elapsed());
-
-    Ok(())
-}
-
-async fn flush(pool: &RedisPool) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let mut conn = pool.check_out_default().await?;
-    let _ = conn.flushall().await?;
 
     Ok(())
 }

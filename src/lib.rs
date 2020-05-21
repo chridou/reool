@@ -12,8 +12,14 @@
 //!
 //! You should also consider multiplexing instead of a pool based upon your needs.
 //!
-//! The `PooledConnection` of `reool` implements the `ConnectionLike`
+//! The `PooledConnection` and `RedisPool` implements the `ConnectionLike`
 //! interface of [redis-rs](https://crates.io/crates/redis) for easier integration.
+//!
+//! `ConnectionLike::get_db` should be handled with care since the pool will always return
+//! -1. Currently connections from the pool will also do so if the connection was teriminated
+//! by an IO error. So `ConnectionLike::get_db` so always handled with care.
+//!
+//! ## Documentation
 //!
 //! For documentation visit [crates.io](https://crates.io/crates/reool).
 //!
@@ -182,6 +188,12 @@ impl<T: Poolable> Clone for RedisPoolFlavour<T> {
 ///
 /// When having more that one sub pool `Reool` will retry checkout attempts on different
 /// sub pools.
+///
+/// ## `ConnectionLike`
+///
+/// The pool itself implements `ConnectionLike`. This is a convinience functionality
+/// for executing a single redis command. The checkout will be done with the `DefaultCheckoutMode`
+/// defined for the pool. Furthermore `ConnectionLike::get_db` will always return -1.
 pub struct RedisPool<T: Poolable = ConnectionFlavour> {
     flavour: RedisPoolFlavour<T>,
     default_checkout_mode: DefaultPoolCheckoutMode,
@@ -411,5 +423,32 @@ impl Default for PoolState {
             idle: 0,
             pools: 0,
         }
+    }
+}
+
+impl ConnectionLike for RedisPool {
+    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
+        async move {
+            let mut conn = self.check_out_default().await?;
+            conn.req_packed_command(cmd).await
+        }
+        .boxed()
+    }
+
+    fn req_packed_commands<'a>(
+        &'a mut self,
+        cmd: &'a redis::Pipeline,
+        offset: usize,
+        count: usize,
+    ) -> RedisFuture<'a, Vec<Value>> {
+        async move {
+            let mut conn = self.check_out_default().await?;
+            conn.req_packed_commands(cmd, offset, count).await
+        }
+        .boxed()
+    }
+
+    fn get_db(&self) -> i64 {
+        -1
     }
 }

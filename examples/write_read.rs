@@ -1,10 +1,10 @@
 use std::env;
+use std::error::Error;
 
 use log::info;
 use pretty_env_logger;
 use tokio::runtime::Handle;
 
-use reool::error::Error;
 use reool::AsyncCommands;
 use reool::*;
 
@@ -12,7 +12,7 @@ const MY_KEY: &str = "my_key";
 
 /// Write and read a single key.
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<(), Box<dyn Error>> {
     env::set_var("RUST_LOG", "reool=debug,write_read=info");
     let _ = pretty_env_logger::try_init();
 

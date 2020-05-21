@@ -134,9 +134,3 @@ impl ConnectionFactory for RedisRsFactory {
             .boxed()
     }
 }
-
-impl From<redis::RedisError> for Error {
-    fn from(err: redis::RedisError) -> Self {
-        Self::new("redis error", Some(err))
-    }
-}

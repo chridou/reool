@@ -1,7 +1,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use redis::{ErrorKind as RedisErrorKind, RedisError};
+use redis::{RedisError};
 
 pub type InitializationResult<T> = Result<T, Error>;
 
@@ -84,17 +84,25 @@ impl From<CheckoutErrorKind> for CheckoutError {
 }
 
 impl From<CheckoutError> for RedisError {
-    fn from(error: CheckoutError) -> Self {
-        (
-            RedisErrorKind::IoError,
-            "checkout failed",
-            error.to_string(),
-        )
-            .into()
+    fn from(err: CheckoutError) -> Self {
+        let err = std::io::Error::new(std::io::ErrorKind::NotConnected, err);
+        err.into()
     }
 }
 
-/// An initialization has failed
+impl From<redis::RedisError> for Error {
+    fn from(err: redis::RedisError) -> Self {
+        Self::new("redis error", Some(err))
+    }
+}
+
+impl From<CheckoutError> for Error {
+    fn from(err: CheckoutError) -> Self {
+        Self::cause_by(err)
+    }
+}
+
+/// An generic error
 #[derive(Debug)]
 pub struct Error {
     message: Option<String>,
@@ -141,11 +149,5 @@ impl fmt::Display for Error {
 impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         self.cause.as_ref().map(|cause| &**cause as &dyn StdError)
-    }
-}
-
-impl From<CheckoutError> for Error {
-    fn from(error: CheckoutError) -> Self {
-        Error::new("checkout error", Some(error))
     }
 }
