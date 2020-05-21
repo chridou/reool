@@ -13,7 +13,7 @@ echo "Wait 5 seconds for Redis"
 sleep 5
 
 echo "===================================="
-echo "=== Test with threaded scheduler ==="
+echo "=== Test with THREADED scheduler ==="
 echo "===================================="
 cargo run --release
 
@@ -25,7 +25,7 @@ else
 fi
 
 echo "================================="
-echo "=== Test with basic scheduler ==="
+echo "=== Test with BASIC scheduler ==="
 echo "================================="
 cargo run --release --features "basic_scheduler"
 

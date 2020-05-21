@@ -1,27 +1,30 @@
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
-use reool::{config::Builder, RedisPool};
+use reool::{
+    config::{Builder, DefaultPoolCheckoutMode},
+    RedisPool,
+};
 
 mod runner;
 
 #[tokio::main(threaded_scheduler)]
 #[cfg(not(feature = "basic_scheduler"))]
-async fn main() -> Result<(), Box<dyn Error + 'static>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    println!("Using THREADED scheduler");
     the_real_main().await?;
-
     Ok(())
 }
 
 #[tokio::main(basic_scheduler)]
 #[cfg(feature = "basic_scheduler")]
-async fn main() -> Result<(), Box<dyn Error + 'static>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    println!("Using BASIC scheduler");
     the_real_main().await?;
-
     Ok(())
 }
 
-async fn the_real_main() -> Result<(), Box<dyn Error + 'static>> {
-    run_test_with_pool(1, 1).await?;
+async fn the_real_main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    run_test_with_pool(1, 1, 1_000).await?;
 
     Ok(())
 }
@@ -29,8 +32,9 @@ async fn the_real_main() -> Result<(), Box<dyn Error + 'static>> {
 pub async fn run_test_with_pool(
     pool_size: usize,
     num_pools: u32,
-) -> Result<(), Box<dyn Error + 'static>> {
-    let pool = get_builder(pool_size, num_pools).finish_redis_rs()?;
+    reservation_limit: usize,
+) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+    let pool = get_builder(pool_size, num_pools, reservation_limit).finish_redis_rs()?;
 
     println!(
         "=== Test with {} connection(s) in {} pool(s)",
@@ -49,11 +53,13 @@ pub async fn run_test_with_pool(
     }
 }
 
-pub fn get_builder(pool_size: usize, num_pools: u32) -> Builder {
+pub fn get_builder(pool_size: usize, num_pools: u32, reservation_limit: usize) -> Builder {
     let builder = RedisPool::builder()
         .connect_to_node("redis://localhost:6379")
         .desired_pool_size(pool_size)
-        .pool_multiplier(num_pools);
+        .pool_multiplier(num_pools)
+        .reservation_limit(reservation_limit)
+        .default_checkout_mode(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_secs(1)));
 
     builder
 }

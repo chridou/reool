@@ -2,7 +2,7 @@ use std::error::Error;
 
 use reool::{RedisOps, RedisPool};
 
-pub async fn run(pool: &RedisPool) -> Result<(), Box<dyn Error + 'static>> {
+pub async fn run(pool: &RedisPool) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     println!("CONNECTIONS");
 
     println!("Checkout 100 sequentially");
