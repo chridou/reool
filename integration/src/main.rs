@@ -24,7 +24,17 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 }
 
 async fn the_real_main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    run_test_with_pool(1, 1, 1_000).await?;
+    run_test_with_pool(1, 1).await?;
+    run_test_with_pool(1, 2).await?;
+    run_test_with_pool(1, 5).await?;
+
+    run_test_with_pool(10, 1).await?;
+    run_test_with_pool(10, 2).await?;
+    run_test_with_pool(10, 5).await?;
+
+    run_test_with_pool(100, 1).await?;
+    run_test_with_pool(100, 2).await?;
+    run_test_with_pool(100, 5).await?;
 
     Ok(())
 }
@@ -32,9 +42,8 @@ async fn the_real_main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
 pub async fn run_test_with_pool(
     pool_size: usize,
     num_pools: u32,
-    reservation_limit: usize,
 ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    let pool = get_builder(pool_size, num_pools, reservation_limit).finish_redis_rs()?;
+    let pool = get_builder(pool_size, num_pools).finish_redis_rs()?;
 
     println!(
         "=== Test with {} connection(s) in {} pool(s)",
@@ -53,12 +62,12 @@ pub async fn run_test_with_pool(
     }
 }
 
-pub fn get_builder(pool_size: usize, num_pools: u32, reservation_limit: usize) -> Builder {
+pub fn get_builder(pool_size: usize, num_pools: u32) -> Builder {
     let builder = RedisPool::builder()
         .connect_to_node("redis://localhost:6379")
         .desired_pool_size(pool_size)
         .pool_multiplier(num_pools)
-        .reservation_limit(reservation_limit)
+        .reservation_limit(10_000)
         .default_checkout_mode(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_secs(1)));
 
     builder
