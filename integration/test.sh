@@ -45,5 +45,5 @@ if [ $TEST_EXIT_CODE_BASIC -eq 0 ] && [ $TEST_EXIT_CODE_THREADED -eq 0 ]; then
     echo "SUCCESS"
 else
     echo "FAILURE"
-    exit $TEST_EXIT_CODE
+    exit 1
 fi

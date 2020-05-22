@@ -44,7 +44,7 @@ async fn single_items_par(pool: &mut RedisPool) -> Result<(), Error> {
     }
 
     for handle in handles {
-        let _: () = handle.await.map_err(Error::cause_by)??;
+        let _: () = handle.await.map_err(Error::caused_by)??;
     }
 
     let db_size = pool.db_size().await?;
