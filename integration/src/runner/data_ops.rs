@@ -9,6 +9,7 @@ pub async fn run(pool: &mut RedisPool) -> Result<(), Error> {
 
     single_items_seq(pool).await?;
     single_items_par(pool).await?;
+    set_mget(pool).await?;
 
     Ok(())
 }
@@ -29,7 +30,7 @@ async fn single_items_seq(pool: &RedisPool) -> Result<(), Error> {
 }
 
 async fn single_items_par(pool: &mut RedisPool) -> Result<(), Error> {
-    let items: Vec<usize> = (0..1_000).collect();
+    let items: Vec<usize> = (0..10_000).collect();
 
     let mut handles = Vec::new();
     for i in items.iter().copied() {
@@ -48,7 +49,7 @@ async fn single_items_par(pool: &mut RedisPool) -> Result<(), Error> {
 
     let db_size = pool.db_size().await?;
 
-    assert_eq!(db_size, 1_000, "single_items_par set");
+    assert_eq!(db_size, 10_000, "single_items_par set");
 
     let mut handles = Vec::new();
     for i in items.iter().copied() {
@@ -70,7 +71,7 @@ async fn single_items_par(pool: &mut RedisPool) -> Result<(), Error> {
     }
 
     let db_size = pool.db_size().await?;
-    assert_eq!(db_size, 1_000, "single_items_par get");
+    assert_eq!(db_size, 10_000, "single_items_par get");
 
     let mut handles = Vec::new();
     for i in items.iter().copied() {
@@ -89,5 +90,49 @@ async fn single_items_par(pool: &mut RedisPool) -> Result<(), Error> {
     let db_size = pool.db_size().await?;
     assert_eq!(db_size, 0, "single_items_par del");
 
+    Ok(())
+}
+
+async fn set_mget(pool: &mut RedisPool) -> Result<(), Error> {
+    pool.set("key_1", "1").await?;
+    pool.set_multiple(&[("key_2", "2"), ("key_3", "3")]).await?;
+
+    let v: Vec<String> = pool.get(vec!["key_1", "key_2", "key_3"]).await?;
+
+    assert_eq!(v[0], "1");
+    assert_eq!(v[1], "2");
+    assert_eq!(v[2], "3");
+
+    // This will return 2 values!
+    let v: Vec<String> = pool.get(vec!["key_1", "XXX", "key_3"]).await?;
+
+    assert_eq!(v[0], "1");
+    assert_eq!(v[1], "3");
+
+    let v: Vec<Option<String>> = pool.get(vec!["key_1", "key_2", "key_3"]).await?;
+
+    assert_eq!(v[0], Some("1".to_string()));
+    assert_eq!(v[1], Some("2".to_string()));
+    assert_eq!(v[2], Some("3".to_string()));
+
+    let v: Vec<Option<String>> = pool.get(vec!["key_1", "XXX", "key_3"]).await?;
+
+    assert_eq!(v[0], Some("1".to_string()));
+    assert_eq!(v[1], None);
+    assert_eq!(v[2], Some("3".to_string()));
+
+    // Getting a single value with a vec into a vec causes an error!
+    // let v: Vec<String> = pool.get(vec!["key_1"]).await?;
+
+    // but it works when the target signals that it is only 1 value:
+    let v: String = pool.get(vec!["key_1"]).await?;
+    assert_eq!(v, "1");
+
+    // Getting a non existent value with into a string causes an error!
+    // let v: String = pool.get(vec!["XXX"]).await?;
+
+    pool.flushall().await?;
+    let db_size = pool.db_size().await?;
+    assert_eq!(db_size, 0);
     Ok(())
 }

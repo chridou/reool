@@ -9,7 +9,7 @@ fi
 
 echo "Redis Container Id: $REDIS_CONTAINER_ID"
 
-echo "Wait 5 seconds for Redis"
+echo "Wait 3 seconds for Redis"
 sleep 5
 
 echo "===================================="

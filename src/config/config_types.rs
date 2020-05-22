@@ -15,17 +15,31 @@ use crate::{Immediately, Wait};
 ///
 /// This struct has the same behaviour as `CheckoutMode` regarding its
 /// `From` implementations.
+///
+/// The default is to wait for 30ms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefaultPoolCheckoutMode {
     /// Expect a connection to be returned immediately.
     /// If there is none available return an error immediately.
     Immediately,
     /// Wait until there is a connection.
+    ///
+    /// Using this variant can be risky as connections are returned
+    /// when dropped. If there pool has no idle connections left while
+    /// none are returned a deadlock might occur. It is always safe to use
+    /// this mode if only the `RedisPool` itself is used as a connections since
+    /// it will immediately return the used connection after each operation.
     Wait,
     /// Wait for at most the given `Duration`.
     ///
     /// The amount of time waited will in the end not be really exact.
     WaitAtMost(Duration),
+}
+
+impl Default for DefaultPoolCheckoutMode {
+    fn default() -> Self {
+        DefaultPoolCheckoutMode::WaitAtMost(Duration::from_millis(30))
+    }
 }
 
 impl std::str::FromStr for DefaultPoolCheckoutMode {

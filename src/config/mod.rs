@@ -11,7 +11,6 @@
 //!
 //! Set the value `connect_to_nodes` to more than one node.
 //! Make sure not to write to that pool.
-use std::time::Duration;
 
 use crate::error::InitializationResult;
 use crate::helpers;
@@ -246,7 +245,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             desired_pool_size: 50,
-            default_checkout_mode: DefaultPoolCheckoutMode::WaitAtMost(Duration::from_millis(30)),
+            default_checkout_mode: DefaultPoolCheckoutMode::default(),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: 50,
             activation_order: ActivationOrder::default(),

@@ -65,8 +65,8 @@ pub fn get_builder(pool_size: usize, num_pools: u32) -> Builder {
         .connect_to_node("redis://localhost:6379")
         .desired_pool_size(pool_size)
         .pool_multiplier(num_pools)
-        .reservation_limit(10_000)
-        .default_checkout_mode(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_secs(1)));
+        .reservation_limit(50_000)
+        .default_checkout_mode(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_secs(10)));
 
     builder
 }

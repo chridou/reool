@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Instant, Duration};
 
 use reool::{error::Error, RedisOps, RedisPool};
 
@@ -8,7 +8,11 @@ mod data_ops;
 pub async fn run(pool: &mut RedisPool) -> Result<(), Error> {
     let started = Instant::now();
 
-    RedisOps::ping(pool).await?;
+    let d = pool.ping().await?;
+    println!("ping took {:?}", d);
+
+    let pings = pool.ping_nodes(Duration::from_secs(10)).await;
+    assert!(pings.iter().all(|p| p.is_ok()));
 
     pool.flushall().await?;
 

@@ -12,8 +12,10 @@
 //!
 //! You should also consider multiplexing instead of a pool based upon your needs.
 //!
-//! The `PooledConnection` and `RedisPool` implements the `ConnectionLike`
-//! interface of [redis-rs](https://crates.io/crates/redis) for easier integration.
+//! ## The `ConnectionLike` trait
+//!
+//! Both `PooledConnection` and `RedisPool` implement the `ConnectionLike`
+//! interface of [redis-rs](https://crates.io/crates/redis) for easy integration.
 //!
 //! `ConnectionLike::get_db` should be handled with care since the pool will always return
 //! -1. Currently connections from the pool will also do so if the connection was teriminated
@@ -88,6 +90,12 @@ pub enum CheckoutMode {
     /// Wait until there is a connection
     Wait,
     /// Use the default configured for the pool
+    ///
+    /// Using this variant can be risky as connections are returned
+    /// when dropped. If there pool has no idle connections left while
+    /// none are returned a deadlock might occur. It is always safe to use
+    /// this mode if  only the `RedisPool` itself is used as a connections since
+    /// it will immediately return the used connection after each operation.
     PoolDefault,
     /// Checkout before the given `Instant` is elapsed. If the given timeout is
     /// elapsed, no attempt to checkout a connection will be made.
@@ -109,6 +117,12 @@ impl CheckoutMode {
 pub struct Immediately;
 
 /// Simply a shortcut for `CheckoutMode::Wait`
+///
+/// Using this can be risky as connections are returned
+/// when dropped. If there pool has no idle connections left while
+/// none are returned a deadlock might occur. It is always safe to use
+/// this mode if  only the `RedisPool` itself is used as a connections since
+/// it will immediately return the used connection after each operation.
 #[derive(Debug, Clone, Copy)]
 pub struct Wait;
 
@@ -286,7 +300,7 @@ impl<T: Poolable> RedisPool<T> {
     /// This method only fails with `()` if the underlying connection
     /// does not support pinging. All other errors will be contained
     /// in the returned `Ping` struct.
-    pub fn ping<TO: Into<Timeout>>(&self, timeout: TO) -> BoxFuture<Vec<Ping>> {
+    pub fn ping_nodes<TO: Into<Timeout>>(&self, timeout: TO) -> BoxFuture<Vec<Ping>> {
         let deadline = timeout.into().0;
 
         match self.flavour {
