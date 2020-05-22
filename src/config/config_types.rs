@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crate::{Immediately, Wait};
+use crate::{Immediately, Millis, Seconds, Wait};
 
 /// Various options on retrieving a connection
 /// that can be applied if a user wants to use the pool defaults
@@ -80,6 +80,18 @@ impl From<Duration> for DefaultPoolCheckoutMode {
     }
 }
 
+impl From<Millis> for DefaultPoolCheckoutMode {
+    fn from(d: Millis) -> Self {
+        DefaultPoolCheckoutMode::WaitAtMost(d.into())
+    }
+}
+
+impl From<Seconds> for DefaultPoolCheckoutMode {
+    fn from(d: Seconds) -> Self {
+        DefaultPoolCheckoutMode::WaitAtMost(d.into())
+    }
+}
+
 #[derive(Debug)]
 pub struct ParseDefaultPoolCheckoutModeError(String);
 
@@ -96,6 +108,77 @@ impl fmt::Display for ParseDefaultPoolCheckoutModeError {
 impl std::error::Error for ParseDefaultPoolCheckoutModeError {
     fn description(&self) -> &str {
         "parse default pool checkout mode failed"
+    }
+
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultCommandTimeout {
+    Never,
+    /// Wait for at most the given `Duration`.
+    ///
+    /// The amount of time waited will in the end not be really exact.
+    After(Duration),
+}
+
+impl Default for DefaultCommandTimeout {
+    fn default() -> Self {
+        DefaultCommandTimeout::After(Duration::from_secs(60))
+    }
+}
+
+impl std::str::FromStr for DefaultCommandTimeout {
+    type Err = ParseDefaultCommandTimeoutError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &*s.to_lowercase() {
+            "never" => Ok(DefaultCommandTimeout::Never),
+            milliseconds => Ok(DefaultCommandTimeout::After(Duration::from_millis(
+                milliseconds
+                    .parse::<u64>()
+                    .map_err(|err| ParseDefaultCommandTimeoutError(err.to_string()))?,
+            ))),
+        }
+    }
+}
+
+impl From<Wait> for DefaultCommandTimeout {
+    fn from(_: Wait) -> Self {
+        DefaultCommandTimeout::Never
+    }
+}
+
+impl From<Millis> for DefaultCommandTimeout {
+    fn from(d: Millis) -> Self {
+        DefaultCommandTimeout::After(d.into())
+    }
+}
+
+impl From<Seconds> for DefaultCommandTimeout {
+    fn from(d: Seconds) -> Self {
+        DefaultCommandTimeout::After(d.into())
+    }
+}
+
+#[derive(Debug)]
+pub struct ParseDefaultCommandTimeoutError(String);
+
+impl fmt::Display for ParseDefaultCommandTimeoutError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "Could not parse ParseDefaultCommandTimeoutError: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ParseDefaultCommandTimeoutError {
+    fn description(&self) -> &str {
+        "parse default command timeout failed"
     }
 
     fn cause(&self) -> Option<&dyn std::error::Error> {

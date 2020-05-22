@@ -126,6 +126,11 @@ pub struct Immediately;
 #[derive(Debug, Clone, Copy)]
 pub struct Wait;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Millis(pub u64);
+#[derive(Debug, Clone, Copy)]
+pub struct Seconds(pub u64);
+
 /// Simply a shortcut for `CheckoutMode::PoolDefault`
 #[derive(Debug, Clone, Copy)]
 pub struct PoolDefault;
@@ -161,9 +166,41 @@ impl From<Duration> for CheckoutMode {
     }
 }
 
+impl From<Millis> for CheckoutMode {
+    fn from(d: Millis) -> Self {
+        let timeout = Instant::now() + d.into();
+        timeout.into()
+    }
+}
+
+impl From<Seconds> for CheckoutMode {
+    fn from(d: Seconds) -> Self {
+        let timeout = Instant::now() + d.into();
+        timeout.into()
+    }
+}
+
 impl From<Instant> for CheckoutMode {
     fn from(until: Instant) -> Self {
         CheckoutMode::Until(until)
+    }
+}
+
+impl From<Duration> for Seconds {
+    fn from(d: Duration) -> Self {
+        Seconds(d.as_secs())
+    }
+}
+
+impl From<Seconds> for Duration {
+    fn from(v: Seconds) -> Self {
+        Duration::from_secs(v.0)
+    }
+}
+
+impl From<Millis> for Duration {
+    fn from(v: Millis) -> Self {
+        Duration::from_millis(v.0)
     }
 }
 

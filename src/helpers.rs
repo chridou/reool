@@ -178,6 +178,24 @@ where
     }
 }
 
+pub fn set_default_command_timeout<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+where
+    F: FnMut(DefaultCommandTimeout) -> (),
+    T: Into<String>,
+{
+    let prefix = make_prefix(prefix);
+
+    let key = format!("{}_{}", prefix, "DEFAULT_COMMAND_TIMEOUT");
+    match env::var(&key) {
+        Ok(s) => {
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
+            Ok(())
+        }
+        Err(env::VarError::NotPresent) => Ok(()),
+        Err(err) => Err(Error::new(key, Some(err))),
+    }
+}
+
 fn parse_connect_to(what: &str) -> Vec<String> {
     what.split(';')
         .filter(|s| !s.is_empty())
