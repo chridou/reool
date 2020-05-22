@@ -25,7 +25,7 @@ pub enum DefaultPoolCheckoutMode {
     /// Wait until there is a connection.
     ///
     /// Using this variant can be risky as connections are returned
-    /// when dropped. If there pool has no idle connections left while
+    /// when dropped. If the pool has no idle connections left while
     /// none are returned a deadlock might occur. It is always safe to use
     /// this mode if only the `RedisPool` itself is used as a connections since
     /// it will immediately return the used connection after each operation.

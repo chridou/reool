@@ -1,7 +1,7 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use redis::{RedisError};
+use redis::RedisError;
 
 pub type InitializationResult<T> = Result<T, Error>;
 
@@ -98,7 +98,7 @@ impl From<redis::RedisError> for Error {
 
 impl From<CheckoutError> for Error {
     fn from(err: CheckoutError) -> Self {
-        Self::cause_by(err)
+        Self::caused_by(err)
     }
 }
 
@@ -127,7 +127,7 @@ impl Error {
         }
     }
 
-    pub fn cause_by<E: StdError + Send + Sync + 'static>(cause: E) -> Self {
+    pub fn caused_by<E: StdError + Send + Sync + 'static>(cause: E) -> Self {
         Self {
             message: None,
             cause: Some(Box::new(cause)),
