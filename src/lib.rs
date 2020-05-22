@@ -88,14 +88,14 @@ pub enum CheckoutMode {
     /// This mode will always try to get a connection
     Immediately,
     /// Wait until there is a connection
-    Wait,
-    /// Use the default configured for the pool
     ///
-    /// Using this variant can be risky as connections are returned
+    /// Using this can be risky as connections are returned
     /// when dropped. If the pool has no idle connections left while
     /// none are returned a deadlock might occur. It is always safe to use
-    /// this mode if  only the `RedisPool` itself is used as a connections since
+    /// this mode if  only the `RedisPool` itself is used as a connection since
     /// it will immediately return the used connection after each operation.
+    Wait,
+    /// Use the default configured for the pool
     PoolDefault,
     /// Checkout before the given `Instant` is elapsed. If the given timeout is
     /// elapsed, no attempt to checkout a connection will be made.
@@ -121,7 +121,7 @@ pub struct Immediately;
 /// Using this can be risky as connections are returned
 /// when dropped. If the pool has no idle connections left while
 /// none are returned a deadlock might occur. It is always safe to use
-/// this mode if  only the `RedisPool` itself is used as a connections since
+/// this mode if  only the `RedisPool` itself is used as a connection since
 /// it will immediately return the used connection after each operation.
 #[derive(Debug, Clone, Copy)]
 pub struct Wait;
