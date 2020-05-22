@@ -115,12 +115,36 @@ impl std::error::Error for ParseDefaultPoolCheckoutModeError {
     }
 }
 
+/// A timeout for commands which is applied to all commands on all connections.
+///
+/// This timeout is a default and can be overridden in several places to
+/// adjust the behaviour.
+///
+/// The default is to timeout after 1 minute.
+///
+/// ## FromStr
+///
+/// ```rust
+/// # use std::time::Duration;
+/// use reool::config::DefaultCommandTimeout;
+///
+/// let never: DefaultCommandTimeout = "never".parse().unwrap();
+/// assert_eq!(never, DefaultCommandTimeout::Never);
+///
+/// let after100ms: DefaultCommandTimeout = "100".parse().unwrap();
+/// assert_eq!(after100ms, DefaultCommandTimeout::After(Duration::from_millis(100)));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefaultCommandTimeout {
-    Never,
-    /// Wait for at most the given `Duration`.
+    /// Never time out.
     ///
-    /// The amount of time waited will in the end not be really exact.
+    /// This requires a timeout to be applied from externally unless
+    /// it is guaranted that a connection is killed eventually.
+    Never,
+    /// Wait for at most the given `Duration` until a
+    /// Redis command has finished.
+    ///
+    /// If elapsed abort (drop) the connection.
     After(Duration),
 }
 

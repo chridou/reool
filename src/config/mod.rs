@@ -76,6 +76,7 @@ pub struct Config {
     /// The default is `true`.
     pub retry_on_checkout_limit: bool,
 
+    /// A timeout for commands which is applied to all commands on all connections.
     pub default_command_timeout: DefaultCommandTimeout,
 }
 
@@ -174,6 +175,7 @@ impl Config {
         self
     }
 
+    /// A timeout for commands which is applied to all commands on all connections.
     pub fn default_command_timeout<T: Into<DefaultCommandTimeout>>(mut self, v: T) -> Self {
         self.default_command_timeout = v.into();
         self
