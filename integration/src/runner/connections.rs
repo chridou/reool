@@ -8,7 +8,7 @@ pub async fn run(pool: &mut RedisPool) -> Result<(), Error> {
         conn.ping().await?;
     }
 
-    quit(pool).await?;
+    //quit(pool).await?;
 
     Ok(())
 }
