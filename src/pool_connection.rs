@@ -104,6 +104,8 @@ where
                     match err.kind() {
                         // ErrorKind::ResponseError is a hack because the
                         // parsing files with 0 bytes and an unexpected EOF
+                        // This behaviour need clarification.
+                        // See https://github.com/mitsuhiko/redis-rs/issues/320
                         ErrorKind::IoError | ErrorKind::ResponseError => {
                             // TODO: Can we get a new connection?
                             self.invalidate();
@@ -160,6 +162,8 @@ where
                     match err.kind() {
                         // ErrorKind::ResponseError is a hack because the
                         // parsing files with 0 bytes and an unexpected EOF
+                        // This behaviour need clarification.
+                        // See https://github.com/mitsuhiko/redis-rs/issues/320
                         ErrorKind::IoError | ErrorKind::ResponseError => {
                             // TODO: Can we get a new connection?
                             self.invalidate();
