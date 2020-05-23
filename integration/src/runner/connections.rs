@@ -28,6 +28,7 @@ async fn kill_conn(pool: &mut RedisPool) -> Result<(), Error> {
     drop(killer_conn);
     let mut killed_conn = conn_to_be_killed;
 
+    // The first time we get a response error form redis-rs itself.
     let err = killed_conn.ping().await.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::ResponseError);
     let err = killed_conn.ping().await.unwrap_err();

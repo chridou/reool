@@ -460,6 +460,8 @@ pub struct PoolState {
     /// The number of in flight connections
     pub in_flight: usize,
     /// The total number of connections
+    ///
+    /// If there are multiple pools it is the summ of all their connections.
     pub connections: usize,
     /// The number of reservations waiting for a connections
     pub reservations: usize,
