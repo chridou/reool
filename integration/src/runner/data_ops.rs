@@ -1,3 +1,4 @@
+use reool::redis::ErrorKind;
 use reool::{error::Error, AsyncCommands, RedisOps, RedisPool};
 use tokio::spawn;
 
@@ -122,14 +123,16 @@ async fn set_mget(pool: &mut RedisPool) -> Result<(), Error> {
     assert_eq!(v[2], Some("3".to_string()));
 
     // Getting a single value with a vec into a vec causes an error!
-    // let v: Vec<String> = pool.get(vec!["key_1"]).await?;
+    let err = pool.get::<_, Vec<String>>(vec!["key_1"]).await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::TypeError);
 
     // but it works when the target signals that it is only 1 value:
     let v: String = pool.get(vec!["key_1"]).await?;
     assert_eq!(v, "1");
 
     // Getting a non existent value with into a string causes an error!
-    // let v: String = pool.get(vec!["XXX"]).await?;
+    let err = pool.get::<_, String>(vec!["XXX"]).await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::TypeError);
 
     pool.flushall().await?;
     let db_size = pool.db_size().await?;
