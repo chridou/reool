@@ -148,6 +148,15 @@ pub enum DefaultCommandTimeout {
     After(Duration),
 }
 
+impl DefaultCommandTimeout {
+    pub fn to_duration_opt(self) -> Option<Duration> {
+        match self {
+            DefaultCommandTimeout::Never => None,
+            DefaultCommandTimeout::After(dur) => Some(dur),
+        }
+    }
+}
+
 impl Default for DefaultCommandTimeout {
     fn default() -> Self {
         DefaultCommandTimeout::After(Duration::from_secs(60))
@@ -184,6 +193,12 @@ impl From<Millis> for DefaultCommandTimeout {
 impl From<Seconds> for DefaultCommandTimeout {
     fn from(d: Seconds) -> Self {
         DefaultCommandTimeout::After(d.into())
+    }
+}
+
+impl From<Duration> for DefaultCommandTimeout {
+    fn from(d: Duration) -> Self {
+        DefaultCommandTimeout::After(d)
     }
 }
 

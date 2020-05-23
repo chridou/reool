@@ -79,6 +79,22 @@ pub trait RedisOps: Sized + ConnectionLike + Send + 'static {
         .boxed()
     }
 
+    fn client_id<'a>(&'a mut self) -> RedisFuture<i64> {
+        async move { cmd("CLIENT").arg("ID").query_async(self).await }.boxed()
+    }
+
+    fn client_kill_id<'a>(&'a mut self, id: i64) -> RedisFuture<()> {
+        async move {
+            cmd("CLIENT")
+                .arg("KILL")
+                .arg("ID")
+                .arg(id)
+                .query_async(self)
+                .await
+        }
+        .boxed()
+    }
+
     /// Determine the number of keys.
     fn db_size<'a>(&'a mut self) -> RedisFuture<i64> {
         async move { cmd("DBSIZE").query_async(self).await }.boxed()

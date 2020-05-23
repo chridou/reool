@@ -36,8 +36,7 @@ use std::time::{Duration, Instant};
 
 use futures::prelude::*;
 
-use crate::config::Builder;
-use crate::config::DefaultPoolCheckoutMode;
+use crate::config::{Builder, DefaultCommandTimeout, DefaultPoolCheckoutMode};
 
 pub mod config;
 pub mod instrumentation;
@@ -249,6 +248,7 @@ pub struct RedisPool<T: Poolable = ConnectionFlavour> {
     flavour: RedisPoolFlavour<T>,
     default_checkout_mode: DefaultPoolCheckoutMode,
     retry_on_checkout_limit: bool,
+    default_command_timeout: DefaultCommandTimeout,
 }
 
 impl RedisPool {
@@ -261,8 +261,9 @@ impl<T: Poolable> RedisPool<T> {
     pub fn no_pool() -> Self {
         RedisPool {
             flavour: RedisPoolFlavour::Empty,
-            default_checkout_mode: DefaultPoolCheckoutMode::Wait,
+            default_checkout_mode: DefaultPoolCheckoutMode::default(),
             retry_on_checkout_limit: false,
+            default_command_timeout: DefaultCommandTimeout::default(),
         }
     }
 
@@ -311,7 +312,23 @@ impl<T: Poolable> RedisPool<T> {
         Ok(PoolConnection {
             managed: Some(managed),
             connection_state_ok: true,
+            command_timeout: self.default_command_timeout.to_duration_opt(),
         })
+    }
+
+    /// Creates a clone with the given default command timeout.
+    ///
+    /// This creates a new instance since mutating this might go unnoticed
+    /// as callers which pass the pool as a mutable reference would not expect
+    /// this value to be changed by downstream code as passing this mutably
+    /// is mostly for the purpose of directly executing Redis commands.
+    pub fn default_command_timeout<TO: Into<DefaultCommandTimeout>>(
+        &self,
+        default_command_timeout: TO,
+    ) -> Self {
+        let mut me = self.clone();
+        me.default_command_timeout = default_command_timeout.into();
+        me
     }
 
     pub fn connected_to(&self) -> Vec<String> {
@@ -354,6 +371,7 @@ impl<T: Poolable> Clone for RedisPool<T> {
             flavour: self.flavour.clone(),
             default_checkout_mode: self.default_checkout_mode,
             retry_on_checkout_limit: self.retry_on_checkout_limit,
+            default_command_timeout: self.default_command_timeout,
         }
     }
 }

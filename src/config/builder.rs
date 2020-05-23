@@ -244,6 +244,7 @@ impl Builder {
 
         let default_checkout_mode = config.default_checkout_mode;
         let retry_on_checkout_limit = config.retry_on_checkout_limit;
+        let default_command_timeout = config.default_command_timeout;
 
         let flavour = if create_single_pool {
             debug!("Create single pool for 1 node",);
@@ -271,6 +272,7 @@ impl Builder {
             flavour,
             default_checkout_mode,
             retry_on_checkout_limit,
+            default_command_timeout,
         })
     }
 

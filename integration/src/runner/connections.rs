@@ -1,4 +1,5 @@
 use reool::{error::Error, RedisOps, RedisPool};
+use reool::redis::ErrorKind;
 
 pub async fn run(pool: &mut RedisPool) -> Result<(), Error> {
     println!("CONNECTIONS");
@@ -8,19 +9,29 @@ pub async fn run(pool: &mut RedisPool) -> Result<(), Error> {
         conn.ping().await?;
     }
 
-    //quit(pool).await?;
+    kill_conn(pool).await?;
 
     Ok(())
 }
 
-async fn quit(pool: &mut RedisPool) -> Result<(), Error> {
-    let mut conn = pool.check_out_default().await?;
+async fn kill_conn(pool: &mut RedisPool) -> Result<(), Error> {
+    let state = pool.state();
+    if state.connections == 1 {
+        return Ok(())
+    }
 
-    // conn.quit().await?;
+    let mut conn_to_be_killed = pool.check_out_default().await?;
+    let client_id = conn_to_be_killed.client_id().await?;
 
-    let r = conn.ping().await;
+    let mut killer_conn = pool.check_out_default().await?;
+    killer_conn.client_kill_id(client_id).await?;
+    drop(killer_conn);
+    let mut killed_conn = conn_to_be_killed;
 
-    assert!(r.is_err());
+    let err = killed_conn.ping().await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::ResponseError);
+    let err = killed_conn.ping().await.unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::IoError);
 
     pool.flushall().await?;
     let db_size = pool.db_size().await?;
