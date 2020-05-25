@@ -1,6 +1,6 @@
 #!/bin/bash
 
-REDIS_CONTAINER_ID=$(docker run -p 6379:6379 -d redis:4.0-alpine)
+REDIS_CONTAINER_ID=$(docker run -p 6379:6379 -d redis:5.0-alpine)
 
 if [ -z $REDIS_CONTAINER_ID ]; then
     echo "Could not start Redis in Docker"

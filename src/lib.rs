@@ -36,8 +36,7 @@ use std::time::{Duration, Instant};
 
 use futures::prelude::*;
 
-use crate::config::Builder;
-use crate::config::DefaultPoolCheckoutMode;
+use crate::config::{Builder, DefaultCommandTimeout, DefaultPoolCheckoutMode};
 
 pub mod config;
 pub mod instrumentation;
@@ -126,6 +125,11 @@ pub struct Immediately;
 #[derive(Debug, Clone, Copy)]
 pub struct Wait;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Millis(pub u64);
+#[derive(Debug, Clone, Copy)]
+pub struct Seconds(pub u64);
+
 /// Simply a shortcut for `CheckoutMode::PoolDefault`
 #[derive(Debug, Clone, Copy)]
 pub struct PoolDefault;
@@ -161,9 +165,41 @@ impl From<Duration> for CheckoutMode {
     }
 }
 
+impl From<Millis> for CheckoutMode {
+    fn from(d: Millis) -> Self {
+        let timeout = Instant::now() + d.into();
+        timeout.into()
+    }
+}
+
+impl From<Seconds> for CheckoutMode {
+    fn from(d: Seconds) -> Self {
+        let timeout = Instant::now() + d.into();
+        timeout.into()
+    }
+}
+
 impl From<Instant> for CheckoutMode {
     fn from(until: Instant) -> Self {
         CheckoutMode::Until(until)
+    }
+}
+
+impl From<Duration> for Seconds {
+    fn from(d: Duration) -> Self {
+        Seconds(d.as_secs())
+    }
+}
+
+impl From<Seconds> for Duration {
+    fn from(v: Seconds) -> Self {
+        Duration::from_secs(v.0)
+    }
+}
+
+impl From<Millis> for Duration {
+    fn from(v: Millis) -> Self {
+        Duration::from_millis(v.0)
     }
 }
 
@@ -212,6 +248,7 @@ pub struct RedisPool<T: Poolable = ConnectionFlavour> {
     flavour: RedisPoolFlavour<T>,
     default_checkout_mode: DefaultPoolCheckoutMode,
     retry_on_checkout_limit: bool,
+    default_command_timeout: DefaultCommandTimeout,
 }
 
 impl RedisPool {
@@ -224,8 +261,9 @@ impl<T: Poolable> RedisPool<T> {
     pub fn no_pool() -> Self {
         RedisPool {
             flavour: RedisPoolFlavour::Empty,
-            default_checkout_mode: DefaultPoolCheckoutMode::Wait,
+            default_checkout_mode: DefaultPoolCheckoutMode::default(),
             retry_on_checkout_limit: false,
+            default_command_timeout: DefaultCommandTimeout::default(),
         }
     }
 
@@ -274,7 +312,23 @@ impl<T: Poolable> RedisPool<T> {
         Ok(PoolConnection {
             managed: Some(managed),
             connection_state_ok: true,
+            command_timeout: self.default_command_timeout.to_duration_opt(),
         })
+    }
+
+    /// Creates a clone with the given default command timeout.
+    ///
+    /// This creates a new instance since mutating this might go unnoticed
+    /// as callers which pass the pool as a mutable reference would not expect
+    /// this value to be changed by downstream code as passing this mutably
+    /// is mostly for the purpose of directly executing Redis commands.
+    pub fn default_command_timeout<TO: Into<DefaultCommandTimeout>>(
+        &self,
+        default_command_timeout: TO,
+    ) -> Self {
+        let mut me = self.clone();
+        me.default_command_timeout = default_command_timeout.into();
+        me
     }
 
     pub fn connected_to(&self) -> Vec<String> {
@@ -317,6 +371,7 @@ impl<T: Poolable> Clone for RedisPool<T> {
             flavour: self.flavour.clone(),
             default_checkout_mode: self.default_checkout_mode,
             retry_on_checkout_limit: self.retry_on_checkout_limit,
+            default_command_timeout: self.default_command_timeout,
         }
     }
 }
@@ -405,6 +460,8 @@ pub struct PoolState {
     /// The number of in flight connections
     pub in_flight: usize,
     /// The total number of connections
+    ///
+    /// If there are multiple pools it is the summ of all their connections.
     pub connections: usize,
     /// The number of reservations waiting for a connections
     pub reservations: usize,

@@ -1,11 +1,15 @@
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use futures::prelude::*;
-use redis::{aio::ConnectionLike, Cmd, ErrorKind, Pipeline, RedisFuture, Value};
+use redis::{aio::ConnectionLike, Cmd, ErrorKind, Pipeline, RedisError, RedisFuture, Value};
+use tokio::time::timeout;
 
 use crate::pools::pool_internal::Managed;
-use crate::Poolable;
+use crate::{config::DefaultCommandTimeout, Poolable};
 
 /// A connection that has been taken from the pool.
 ///
@@ -21,9 +25,14 @@ pub struct PoolConnection<T: Poolable = ConnectionFlavour> {
     /// field is useless.
     pub(crate) connection_state_ok: bool,
     pub(crate) managed: Option<Managed<T>>,
+    pub(crate) command_timeout: Option<Duration>,
 }
 
 impl<T: Poolable> PoolConnection<T> {
+    pub fn default_command_timeout<TO: Into<DefaultCommandTimeout>>(&mut self, timeout: TO) {
+        self.command_timeout = timeout.into().to_duration_opt();
+    }
+
     fn get_connection(&mut self) -> Result<&mut T, IoError> {
         let managed = if let Some(managed) = &mut self.managed {
             managed
@@ -62,21 +71,48 @@ where
     fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
         async move {
             self.connection_state_ok = false;
+            let command_timeout = self.command_timeout;
 
             let conn = self.get_connection()?;
 
-            match conn.req_packed_command(cmd).await {
+            let f = conn.req_packed_command(cmd);
+            let r = if let Some(command_timeout) = command_timeout {
+                let started = Instant::now();
+                match timeout(command_timeout, f).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let message = format!(
+                            "command timeout after {:?} on `req_packed_command`.",
+                            started.elapsed()
+                        );
+                        let err: RedisError =
+                            (ErrorKind::IoError, "command timeout", message).into();
+                        Err(err)
+                    }
+                }
+            } else {
+                f.await
+            };
+
+            match r {
                 Ok(value) => {
                     self.connection_state_ok = true;
 
                     Ok(value)
                 }
                 Err(err) => {
-                    if err.is_io_error() {
-                        // TODO: Can we get a new connection?
-                        self.invalidate();
-                    } else {
-                        self.connection_state_ok = true;
+                    match err.kind() {
+                        // ErrorKind::ResponseError is a hack because the
+                        // parsing files with 0 bytes and an unexpected EOF
+                        // This behaviour need clarification.
+                        // See https://github.com/mitsuhiko/redis-rs/issues/320
+                        ErrorKind::IoError | ErrorKind::ResponseError => {
+                            // TODO: Can we get a new connection?
+                            self.invalidate();
+                        }
+                        _ => {
+                            self.connection_state_ok = true;
+                        }
                     }
                     Err(err)
                 }
@@ -93,21 +129,48 @@ where
     ) -> RedisFuture<'a, Vec<Value>> {
         async move {
             self.connection_state_ok = false;
+            let command_timeout = self.command_timeout;
 
             let conn = self.get_connection()?;
 
-            match conn.req_packed_commands(pipeline, offset, count).await {
+            let f = conn.req_packed_commands(pipeline, offset, count);
+            let r = if let Some(command_timeout) = command_timeout {
+                let started = Instant::now();
+                match timeout(command_timeout, f).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let message = format!(
+                            "command timeout after {:?} on `req_packed_commands`.",
+                            started.elapsed()
+                        );
+                        let err: RedisError =
+                            (ErrorKind::IoError, "command timeout", message).into();
+                        Err(err)
+                    }
+                }
+            } else {
+                f.await
+            };
+
+            match r {
                 Ok(values) => {
                     self.connection_state_ok = true;
 
                     Ok(values)
                 }
                 Err(err) => {
-                    if err.is_io_error() {
-                        // TODO: Can we get a new connection?
-                        self.invalidate();
-                    } else {
-                        self.connection_state_ok = true;
+                    match err.kind() {
+                        // ErrorKind::ResponseError is a hack because the
+                        // parsing files with 0 bytes and an unexpected EOF
+                        // This behaviour need clarification.
+                        // See https://github.com/mitsuhiko/redis-rs/issues/320
+                        ErrorKind::IoError | ErrorKind::ResponseError => {
+                            // TODO: Can we get a new connection?
+                            self.invalidate();
+                        }
+                        _ => {
+                            self.connection_state_ok = true;
+                        }
                     }
                     Err(err)
                 }

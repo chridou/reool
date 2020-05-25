@@ -45,12 +45,54 @@ pub trait RedisOps: Sized + ConnectionLike + Send + 'static {
         .boxed()
     }
 
+    /// Delete all the keys of all the existing databases, not just the currently selected one.
+    /// This command never fails.
+    ///
+    /// The time-complexity for this operation is O(N), N being the number of keys in all existing databases.
     fn flushall<'a>(&'a mut self) -> RedisFuture<'a, ()> {
         async move { cmd("FLUSHALL").query_async(self).await }.boxed()
     }
 
+    /// Delete all the keys of all the existing databases
+    ///
+    /// Redis (since 4.0,0) is now able to delete keys in the background in a different thread
+    /// without blocking the server. An ASYNC option was added to FLUSHALL and FLUSHDB
+    /// in order to let the entire dataset or a single database to be freed asynchronously.
+    ///
+    /// Asynchronous FLUSHALL and FLUSHDB commands only delete keys that were present at the time the command was invoked. Keys created during an asynchronous flush will be unaffected.
     fn flushall_async<'a>(&'a mut self) -> RedisFuture<'a, ()> {
         async move { cmd("FLUSHALL ASYNC").query_async(self).await }.boxed()
+    }
+
+    /// Ask the server to close the connection.
+    ///
+    /// The connection is closed as soon as all pending replies have been written to the client.
+    fn quit<'a>(&'a mut self) -> RedisFuture<'a, ()> {
+        async move {
+            let response = Cmd::new().query_async::<_, String>(self).await?;
+            if response == "OK" {
+                Ok(())
+            } else {
+                Err((ErrorKind::IoError, "quit failed").into())
+            }
+        }
+        .boxed()
+    }
+
+    fn client_id<'a>(&'a mut self) -> RedisFuture<i64> {
+        async move { cmd("CLIENT").arg("ID").query_async(self).await }.boxed()
+    }
+
+    fn client_kill_id<'a>(&'a mut self, id: i64) -> RedisFuture<()> {
+        async move {
+            cmd("CLIENT")
+                .arg("KILL")
+                .arg("ID")
+                .arg(id)
+                .query_async(self)
+                .await
+        }
+        .boxed()
     }
 
     /// Determine the number of keys.
