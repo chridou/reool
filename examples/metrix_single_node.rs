@@ -11,7 +11,7 @@ use tokio::time;
 
 use reool::config::ActivationOrder;
 use reool::error::Error;
-use reool::{Commands, RedisPool};
+use reool::{RedisOps, RedisPool};
 
 /// Do many ping commands where many will faile because either
 /// the checkout ties out or the checkout queue is full

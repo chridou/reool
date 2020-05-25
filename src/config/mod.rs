@@ -11,7 +11,6 @@
 //!
 //! Set the value `connect_to_nodes` to more than one node.
 //! Make sure not to write to that pool.
-use std::time::Duration;
 
 use crate::error::InitializationResult;
 use crate::helpers;
@@ -76,6 +75,9 @@ pub struct Config {
     ///
     /// The default is `true`.
     pub retry_on_checkout_limit: bool,
+
+    /// A timeout for commands which is applied to all commands on all connections.
+    pub default_command_timeout: DefaultCommandTimeout,
 }
 
 impl Config {
@@ -173,6 +175,12 @@ impl Config {
         self
     }
 
+    /// A timeout for commands which is applied to all commands on all connections.
+    pub fn default_command_timeout<T: Into<DefaultCommandTimeout>>(mut self, v: T) -> Self {
+        self.default_command_timeout = v.into();
+        self
+    }
+
     /// Updates this configuration from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
@@ -187,6 +195,7 @@ impl Config {
     /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
     /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
     /// * `RETRY_ON_CHECKOUT_LIMIT`: Omit if you do not want to update the value
+    /// * `DEFAULT_COMMAND_TIMEOUT_MS`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
             self.desired_pool_size = v;
@@ -224,6 +233,10 @@ impl Config {
             self.retry_on_checkout_limit = v;
         })?;
 
+        helpers::set_default_command_timeout(prefix, |v| {
+            self.default_command_timeout = v;
+        })?;
+
         Ok(())
     }
 
@@ -239,6 +252,7 @@ impl Config {
             .pool_multiplier(self.pool_multiplier)
             .checkout_queue_size(self.checkout_queue_size)
             .retry_on_checkout_limit(self.retry_on_checkout_limit)
+            .default_command_timeout(self.default_command_timeout)
     }
 }
 
@@ -246,7 +260,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             desired_pool_size: 50,
-            default_checkout_mode: DefaultPoolCheckoutMode::WaitAtMost(Duration::from_millis(30)),
+            default_checkout_mode: DefaultPoolCheckoutMode::default(),
             backoff_strategy: BackoffStrategy::default(),
             reservation_limit: 50,
             activation_order: ActivationOrder::default(),
@@ -255,6 +269,7 @@ impl Default for Config {
             pool_multiplier: 1,
             checkout_queue_size: 100,
             retry_on_checkout_limit: true,
+            default_command_timeout: DefaultCommandTimeout::default(),
         }
     }
 }

@@ -12,8 +12,16 @@
 //!
 //! You should also consider multiplexing instead of a pool based upon your needs.
 //!
-//! The `PooledConnection` of `reool` implements the `ConnectionLike`
-//! interface of [redis-rs](https://crates.io/crates/redis) for easier integration.
+//! ## The `ConnectionLike` trait
+//!
+//! Both `PooledConnection` and `RedisPool` implement the `ConnectionLike`
+//! interface of [redis-rs](https://crates.io/crates/redis) for easy integration.
+//!
+//! `ConnectionLike::get_db` should be handled with care since the pool will always return
+//! -1. Currently connections from the pool will also do so if the connection was teriminated
+//! by an IO error. So `ConnectionLike::get_db` so always handled with care.
+//!
+//! ## Documentation
 //!
 //! For documentation visit [crates.io](https://crates.io/crates/reool).
 //!
@@ -28,21 +36,20 @@ use std::time::{Duration, Instant};
 
 use futures::prelude::*;
 
-use crate::config::Builder;
-use crate::config::DefaultPoolCheckoutMode;
+use crate::config::{Builder, DefaultCommandTimeout, DefaultPoolCheckoutMode};
 
 pub mod config;
 pub mod instrumentation;
 
 use future::BoxFuture;
 pub use redis::{
-    aio::ConnectionLike, cmd, Cmd, FromRedisValue, NumericBehavior, RedisError, RedisFuture,
-    ToRedisArgs, Value,
+    aio::ConnectionLike, cmd, AsyncCommands, Cmd, FromRedisValue, NumericBehavior, RedisError,
+    RedisFuture, ToRedisArgs, Value,
 };
 
 pub use crate::error::{CheckoutError, CheckoutErrorKind};
-pub use commands::Commands;
 pub use pool_connection::{ConnectionFlavour, PoolConnection};
+pub use redis_ops::RedisOps;
 
 pub mod connection_factory;
 pub mod error;
@@ -51,10 +58,12 @@ pub(crate) mod helpers;
 
 mod activation_order;
 mod backoff_strategy;
-mod commands;
 mod pool_connection;
 mod pools;
+mod redis_ops;
 mod redis_rs;
+
+pub use redis;
 
 /// Something that can be put into the connection pool
 pub trait Poolable: Send + Sized + 'static {
@@ -78,6 +87,12 @@ pub enum CheckoutMode {
     /// This mode will always try to get a connection
     Immediately,
     /// Wait until there is a connection
+    ///
+    /// Using this can be risky as connections are returned
+    /// when dropped. If the pool has no idle connections left while
+    /// none are returned a deadlock might occur. It is always safe to use
+    /// this mode if  only the `RedisPool` itself is used as a connection since
+    /// it will immediately return the used connection after each operation.
     Wait,
     /// Use the default configured for the pool
     PoolDefault,
@@ -101,8 +116,19 @@ impl CheckoutMode {
 pub struct Immediately;
 
 /// Simply a shortcut for `CheckoutMode::Wait`
+///
+/// Using this can be risky as connections are returned
+/// when dropped. If the pool has no idle connections left while
+/// none are returned a deadlock might occur. It is always safe to use
+/// this mode if  only the `RedisPool` itself is used as a connection since
+/// it will immediately return the used connection after each operation.
 #[derive(Debug, Clone, Copy)]
 pub struct Wait;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Millis(pub u64);
+#[derive(Debug, Clone, Copy)]
+pub struct Seconds(pub u64);
 
 /// Simply a shortcut for `CheckoutMode::PoolDefault`
 #[derive(Debug, Clone, Copy)]
@@ -139,9 +165,41 @@ impl From<Duration> for CheckoutMode {
     }
 }
 
+impl From<Millis> for CheckoutMode {
+    fn from(d: Millis) -> Self {
+        let timeout = Instant::now() + d.into();
+        timeout.into()
+    }
+}
+
+impl From<Seconds> for CheckoutMode {
+    fn from(d: Seconds) -> Self {
+        let timeout = Instant::now() + d.into();
+        timeout.into()
+    }
+}
+
 impl From<Instant> for CheckoutMode {
     fn from(until: Instant) -> Self {
         CheckoutMode::Until(until)
+    }
+}
+
+impl From<Duration> for Seconds {
+    fn from(d: Duration) -> Self {
+        Seconds(d.as_secs())
+    }
+}
+
+impl From<Seconds> for Duration {
+    fn from(v: Seconds) -> Self {
+        Duration::from_secs(v.0)
+    }
+}
+
+impl From<Millis> for Duration {
+    fn from(v: Millis) -> Self {
+        Duration::from_millis(v.0)
     }
 }
 
@@ -180,10 +238,17 @@ impl<T: Poolable> Clone for RedisPoolFlavour<T> {
 ///
 /// When having more that one sub pool `Reool` will retry checkout attempts on different
 /// sub pools.
+///
+/// ## `ConnectionLike`
+///
+/// The pool itself implements `ConnectionLike`. This is a convinience functionality
+/// for executing a single redis command. The checkout will be done with the `DefaultCheckoutMode`
+/// defined for the pool. Furthermore `ConnectionLike::get_db` will always return -1.
 pub struct RedisPool<T: Poolable = ConnectionFlavour> {
     flavour: RedisPoolFlavour<T>,
     default_checkout_mode: DefaultPoolCheckoutMode,
     retry_on_checkout_limit: bool,
+    default_command_timeout: DefaultCommandTimeout,
 }
 
 impl RedisPool {
@@ -196,8 +261,9 @@ impl<T: Poolable> RedisPool<T> {
     pub fn no_pool() -> Self {
         RedisPool {
             flavour: RedisPoolFlavour::Empty,
-            default_checkout_mode: DefaultPoolCheckoutMode::Wait,
+            default_checkout_mode: DefaultPoolCheckoutMode::default(),
             retry_on_checkout_limit: false,
+            default_command_timeout: DefaultCommandTimeout::default(),
         }
     }
 
@@ -246,7 +312,23 @@ impl<T: Poolable> RedisPool<T> {
         Ok(PoolConnection {
             managed: Some(managed),
             connection_state_ok: true,
+            command_timeout: self.default_command_timeout.to_duration_opt(),
         })
+    }
+
+    /// Creates a clone with the given default command timeout.
+    ///
+    /// This creates a new instance since mutating this might go unnoticed
+    /// as callers which pass the pool as a mutable reference would not expect
+    /// this value to be changed by downstream code as passing this mutably
+    /// is mostly for the purpose of directly executing Redis commands.
+    pub fn default_command_timeout<TO: Into<DefaultCommandTimeout>>(
+        &self,
+        default_command_timeout: TO,
+    ) -> Self {
+        let mut me = self.clone();
+        me.default_command_timeout = default_command_timeout.into();
+        me
     }
 
     pub fn connected_to(&self) -> Vec<String> {
@@ -272,7 +354,7 @@ impl<T: Poolable> RedisPool<T> {
     /// This method only fails with `()` if the underlying connection
     /// does not support pinging. All other errors will be contained
     /// in the returned `Ping` struct.
-    pub fn ping<TO: Into<Timeout>>(&self, timeout: TO) -> BoxFuture<Vec<Ping>> {
+    pub fn ping_nodes<TO: Into<Timeout>>(&self, timeout: TO) -> BoxFuture<Vec<Ping>> {
         let deadline = timeout.into().0;
 
         match self.flavour {
@@ -289,6 +371,7 @@ impl<T: Poolable> Clone for RedisPool<T> {
             flavour: self.flavour.clone(),
             default_checkout_mode: self.default_checkout_mode,
             retry_on_checkout_limit: self.retry_on_checkout_limit,
+            default_command_timeout: self.default_command_timeout,
         }
     }
 }
@@ -377,6 +460,8 @@ pub struct PoolState {
     /// The number of in flight connections
     pub in_flight: usize,
     /// The total number of connections
+    ///
+    /// If there are multiple pools it is the summ of all their connections.
     pub connections: usize,
     /// The number of reservations waiting for a connections
     pub reservations: usize,
@@ -409,5 +494,32 @@ impl Default for PoolState {
             idle: 0,
             pools: 0,
         }
+    }
+}
+
+impl ConnectionLike for RedisPool {
+    fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value> {
+        async move {
+            let mut conn = self.check_out_default().await?;
+            conn.req_packed_command(cmd).await
+        }
+        .boxed()
+    }
+
+    fn req_packed_commands<'a>(
+        &'a mut self,
+        cmd: &'a redis::Pipeline,
+        offset: usize,
+        count: usize,
+    ) -> RedisFuture<'a, Vec<Value>> {
+        async move {
+            let mut conn = self.check_out_default().await?;
+            conn.req_packed_commands(cmd, offset, count).await
+        }
+        .boxed()
+    }
+
+    fn get_db(&self) -> i64 {
+        -1
     }
 }
