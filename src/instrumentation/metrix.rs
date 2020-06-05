@@ -366,24 +366,28 @@ fn create<A: AggregatesProcessors>(
 
     let mut panel = Panel::named(Metric::ConnectionsChanged, "connections");
     let mut gauge = Gauge::new_with_defaults("count");
+    gauge.set(0.into());
     config.configure_gauge(&mut gauge);
     panel.add_gauge(gauge);
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(Metric::IdleConnectionsChanged, "idle");
     let mut gauge = Gauge::new_with_defaults("count");
+    gauge.set(0.into());
     config.configure_gauge(&mut gauge);
     panel.add_gauge(gauge);
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(Metric::InFlightConnectionsChanged, "in_flight");
     let mut gauge = Gauge::new_with_defaults("count");
+    gauge.set(0.into());
     config.configure_gauge(&mut gauge);
     panel.add_gauge(gauge);
     cockpit.add_panel(panel);
 
     let mut panel = Panel::named(Metric::ReservationsChanged, "reservations");
     let mut gauge = Gauge::new_with_defaults("count");
+    gauge.set(0.into());
     config.configure_gauge(&mut gauge);
     panel.add_gauge(gauge);
     cockpit.add_panel(panel);
@@ -391,6 +395,7 @@ fn create<A: AggregatesProcessors>(
     let mut panel = Panel::named(Metric::PoolCountChanged, "pools");
     let mut gauge = Gauge::new_with_defaults("count");
     config.configure_gauge(&mut gauge);
+    gauge.set(0.into());
     panel.add_gauge(gauge);
     cockpit.add_panel(panel);
 
