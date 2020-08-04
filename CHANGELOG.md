@@ -1,7 +1,11 @@
 # Changelog
 
-## 0.26.1
 
+## 0.27.0
+    * bump `redis-rs` to 0.17
+    * error handling for IO error changed with `redis-rs` 0.17. So this might be considered a breaking change.
+
+## 0.26.1
     * set gauges in `metrix` feature to zero on creation
 
 ## 0.26.0 (BREAKING CHANGES)
