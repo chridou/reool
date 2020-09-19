@@ -29,8 +29,24 @@ pub struct PoolConnection<T: Poolable = ConnectionFlavour> {
 }
 
 impl<T: Poolable> PoolConnection<T> {
+    /// Sets the timeout for each operation done with this connection.
+    #[deprecated(
+        since = "0.27.0",
+        note = "Misleading name. Use 'set_timeout' or 'timeout'"
+    )]
     pub fn default_command_timeout<TO: Into<DefaultCommandTimeout>>(&mut self, timeout: TO) {
         self.command_timeout = timeout.into().to_duration_opt();
+    }
+
+    /// Sets the timeout for each operation done with this connection.
+    pub fn set_timeout<TO: Into<DefaultCommandTimeout>>(&mut self, timeout: TO) {
+        self.command_timeout = timeout.into().to_duration_opt();
+    }
+
+    /// Sets the timeout for each operation done with this connection.
+    pub fn timeout<TO: Into<DefaultCommandTimeout>>(mut self, timeout: TO) -> Self {
+        self.set_timeout(timeout);
+        self
     }
 
     fn get_connection(&mut self) -> Result<&mut T, IoError> {

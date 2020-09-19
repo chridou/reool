@@ -53,6 +53,13 @@ impl CheckoutConstraint {
         }
     }
 
+    pub fn is_reservation_allowed(self) -> bool {
+        match self {
+            CheckoutConstraint::Immediately => false,
+            _ => true,
+        }
+    }
+
     pub fn deadline_and_reservation_allowed(self) -> (Option<Instant>, bool) {
         match self {
             CheckoutConstraint::Until(deadline) => (Some(deadline), true),

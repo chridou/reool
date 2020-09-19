@@ -12,6 +12,10 @@ Currently in early development. API will change rapidly.
 
 Reool is a connection pool for Redis based on [redis-rs](https://crates.io/crates/redis).
 
+The pool is manly aimed at setups where a replica set is used to access multiple nodes
+in read only mode. Having a primary to write to is of course also supported but in that
+setup only one node may be configured with the pool.
+
 Currently `reool` is a fixed size connection pool. `Reool` provides an interface for instrumentation.
 
 You should also consider multiplexing instead of a pool based on your needs.

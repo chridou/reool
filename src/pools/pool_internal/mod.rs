@@ -2,14 +2,13 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::prelude::*;
 use future::BoxFuture;
+use futures::prelude::*;
 use log::trace;
-use tokio::sync::{mpsc, oneshot};
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 
-use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::ConnectionFactory;
 use crate::error::CheckoutErrorKind;
@@ -17,6 +16,7 @@ use crate::executor_flavour::*;
 #[cfg(test)]
 use crate::instrumentation::{InstrumentationFlavour, PoolId};
 use crate::PoolState;
+use crate::{activation_order::ActivationOrder, CheckoutError};
 use crate::{Ping, Poolable};
 
 use super::CheckoutConstraint;
@@ -123,8 +123,7 @@ where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
     {
         // We want to send inner messages in an unbounded manner.
-        let (internal_tx, internal_receiver) =
-            mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
+        let (internal_tx, internal_receiver) = mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
         // Checkout messages should be capped so that we do not get flooded.
         let (checkout_sink, checkout_receiver) =
             mpsc::channel::<CheckoutRequest<T>>(config.checkout_queue_size);
@@ -177,7 +176,7 @@ where
 
                 if let Err(_err) = internal_tx.send(wrapped) {
                     trace!("pool gone - cleanup ticker stopping");
-                    break
+                    break;
                 }
             }
         };
@@ -203,24 +202,24 @@ where
     pub(crate) fn check_out<'a, M: Into<CheckoutConstraint> + 'a>(
         &'a self,
         constraint: M,
-    ) -> impl Future<Output = Result<Managed<T>, FailedCheckout>> + 'a {
+    ) -> impl Future<Output = Result<Managed<T>, CheckoutError>> + 'a {
         let checkout_requested_at = Instant::now();
-        self.check_out2(checkout_requested_at, constraint)
+        self.check_out_with_timestamp(constraint, checkout_requested_at)
     }
 
     // Takes a checkout future and a `CheckoutPackage`.
     // If the package can be sent to the inner pool the future will be returned immediately.
     // Otherwise the future will be returned alongside the package to use the parts for
     // a retry.
-    pub(crate) async fn check_out2<M: Into<CheckoutConstraint>>(
+    pub(crate) async fn check_out_with_timestamp<M: Into<CheckoutConstraint>>(
         &self,
-        checkout_requested_at: Instant,
         constraint: M,
-    ) -> Result<Managed<T>, FailedCheckout> {
+        checkout_requested_at: Instant,
+    ) -> Result<Managed<T>, CheckoutError> {
         let constraint = constraint.into();
 
         if constraint.is_deadline_elapsed() {
-            return Err(FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::CheckoutTimeout));
+            return Err(CheckoutErrorKind::CheckoutTimeout.into());
         }
 
         let (deadline, reservation_allowed) = constraint.deadline_and_reservation_allowed();
@@ -246,16 +245,16 @@ where
                 TrySendError::Closed(_) => CheckoutErrorKind::NoPool,
             };
 
-            return Err(FailedCheckout::new(checkout_requested_at, error_kind));
+            return Err(error_kind.into());
         }
 
         let managed = match deadline {
             None => rx.await,
-            Some(deadline) => time::timeout_at(deadline.into(), rx).await
-                .map_err(|_timeout| FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::CheckoutTimeout))?
+            Some(deadline) => time::timeout_at(deadline.into(), rx)
+                .await
+                .map_err(|_timeout| CheckoutError::from(CheckoutErrorKind::CheckoutTimeout))?,
         }
-        .map_err(|_receive_error| FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::NoPool))?
-        .map_err(|checkout_error| FailedCheckout::new(checkout_requested_at, checkout_error.kind()))?;
+        .map_err(|_receive_error| CheckoutError::from(CheckoutErrorKind::NoPool))??;
 
         Ok(managed)
     }
@@ -355,13 +354,12 @@ fn start_inner_pool_consumer<T: Poolable>(
     executor: &ExecutorFlavour,
 ) {
     let _ = executor.spawn(async move {
-        let checkout_stream = checkout_receiver
-            .map(|rq| {
-                PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
-                    created_at: rq.created_at,
-                    payload: rq.payload,
-                })
-            });
+        let checkout_stream = checkout_receiver.map(|rq| {
+            PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
+                created_at: rq.created_at,
+                payload: rq.payload,
+            })
+        });
 
         let mut merged_stream = stream::select(internal_receiver, checkout_stream);
 

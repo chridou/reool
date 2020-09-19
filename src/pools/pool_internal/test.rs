@@ -26,9 +26,7 @@ async fn check_out_fut<T: Poolable, M: Into<CheckoutConstraint>>(
     pool: &PoolInternal<T>,
     constraint: M,
 ) -> Result<Managed<T>, CheckoutError> {
-    pool.check_out(constraint)
-        .await
-        .map_err(|failure_package| failure_package.error_kind.into())
+    pool.check_out(constraint).await
 }
 
 #[test]

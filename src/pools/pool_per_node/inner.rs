@@ -105,65 +105,62 @@ impl<T: Poolable> Inner<T> {
             return Err(CheckoutErrorKind::NoPool.into());
         }
 
-        if constraint.is_deadline_elapsed() {
-            return Err(CheckoutErrorKind::CheckoutTimeout.into());
-        }
+        let first_checkout_attempt_at = Instant::now();
+        let start_position = self.count.fetch_add(1, Ordering::SeqCst);
 
-        let position = self.count.fetch_add(1, Ordering::SeqCst);
-        let first_pool_index = position % self.pools.len();
-
-        // Do the first attempt as Immediate since we can still apply original constraint
-        // later if we have more then one pool
-        let mut last_failed_checkout = {
-            let effective_constraint = if self.pools.len() == 1 {
-                constraint
-            } else {
-                CheckoutConstraint::Immediately
-            };
-
-            match self.pools[first_pool_index]
-                .check_out(effective_constraint)
-                .await
-            {
-                Ok(checkout) => return Ok(checkout),
-                Err(failed_checkout) if self.pools.len() == 1 => {
-                    return Err(failed_checkout.error_kind.into());
-                }
-                Err(failed_checkout) => failed_checkout,
-            }
+        // Try to get one immediatlely and if that fails remeber the
+        // error in case we make no futher attempts
+        let err = match self
+            .try_on_first_checkout_constrait(
+                start_position,
+                first_checkout_attempt_at,
+                CheckoutConstraint::Immediately,
+            )
+            .await
+        {
+            Ok(conn) => return Ok(conn),
+            Err(err) => err,
         };
 
-        let iteration_bound = position + self.pools.len();
-        let last_iteration = iteration_bound - 1;
-        // Iterate over all but the first pool because we already tried that.
-        for position in position + 1..iteration_bound {
-            if constraint.is_deadline_elapsed() {
-                return Err(CheckoutErrorKind::CheckoutTimeout.into());
-            }
+        // If the connection was to be checked out immediately (does not allow
+        // a reservation), no further
+        // attempts may be made and we return the error we already have
+        if !constraint.is_reservation_allowed() {
+            return Err(err);
+        }
 
-            let idx = position % self.pools.len();
+        self.try_on_first_checkout_constrait(start_position, first_checkout_attempt_at, constraint)
+            .await
+    }
 
-            let current_constraint = if position >= last_iteration {
-                constraint
-            } else {
-                CheckoutConstraint::Immediately
-            };
-
-            match self.pools[idx]
-                .check_out2(
-                    last_failed_checkout.checkout_requested_at,
-                    current_constraint,
-                )
+    /// Tries all pools until one checks out a connection with the given `CheckoutConstraint`.
+    ///
+    /// Returns the error of the last attempt if no connection could be checked with
+    /// the given constraint on any of the pools
+    async fn try_on_first_checkout_constrait(
+        &self,
+        start_position: usize,
+        first_attempt_at: Instant,
+        constraint: CheckoutConstraint,
+    ) -> Result<Managed<T>, CheckoutError> {
+        let mut last_err = CheckoutErrorKind::NoConnection.into();
+        for offset in 0..self.pools.len() {
+            match get_pool(start_position, offset, &self.pools)
+                .check_out_with_timestamp(constraint, first_attempt_at)
                 .await
             {
-                Ok(checkout) => return Ok(checkout),
-                Err(failed_checkout) => {
-                    last_failed_checkout = failed_checkout;
+                Ok(conn) => return Ok(conn),
+                Err(err) => {
+                    // Timeot error never happens on Immediate or Wait
+                    if err.kind() == CheckoutErrorKind::CheckoutTimeout {
+                        return Err(err);
+                    }
+                    last_err = err;
+                    continue;
                 }
             }
         }
-
-        Err(last_failed_checkout.error_kind.into())
+        Err(last_err)
     }
 
     pub fn state(&self) -> PoolState {
@@ -177,4 +174,14 @@ impl<T: Poolable> Inner<T> {
         let futs = self.pools.iter().map(|p| p.ping(timeout));
         future::join_all(futs)
     }
+}
+
+#[inline]
+fn get_pool<T>(start_position: usize, offset: usize, pools: &[T]) -> &T {
+    &pools[index_at(start_position, offset, pools.len())]
+}
+
+#[inline]
+fn index_at(start_position: usize, offset: usize, elements: usize) -> usize {
+    (start_position + offset) % elements
 }
