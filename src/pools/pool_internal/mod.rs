@@ -332,21 +332,6 @@ impl<T: Poolable> fmt::Debug for PoolInternal<T> {
     }
 }
 
-/// An attempt to send a checkout to the inner pool failed.
-pub(crate) struct FailedCheckout {
-    pub error_kind: CheckoutErrorKind,
-    pub checkout_requested_at: Instant,
-}
-
-impl FailedCheckout {
-    pub fn new(checkout_requested_at: Instant, error_kind: CheckoutErrorKind) -> Self {
-        Self {
-            checkout_requested_at,
-            error_kind,
-        }
-    }
-}
-
 fn start_inner_pool_consumer<T: Poolable>(
     mut pool: InnerPool<T>,
     checkout_receiver: mpsc::Receiver<CheckoutRequest<T>>,

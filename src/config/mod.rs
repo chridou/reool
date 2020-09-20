@@ -76,6 +76,9 @@ pub struct Config {
     /// The default is `true`.
     pub retry_on_checkout_limit: bool,
 
+    /// TODO:
+    pub checkout_strategy: CheckoutStrategy,
+
     /// A timeout for commands which is applied to all commands on all connections.
     pub default_command_timeout: DefaultCommandTimeout,
 }
@@ -181,6 +184,12 @@ impl Config {
         self
     }
 
+    /// TODO:
+    pub fn checkout_strategy<T: Into<CheckoutStrategy>>(mut self, v: T) -> Self {
+        self.checkout_strategy = v.into();
+        self
+    }
+
     /// Updates this configuration from the environment.
     ///
     /// If no `prefix` is set all the given env key start with `REOOL_`.
@@ -195,6 +204,7 @@ impl Config {
     /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
     /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
     /// * `RETRY_ON_CHECKOUT_LIMIT`: Omit if you do not want to update the value
+    /// * `CHECKOUT_STRATEGY`: Omit if you do not want to update the value
     /// * `DEFAULT_COMMAND_TIMEOUT_MS`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         helpers::set_desired_pool_size(prefix, |v| {
@@ -237,6 +247,10 @@ impl Config {
             self.default_command_timeout = v;
         })?;
 
+        helpers::set_checkout_strategy(prefix, |v| {
+            self.checkout_strategy = v;
+        })?;
+
         Ok(())
     }
 
@@ -252,6 +266,7 @@ impl Config {
             .pool_multiplier(self.pool_multiplier)
             .checkout_queue_size(self.checkout_queue_size)
             .retry_on_checkout_limit(self.retry_on_checkout_limit)
+            .checkout_strategy(self.checkout_strategy.clone())
             .default_command_timeout(self.default_command_timeout)
     }
 }
@@ -269,6 +284,7 @@ impl Default for Config {
             pool_multiplier: 1,
             checkout_queue_size: 100,
             retry_on_checkout_limit: true,
+            checkout_strategy: CheckoutStrategy::default(),
             default_command_timeout: DefaultCommandTimeout::default(),
         }
     }

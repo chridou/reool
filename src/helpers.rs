@@ -12,7 +12,7 @@ fn make_prefix<T: Into<String>>(prefix: Option<T>) -> String {
 
 pub fn set_desired_pool_size<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(usize) -> (),
+    F: FnMut(usize),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -30,7 +30,7 @@ where
 
 pub fn set_default_checkout_mode<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(DefaultPoolCheckoutMode) -> (),
+    F: FnMut(DefaultPoolCheckoutMode),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -48,7 +48,7 @@ where
 
 pub fn set_reservation_limit<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(usize) -> (),
+    F: FnMut(usize),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -66,7 +66,7 @@ where
 
 pub fn set_min_required_nodes<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(usize) -> (),
+    F: FnMut(usize),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -84,7 +84,7 @@ where
 
 pub fn set_retry_on_checkout_limit<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(bool) -> (),
+    F: FnMut(bool),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -104,7 +104,7 @@ where
 
 pub fn set_activation_order<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(ActivationOrder) -> (),
+    F: FnMut(ActivationOrder),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -144,7 +144,7 @@ where
 
 pub fn set_pool_multiplier<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(u32) -> (),
+    F: FnMut(u32),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -162,7 +162,7 @@ where
 
 pub fn set_checkout_queue_size<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(usize) -> (),
+    F: FnMut(usize),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
@@ -180,13 +180,31 @@ where
 
 pub fn set_default_command_timeout<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
 where
-    F: FnMut(DefaultCommandTimeout) -> (),
+    F: FnMut(DefaultCommandTimeout),
     T: Into<String>,
 {
     let prefix = make_prefix(prefix);
 
     let key = format!("{}_{}", prefix, "DEFAULT_COMMAND_TIMEOUT");
     match env::var(&key) {
+        Ok(s) => {
+            f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
+            Ok(())
+        }
+        Err(env::VarError::NotPresent) => Ok(()),
+        Err(err) => Err(Error::new(key, Some(err))),
+    }
+}
+
+pub fn set_checkout_strategy<T, F>(prefix: Option<T>, mut f: F) -> InitializationResult<()>
+where
+    F: FnMut(CheckoutStrategy),
+    T: Into<String>,
+{
+    let prefix = make_prefix(prefix);
+
+    let key = format!("{}_{}", prefix, "CHECKOUT_STRATEGY");
+    match env::var(&key).map(|s| s.to_uppercase()) {
         Ok(s) => {
             f(s.parse().map_err(|err| Error::new(key, Some(err)))?);
             Ok(())

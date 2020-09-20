@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use future::BoxFuture;
 use futures::prelude::*;
-use pretty_env_logger;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::time;

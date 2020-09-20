@@ -129,6 +129,12 @@ impl Builder {
         self
     }
 
+    /// TODO:
+    pub fn checkout_strategy<T: Into<CheckoutStrategy>>(mut self, v: T) -> Self {
+        self.config.checkout_strategy = v.into();
+        self
+    }
+
     /// The executor to use for spawning tasks. If not set it is assumed
     /// that the pool is created on the default runtime.
     pub fn task_executor(mut self, handle: ::tokio::runtime::Handle) -> Self {

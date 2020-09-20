@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -17,8 +16,10 @@ use crate::{Ping, PoolState, Poolable};
 
 use super::super::CheckoutConstraint;
 
+mod checkout_strategies;
+
 pub(crate) struct Inner<T: Poolable> {
-    count: AtomicUsize,
+    strategy: checkout_strategies::CheckoutStrategyImpl,
     pub(crate) pools: Arc<Vec<PoolInternal<T>>>,
 }
 
@@ -90,7 +91,7 @@ impl<T: Poolable> Inner<T> {
         debug!("pool per node has {} nodes", pools.len());
 
         let inner = Inner {
-            count: AtomicUsize::new(0),
+            strategy: config.checkout_strategy.make_impl(),
             pools: Arc::new(pools),
         };
 
@@ -106,61 +107,9 @@ impl<T: Poolable> Inner<T> {
         }
 
         let first_checkout_attempt_at = Instant::now();
-        let start_position = self.count.fetch_add(1, Ordering::SeqCst);
-
-        // Try to get one immediatlely and if that fails remeber the
-        // error in case we make no futher attempts
-        let err = match self
-            .try_on_first_checkout_constrait(
-                start_position,
-                first_checkout_attempt_at,
-                CheckoutConstraint::Immediately,
-            )
+        self.strategy
+            .apply(constraint, &self.pools, first_checkout_attempt_at)
             .await
-        {
-            Ok(conn) => return Ok(conn),
-            Err(err) => err,
-        };
-
-        // If the connection was to be checked out immediately (does not allow
-        // a reservation), no further
-        // attempts may be made and we return the error we already have
-        if !constraint.is_reservation_allowed() {
-            return Err(err);
-        }
-
-        self.try_on_first_checkout_constrait(start_position, first_checkout_attempt_at, constraint)
-            .await
-    }
-
-    /// Tries all pools until one checks out a connection with the given `CheckoutConstraint`.
-    ///
-    /// Returns the error of the last attempt if no connection could be checked with
-    /// the given constraint on any of the pools
-    async fn try_on_first_checkout_constrait(
-        &self,
-        start_position: usize,
-        first_attempt_at: Instant,
-        constraint: CheckoutConstraint,
-    ) -> Result<Managed<T>, CheckoutError> {
-        let mut last_err = CheckoutErrorKind::NoConnection.into();
-        for offset in 0..self.pools.len() {
-            match get_pool(start_position, offset, &self.pools)
-                .check_out_with_timestamp(constraint, first_attempt_at)
-                .await
-            {
-                Ok(conn) => return Ok(conn),
-                Err(err) => {
-                    // Timeot error never happens on Immediate or Wait
-                    if err.kind() == CheckoutErrorKind::CheckoutTimeout {
-                        return Err(err);
-                    }
-                    last_err = err;
-                    continue;
-                }
-            }
-        }
-        Err(last_err)
     }
 
     pub fn state(&self) -> PoolState {

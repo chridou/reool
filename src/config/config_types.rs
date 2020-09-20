@@ -115,6 +115,53 @@ impl std::error::Error for ParseDefaultPoolCheckoutModeError {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+#[non_exhaustive]
+pub enum CheckoutStrategy {
+    OneAttempt,
+    TwoAttempts,
+    OneImmediately,
+    OneCycle,
+    TwoCycles,
+}
+
+impl std::str::FromStr for CheckoutStrategy {
+    type Err = ParseCheckoutStrategyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &*s.to_lowercase() {
+            "one_attempt" => Ok(CheckoutStrategy::OneAttempt),
+            "two_attempts" => Ok(CheckoutStrategy::TwoAttempts),
+            "one_immediately" => Ok(CheckoutStrategy::OneImmediately),
+            "one_cycle" => Ok(CheckoutStrategy::OneCycle),
+            "two_cycles" => Ok(CheckoutStrategy::TwoCycles),
+            _ => Err(ParseCheckoutStrategyError(format!(
+                "{} is not a valid checkout strategy",
+                s
+            ))),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ParseCheckoutStrategyError(String);
+
+impl fmt::Display for ParseCheckoutStrategyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Could not parse CheckoutStrategy: {}", self.0)
+    }
+}
+
+impl std::error::Error for ParseCheckoutStrategyError {
+    fn description(&self) -> &str {
+        "parse checkout strategy failed"
+    }
+
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        None
+    }
+}
+
 /// A timeout for commands which is applied to all commands on all connections.
 ///
 /// This timeout is a default and can be overridden in several places to
