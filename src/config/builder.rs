@@ -186,6 +186,7 @@ impl Builder {
     /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
     /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
     /// * `RETRY_ON_CHECKOUT_LIMIT`: Omit if you do not want to update the value
+    /// * `CHECKOUT_STRATEGY`: Omit if you do not want to update the value
     /// * `DEFAULT_COMMAND_TIMEOUT_MS`: Omit if you do not want to update the value
     pub fn update_from_environment(&mut self, prefix: Option<&str>) -> InitializationResult<()> {
         self.config.update_from_environment(prefix)?;
@@ -206,6 +207,7 @@ impl Builder {
     /// * `POOL_MULTIPLIER`: Omit if you do not want to update the value
     /// * `CHECKOUT_QUEUE_SIZE`: Omit if you do not want to update the value
     /// * `RETRY_ON_CHECKOUT_LIMIT`: Omit if you do not want to update the value
+    /// * `CHECKOUT_STRATEGY`: Omit if you do not want to update the value
     /// * `DEFAULT_COMMAND_TIMEOUT_MS`: Omit if you do not want to update the value
     pub fn updated_from_environment(mut self, prefix: Option<&str>) -> InitializationResult<Self> {
         self.config.update_from_environment(prefix)?;

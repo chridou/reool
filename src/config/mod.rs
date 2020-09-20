@@ -76,7 +76,9 @@ pub struct Config {
     /// The default is `true`.
     pub retry_on_checkout_limit: bool,
 
-    /// TODO:
+    /// Configures the strategy on how to check out connections from multiple pools
+    ///
+    /// Only has an effect if there is more than one pool/node configured.
     pub checkout_strategy: CheckoutStrategy,
 
     /// A timeout for commands which is applied to all commands on all connections.
@@ -184,7 +186,9 @@ impl Config {
         self
     }
 
-    /// TODO:
+    /// Configures the strategy on how to check out connections from multiple pools
+    ///
+    /// Only has an effect if there is more than one pool/node configured.
     pub fn checkout_strategy<T: Into<CheckoutStrategy>>(mut self, v: T) -> Self {
         self.checkout_strategy = v.into();
         self
@@ -266,7 +270,7 @@ impl Config {
             .pool_multiplier(self.pool_multiplier)
             .checkout_queue_size(self.checkout_queue_size)
             .retry_on_checkout_limit(self.retry_on_checkout_limit)
-            .checkout_strategy(self.checkout_strategy.clone())
+            .checkout_strategy(self.checkout_strategy)
             .default_command_timeout(self.default_command_timeout)
     }
 }

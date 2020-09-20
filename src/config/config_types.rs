@@ -115,7 +115,7 @@ impl std::error::Error for ParseDefaultPoolCheckoutModeError {
     }
 }
 
-/// Configures the strategy of how to check out connections from multiple pools
+/// Configures the strategy on how to check out connections from multiple pools
 ///
 /// Only has an effect if there is more than one pool/node configured.
 #[derive(Debug, Copy, Clone)]
