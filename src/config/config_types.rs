@@ -115,13 +115,25 @@ impl std::error::Error for ParseDefaultPoolCheckoutModeError {
     }
 }
 
+/// Configures the strategy of how to check out connections from multiple pools
+///
+/// Only has an effect if there is more than one pool/node configured.
 #[derive(Debug, Copy, Clone)]
 #[non_exhaustive]
 pub enum CheckoutStrategy {
+    /// Simply make one attempt with the given `CheckoutConstraint`
     OneAttempt,
+    /// Make a frist attempt with `CheckoutConstraint::Immediately` and
+    /// if that fails try the given `CheckoutConstraint` on the next pool.
     TwoAttempts,
+    /// Make a frist attempt with `CheckoutConstraint::Immediately` and
+    /// if that fails try the given `CheckoutConstraint` on all remaining pools.
     OneImmediately,
+    /// Simply make attempts with the given `CheckoutConstraint` on all pools/nodes
+    /// until the first one succeeds
     OneCycle,
+    /// First try all nodes with `CheckoutConstraint::Immediately` and if that fails
+    /// try all pools/nodes with the given `CheckoutConstraint` again
     TwoCycles,
 }
 
