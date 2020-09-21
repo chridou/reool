@@ -147,6 +147,7 @@ impl std::str::FromStr for CheckoutStrategy {
             "one_immediately" => Ok(CheckoutStrategy::OneImmediately),
             "one_cycle" => Ok(CheckoutStrategy::OneCycle),
             "two_cycles" => Ok(CheckoutStrategy::TwoCycles),
+            "default" => Ok(CheckoutStrategy::default()),
             _ => Err(ParseCheckoutStrategyError(format!(
                 "{} is not a valid checkout strategy",
                 s
