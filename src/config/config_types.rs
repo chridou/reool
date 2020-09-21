@@ -115,6 +115,66 @@ impl std::error::Error for ParseDefaultPoolCheckoutModeError {
     }
 }
 
+/// Configures the strategy on how to check out connections from multiple pools
+///
+/// Only has an effect if there is more than one pool/node configured.
+#[derive(Debug, Copy, Clone)]
+#[non_exhaustive]
+pub enum CheckoutStrategy {
+    /// Simply make one attempt with the given `CheckoutConstraint`
+    OneAttempt,
+    /// Make a frist attempt with `CheckoutConstraint::Immediately` and
+    /// if that fails try the given `CheckoutConstraint` on the next pool.
+    TwoAttempts,
+    /// Make a frist attempt with `CheckoutConstraint::Immediately` and
+    /// if that fails try the given `CheckoutConstraint` on all remaining pools.
+    OneImmediately,
+    /// Simply make attempts with the given `CheckoutConstraint` on all pools/nodes
+    /// until the first one succeeds
+    OneCycle,
+    /// First try all nodes with `CheckoutConstraint::Immediately` and if that fails
+    /// try all pools/nodes with the given `CheckoutConstraint` again
+    TwoCycles,
+}
+
+impl std::str::FromStr for CheckoutStrategy {
+    type Err = ParseCheckoutStrategyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &*s.to_lowercase() {
+            "one_attempt" => Ok(CheckoutStrategy::OneAttempt),
+            "two_attempts" => Ok(CheckoutStrategy::TwoAttempts),
+            "one_immediately" => Ok(CheckoutStrategy::OneImmediately),
+            "one_cycle" => Ok(CheckoutStrategy::OneCycle),
+            "two_cycles" => Ok(CheckoutStrategy::TwoCycles),
+            "default" => Ok(CheckoutStrategy::default()),
+            _ => Err(ParseCheckoutStrategyError(format!(
+                "{} is not a valid checkout strategy",
+                s
+            ))),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ParseCheckoutStrategyError(String);
+
+impl fmt::Display for ParseCheckoutStrategyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Could not parse CheckoutStrategy: {}", self.0)
+    }
+}
+
+impl std::error::Error for ParseCheckoutStrategyError {
+    fn description(&self) -> &str {
+        "parse checkout strategy failed"
+    }
+
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        None
+    }
+}
+
 /// A timeout for commands which is applied to all commands on all connections.
 ///
 /// This timeout is a default and can be overridden in several places to

@@ -38,7 +38,7 @@ pub enum CheckoutErrorKind {
     ReservationLimitReached,
     /// No connection because there is no pool available.
     NoPool,
-    /// If maximum number of checkout that can be
+    /// If maximum number of checkouts that can be
     /// enqueued has been reached
     CheckoutLimitReached,
     /// Something went wrong executing a task. Keep in
@@ -57,7 +57,7 @@ impl fmt::Display for CheckoutErrorKind {
             }
             CheckoutErrorKind::ReservationLimitReached => "the reservation limit has been reached",
             CheckoutErrorKind::NoPool => "there was no pool available",
-            CheckoutErrorKind::CheckoutLimitReached => "checkout limit limit reached",
+            CheckoutErrorKind::CheckoutLimitReached => "checkout limit reached",
             CheckoutErrorKind::TaskExecution => "task execution failed",
         };
         f.write_str(s)

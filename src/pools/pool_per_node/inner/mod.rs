@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -17,8 +16,10 @@ use crate::{Ping, PoolState, Poolable};
 
 use super::super::CheckoutConstraint;
 
+mod checkout_strategies;
+
 pub(crate) struct Inner<T: Poolable> {
-    count: AtomicUsize,
+    strategy: checkout_strategies::CheckoutStrategyImpl,
     pub(crate) pools: Arc<Vec<PoolInternal<T>>>,
 }
 
@@ -90,7 +91,7 @@ impl<T: Poolable> Inner<T> {
         debug!("pool per node has {} nodes", pools.len());
 
         let inner = Inner {
-            count: AtomicUsize::new(0),
+            strategy: config.checkout_strategy.make_impl(),
             pools: Arc::new(pools),
         };
 
@@ -105,65 +106,10 @@ impl<T: Poolable> Inner<T> {
             return Err(CheckoutErrorKind::NoPool.into());
         }
 
-        if constraint.is_deadline_elapsed() {
-            return Err(CheckoutErrorKind::CheckoutTimeout.into());
-        }
-
-        let position = self.count.fetch_add(1, Ordering::SeqCst);
-        let first_pool_index = position % self.pools.len();
-
-        // Do the first attempt as Immediate since we can still apply original constraint
-        // later if we have more then one pool
-        let mut last_failed_checkout = {
-            let effective_constraint = if self.pools.len() == 1 {
-                constraint
-            } else {
-                CheckoutConstraint::Immediately
-            };
-
-            match self.pools[first_pool_index]
-                .check_out(effective_constraint)
-                .await
-            {
-                Ok(checkout) => return Ok(checkout),
-                Err(failed_checkout) if self.pools.len() == 1 => {
-                    return Err(failed_checkout.error_kind.into());
-                }
-                Err(failed_checkout) => failed_checkout,
-            }
-        };
-
-        let iteration_bound = position + self.pools.len();
-        let last_iteration = iteration_bound - 1;
-        // Iterate over all but the first pool because we already tried that.
-        for position in position + 1..iteration_bound {
-            if constraint.is_deadline_elapsed() {
-                return Err(CheckoutErrorKind::CheckoutTimeout.into());
-            }
-
-            let idx = position % self.pools.len();
-
-            let current_constraint = if position >= last_iteration {
-                constraint
-            } else {
-                CheckoutConstraint::Immediately
-            };
-
-            match self.pools[idx]
-                .check_out2(
-                    last_failed_checkout.checkout_requested_at,
-                    current_constraint,
-                )
-                .await
-            {
-                Ok(checkout) => return Ok(checkout),
-                Err(failed_checkout) => {
-                    last_failed_checkout = failed_checkout;
-                }
-            }
-        }
-
-        Err(last_failed_checkout.error_kind.into())
+        let first_checkout_attempt_at = Instant::now();
+        self.strategy
+            .apply(constraint, &self.pools, first_checkout_attempt_at)
+            .await
     }
 
     pub fn state(&self) -> PoolState {
@@ -177,4 +123,14 @@ impl<T: Poolable> Inner<T> {
         let futs = self.pools.iter().map(|p| p.ping(timeout));
         future::join_all(futs)
     }
+}
+
+#[inline]
+fn get_pool<T>(start_position: usize, offset: usize, pools: &[T]) -> &T {
+    &pools[index_at(start_position, offset, pools.len())]
+}
+
+#[inline]
+fn index_at(start_position: usize, offset: usize, elements: usize) -> usize {
+    (start_position + offset) % elements
 }

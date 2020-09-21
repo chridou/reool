@@ -97,10 +97,7 @@ impl<T: Poolable> CanCheckout<T> for SinglePool<T> {
         &'a self,
         constraint: M,
     ) -> BoxFuture<'a, Result<Managed<T>, CheckoutError>> {
-        self.pool
-            .check_out(constraint)
-            .map_err(|error_package| error_package.error_kind.into())
-            .boxed()
+        self.pool.check_out(constraint).boxed()
     }
 }
 

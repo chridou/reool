@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.27.1
+    * deprecated `default_command_timeout` in favour of `set_timeout` and `timeout` on `PooledConnection`
+    * simplified the way on how pools are checkoed out internally
+    * Added a checkout strategy to teh configuration to have multiple options how how to check out connections
 
 ## 0.27.0
     * bump `redis-rs` to 0.17

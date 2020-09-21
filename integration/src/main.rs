@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use reool::{
+    config::CheckoutStrategy,
     config::{Builder, DefaultPoolCheckoutMode},
     error::Error,
     RedisPool,
@@ -41,32 +42,53 @@ async fn the_real_main() -> Result<(), Error> {
 }
 
 pub async fn run_test_with_pool(pool_size: usize, num_pools: u32) -> Result<(), Error> {
-    let mut pool = get_builder(pool_size, num_pools).finish_redis_rs()?;
+    let checkout_strategies = &[
+        CheckoutStrategy::OneAttempt,
+        CheckoutStrategy::TwoAttempts,
+        CheckoutStrategy::OneImmediately,
+        CheckoutStrategy::OneCycle,
+        CheckoutStrategy::TwoCycles,
+    ];
 
-    println!(
-        "=== Test with {} connection(s) in {} pool(s)",
-        pool_size, num_pools,
-    );
+    let mut has_error = false;
 
-    match runner::run(&mut pool).await {
-        Ok(()) => {
-            println!("SUCCESS");
-            Ok(())
+    for checkout_strategy in checkout_strategies {
+        let mut pool = get_builder(pool_size, num_pools, *checkout_strategy).finish_redis_rs()?;
+
+        println!(
+            "=== Test with {} connection(s) in {} pool(s) with checkout strategy {:?}",
+            pool_size, num_pools, checkout_strategy
+        );
+
+        match runner::run(&mut pool).await {
+            Ok(()) => {
+                println!("SUCCESS");
+            }
+            Err(err) => {
+                println!("ERROR: {}", err);
+                has_error = true;
+            }
         }
-        Err(err) => {
-            println!("ERROR: {}", err);
-            Err(err)
-        }
+    }
+
+    if has_error {
+        Err(Error::message("At least one test failed"))
+    } else {
+        Ok(())
     }
 }
 
-pub fn get_builder(pool_size: usize, num_pools: u32) -> Builder {
-    let builder = RedisPool::builder()
+pub fn get_builder(
+    pool_size: usize,
+    num_pools: u32,
+    checkout_strategy: CheckoutStrategy,
+) -> Builder {
+    RedisPool::builder()
         .connect_to_node("redis://localhost:6379")
         .desired_pool_size(pool_size)
         .pool_multiplier(num_pools)
         .reservation_limit(50_000)
-        .default_checkout_mode(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_secs(10)));
-
-    builder
+        .checkout_queue_size(10_000)
+        .checkout_strategy(checkout_strategy)
+        .default_checkout_mode(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_secs(10)))
 }
