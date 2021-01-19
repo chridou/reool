@@ -3,6 +3,7 @@
 ## 0.28.0
     * update to tokio 1
     * bump `redis-rs` to 0.19
+    * MSRV: 1.45
 
 ## 0.27.0
     * bump `redis-rs` to 0.17
