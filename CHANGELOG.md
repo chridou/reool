@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.28.0
+## 0.28.0 (BREAKING CHANGES)
     * update to tokio 1
     * bump `redis-rs` to 0.19
     * MSRV: 1.45

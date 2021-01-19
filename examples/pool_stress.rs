@@ -28,7 +28,7 @@ use reool::*;
 /// Simply use an artificial connection factory
 /// that does not create real connections and hammer the
 /// pool with checkout requests.
-#[tokio::main(core_threads = 1)]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     env::set_var("RUST_LOG", "info");
     let _ = pretty_env_logger::try_init();
