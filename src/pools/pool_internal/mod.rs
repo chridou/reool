@@ -2,12 +2,13 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::prelude::*;
 use future::BoxFuture;
+use futures::prelude::*;
 use log::trace;
-use tokio::sync::{mpsc, oneshot};
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 
 use crate::activation_order::ActivationOrder;
 use crate::backoff_strategy::BackoffStrategy;
@@ -123,8 +124,7 @@ where
         C: ConnectionFactory<Connection = T> + Send + Sync + 'static,
     {
         // We want to send inner messages in an unbounded manner.
-        let (internal_tx, internal_receiver) =
-            mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
+        let (internal_tx, internal_receiver) = mpsc::unbounded_channel::<PoolMessageEnvelope<T>>();
         // Checkout messages should be capped so that we do not get flooded.
         let (checkout_sink, checkout_receiver) =
             mpsc::channel::<CheckoutRequest<T>>(config.checkout_queue_size);
@@ -177,7 +177,7 @@ where
 
                 if let Err(_err) = internal_tx.send(wrapped) {
                     trace!("pool gone - cleanup ticker stopping");
-                    break
+                    break;
                 }
             }
         };
@@ -220,7 +220,10 @@ where
         let constraint = constraint.into();
 
         if constraint.is_deadline_elapsed() {
-            return Err(FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::CheckoutTimeout));
+            return Err(FailedCheckout::new(
+                checkout_requested_at,
+                CheckoutErrorKind::CheckoutTimeout,
+            ));
         }
 
         let (deadline, reservation_allowed) = constraint.deadline_and_reservation_allowed();
@@ -238,7 +241,7 @@ where
             created_at: Instant::now(),
             payload,
         };
-        let mut checkout_sink = self.checkout_sink.clone();
+        let checkout_sink = self.checkout_sink.clone();
 
         if let Err(err) = checkout_sink.try_send(request) {
             let error_kind = match err {
@@ -251,11 +254,18 @@ where
 
         let managed = match deadline {
             None => rx.await,
-            Some(deadline) => time::timeout_at(deadline.into(), rx).await
-                .map_err(|_timeout| FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::CheckoutTimeout))?
+            Some(deadline) => time::timeout_at(deadline.into(), rx)
+                .await
+                .map_err(|_timeout| {
+                    FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::CheckoutTimeout)
+                })?,
         }
-        .map_err(|_receive_error| FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::NoPool))?
-        .map_err(|checkout_error| FailedCheckout::new(checkout_requested_at, checkout_error.kind()))?;
+        .map_err(|_receive_error| {
+            FailedCheckout::new(checkout_requested_at, CheckoutErrorKind::NoPool)
+        })?
+        .map_err(|checkout_error| {
+            FailedCheckout::new(checkout_requested_at, checkout_error.kind())
+        })?;
 
         Ok(managed)
     }
@@ -355,15 +365,16 @@ fn start_inner_pool_consumer<T: Poolable>(
     executor: &ExecutorFlavour,
 ) {
     let _ = executor.spawn(async move {
-        let checkout_stream = checkout_receiver
-            .map(|rq| {
-                PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
-                    created_at: rq.created_at,
-                    payload: rq.payload,
-                })
-            });
+        let checkout_receiver_as_stream = ReceiverStream::new(checkout_receiver);
+        let checkout_stream = checkout_receiver_as_stream.map(|rq| {
+            PoolMessageEnvelope::PoolMessage(PoolMessage::CheckOut {
+                created_at: rq.created_at,
+                payload: rq.payload,
+            })
+        });
 
-        let mut merged_stream = stream::select(internal_receiver, checkout_stream);
+        let internal_receiver_as_stream = UnboundedReceiverStream::new(internal_receiver);
+        let mut merged_stream = stream::select(internal_receiver_as_stream, checkout_stream);
 
         while let Some(message) = merged_stream.next().await {
             match message {

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use tokio::time::delay_for;
+use tokio::time::sleep;
 
 use crate::{CheckoutError, CheckoutErrorKind, Poolable};
 
@@ -19,7 +19,10 @@ pub(crate) use self::single_pool::SinglePool;
 /// Something that can checkout
 pub(crate) trait CanCheckout<T: Poolable> {
     /// Directly do a checkout
-    fn check_out<'a, M: Into<CheckoutConstraint> + Send + 'static>(&'a self, constraint: M) -> BoxFuture<'a, Result<Managed<T>, CheckoutError>>;
+    fn check_out<'a, M: Into<CheckoutConstraint> + Send + 'static>(
+        &'a self,
+        constraint: M,
+    ) -> BoxFuture<'a, Result<Managed<T>, CheckoutError>>;
 }
 
 /// Retry the checkout if the checkout failed with a
@@ -74,7 +77,7 @@ where
                     return Err(err);
                 }
 
-                delay_for(Duration::from_millis(1)).await;
+                sleep(Duration::from_millis(1)).await;
             }
         }
     }

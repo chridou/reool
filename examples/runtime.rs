@@ -3,7 +3,6 @@ use std::env;
 use future::join_all;
 use futures::prelude::*;
 use log::{debug, error, info};
-use pretty_env_logger;
 
 use reool::error::Error;
 use reool::*;

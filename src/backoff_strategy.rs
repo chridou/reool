@@ -85,7 +85,7 @@ impl BackoffStrategy {
 
             if effective_jitter != 0 {
                 let mut rng = rand::thread_rng();
-                let jitter = rng.gen_range(0, effective_jitter);
+                let jitter = rng.gen_range(0..effective_jitter);
                 Some(backoff + Duration::from_millis(jitter))
             } else {
                 Some(backoff)

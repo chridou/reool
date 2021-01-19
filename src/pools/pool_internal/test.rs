@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use future::BoxFuture;
 use futures::prelude::*;
-use pretty_env_logger;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::time;
@@ -131,7 +130,7 @@ fn the_pool_shuts_down_cleanly_even_if_connections_cannot_be_created() {
 #[test]
 fn checkout_one() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let config = Config::default().desired_pool_size(1);
 
     let counters = StateCounters::new();
@@ -159,7 +158,7 @@ fn checkout_one() {
 #[test]
 fn checkout_twice_with_one_not_reusable() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let config = Config::default().desired_pool_size(1);
 
     let pool =
@@ -188,7 +187,7 @@ fn checkout_twice_with_one_not_reusable() {
 #[test]
 fn checkout_twice_with_delay_factory_with_one_not_reusable() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let config = Config::default().desired_pool_size(1);
 
     let pool = PoolInternal::no_instrumentation(
@@ -218,7 +217,7 @@ fn checkout_twice_with_delay_factory_with_one_not_reusable() {
 #[test]
 fn with_empty_pool_checkout_returns_timeout() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let config = Config::default().desired_pool_size(0);
 
     let pool = PoolInternal::no_instrumentation(config, UnitFactory, runtime.handle().into());
@@ -233,7 +232,7 @@ fn with_empty_pool_checkout_returns_timeout() {
 #[test]
 fn create_connection_fails_some_times() {
     let _ = pretty_env_logger::try_init();
-    let mut runtime = Runtime::new().unwrap();
+    let runtime = Runtime::new().unwrap();
     let config = Config::default().desired_pool_size(1);
 
     let pool = PoolInternal::no_instrumentation(
@@ -442,7 +441,7 @@ impl ConnectionFactory for U32DelayFactory {
         let next = self.counter.fetch_add(1, Ordering::SeqCst);
 
         async move {
-            time::delay_for(self.delay).await;
+            time::sleep(self.delay).await;
             Ok(next)
         }
         .boxed()

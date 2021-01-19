@@ -125,8 +125,7 @@ impl Config {
         self
     }
 
-    /// Sets the maximum length of the queue for waiting checkouts
-    /// when no idle connections are available
+    /// The minimum required nodes to start
     pub fn min_required_nodes(mut self, v: usize) -> Self {
         self.min_required_nodes = v;
         self

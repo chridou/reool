@@ -6,7 +6,7 @@ use futures::prelude::*;
 use future::BoxFuture;
 use log::{trace, warn};
 use tokio::sync::mpsc;
-use tokio::time::delay_for;
+use tokio::time::sleep;
 
 use crate::backoff_strategy::BackoffStrategy;
 use crate::connection_factory::ConnectionFactory;
@@ -76,7 +76,7 @@ impl<T: Poolable> ExtendedConnectionFactory<T> {
                 {
                     break Err("Pool is gone.".to_string());
                 }
-                
+
                 match self.do_a_create_connection_attempt(initiated_at).await {
                     Ok(managed) => {
                         drop(managed); // We send it to the pool by dropping it
@@ -95,7 +95,7 @@ impl<T: Poolable> ExtendedConnectionFactory<T> {
                                 attempt, backoff
                             );
 
-                            delay_for(backoff).await;
+                            sleep(backoff).await;
                         } else {
                             warn!(
                                 "Retry on in to create connection after attempt {} immediately",

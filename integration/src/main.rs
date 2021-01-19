@@ -8,18 +8,18 @@ use reool::{
 
 mod runner;
 
-#[tokio::main(threaded_scheduler)]
+#[tokio::main(flavor = "multi_thread")]
 #[cfg(not(feature = "basic_scheduler"))]
 async fn main() -> Result<(), Error> {
-    println!("Using THREADED scheduler");
+    println!("Using MULTI_THREADED scheduler");
     the_real_main().await?;
     Ok(())
 }
 
-#[tokio::main(basic_scheduler)]
+#[tokio::main(flavor = "current_thread")]
 #[cfg(feature = "basic_scheduler")]
 async fn main() -> Result<(), Error> {
-    println!("Using BASIC scheduler");
+    println!("Using CURRENT THREAD scheduler");
     the_real_main().await?;
     Ok(())
 }
@@ -61,12 +61,10 @@ pub async fn run_test_with_pool(pool_size: usize, num_pools: u32) -> Result<(), 
 }
 
 pub fn get_builder(pool_size: usize, num_pools: u32) -> Builder {
-    let builder = RedisPool::builder()
+    RedisPool::builder()
         .connect_to_node("redis://localhost:6379")
         .desired_pool_size(pool_size)
         .pool_multiplier(num_pools)
         .reservation_limit(50_000)
-        .default_checkout_mode(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_secs(10)));
-
-    builder
+        .default_checkout_mode(DefaultPoolCheckoutMode::WaitAtMost(Duration::from_secs(10)))
 }
