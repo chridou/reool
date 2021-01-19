@@ -1,6 +1,6 @@
 [package]
 name = "reool"
-version = "0.27.0"
+version = "0.28.0"
 authors = ["Christian Douven <chridou@users.noreply.github.com>"]
 readme = "README.md"
 license = "Apache-2.0/MIT"
@@ -14,10 +14,11 @@ edition = "2018"
 [dependencies]
 log = "0.4"
 futures = "0.3"
-trust-dns-resolver = "0.19"
-tokio = { version = "0.2", features = ["rt-core", "time", "sync"] }
-redis = {version = "0.17", features= ["geospatial", "tokio-comp", "script"] }
-rand = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+tokio-stream = "0.1"
+trust-dns-resolver = "0.20"
+redis = {version = "0.19", features= ["geospatial", "tokio-comp", "script"] }
+rand = "0.8"
 metrix = { version = "0.13", optional = true, features = ["log"] }
 
 [features]
@@ -25,7 +26,7 @@ default = []
 
 [dev-dependencies]
 pretty_env_logger = "0.4.0"
-tokio = { version = "0.2", features = ["rt-threaded", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [[example]]
 name = "metrix_single_node"

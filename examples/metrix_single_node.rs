@@ -37,7 +37,7 @@ async fn main() {
         .unwrap();
 
     // create idle time
-    time::delay_for(Duration::from_secs(1)).await;
+    time::sleep(Duration::from_secs(1)).await;
 
     info!("Do 20000 pings concurrently");
     let futs = (0..20_000).map(|i: usize| {
@@ -63,7 +63,7 @@ async fn main() {
 
     println!("{}", metrics_snapshot.to_default_json());
 
-    time::delay_for(Duration::from_millis(1_500)).await;
+    time::sleep(Duration::from_millis(1_500)).await;
 
     let mut conn = pool.check_out_default().await.unwrap();
     conn.ping().await.unwrap();

@@ -91,13 +91,13 @@ async fn main() {
                 }
 
                 if let Some(delay) = delay_dur {
-                    time::delay_for(delay).await;
+                    time::sleep(delay).await;
                 }
             }
         });
     }
 
-    time::delay_for(Duration::from_secs(60)).await;
+    time::sleep(Duration::from_secs(60)).await;
     info!("Finished");
 
     let state = pool.state();
@@ -105,7 +105,7 @@ async fn main() {
     info!("pool dropped");
 
     running.store(false, Ordering::Relaxed);
-    time::delay_for(Duration::from_secs(2)).await;
+    time::sleep(Duration::from_secs(2)).await;
 
     info!("final state:\n{:#?}", state);
     report_stats(&driver);

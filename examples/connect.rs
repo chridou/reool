@@ -21,7 +21,7 @@ async fn main() {
         .finish_redis_rs()
         .unwrap();
 
-    time::delay_for(Duration::from_secs(1)).await;
+    time::sleep(Duration::from_secs(1)).await;
 
     drop(pool);
     info!("DROPPED single node pool POOL");
@@ -36,7 +36,7 @@ async fn main() {
         .finish_redis_rs()
         .unwrap();
 
-    time::delay_for(Duration::from_secs(1)).await;
+    time::sleep(Duration::from_secs(1)).await;
 
     drop(pool);
     info!("DROPPED multi node pool POOL");

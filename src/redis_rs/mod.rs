@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use future::BoxFuture;
 use futures::prelude::*;
-use redis::IntoConnectionInfo;
+use redis::{Client as RedisClient, IntoConnectionInfo};
 use tokio::time::timeout_at;
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -36,7 +36,6 @@ impl ConnectionFactory for RedisRsFactory {
                 .map_err(|()| Error::message(format!("Invalid redis url: {}", self.connects_to)))?;
 
             let resolver = TokioAsyncResolver::tokio_from_system_conf()
-                .await
                 .map_err(|err| Error::new("Failed to resolve", Some(err)))?;
 
             let host = url
@@ -48,17 +47,18 @@ impl ConnectionFactory for RedisRsFactory {
                 .await
                 .map_err(|err| Error::new("Failed to look up address", Some(err)))?;
 
-            let addr = addrs
-                .into_iter()
-                .next()
-                .ok_or_else(|| Error::message("No addresses were returned"))?;
+            let addr = addrs.into_iter().next().ok_or_else(|| {
+                Error::message(format!("No addresses were resolved for {}", host))
+            })?;
 
             url.set_ip_host(addr).ok();
 
             let connection_info = url.into_connection_info().map_err(|err| {
                 Error::new("Failed to turn redis url into connection inf", Some(err))
             })?;
-            let connection = redis::aio::connect_tokio(&connection_info).await?;
+
+            let client = RedisClient::open(connection_info)?;
+            let connection = client.get_async_connection().await?;
             let connection = ConnectionFlavour::RedisRs(connection, self.connects_to.clone());
 
             Ok(connection)

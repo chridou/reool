@@ -443,10 +443,7 @@ pub struct Ping {
 
 impl Ping {
     pub fn is_ok(&self) -> bool {
-        match self.state {
-            PingState::Ok => true,
-            _ => false,
-        }
+        matches!(self.state, PingState::Ok)
     }
 
     pub fn is_failed(&self) -> bool {
