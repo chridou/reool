@@ -1,6 +1,6 @@
 [package]
 name = "reool"
-version = "0.28.0"
+version = "0.29.0"
 authors = ["Christian Douven <chridou@users.noreply.github.com>"]
 readme = "README.md"
 license = "Apache-2.0/MIT"
@@ -17,7 +17,7 @@ futures = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
 tokio-stream = "0.1"
 trust-dns-resolver = "0.20"
-redis = {version = "0.19", features= ["geospatial", "tokio-comp", "script"] }
+redis = {version = "0.20", features= ["geospatial", "tokio-comp", "script"] }
 rand = "0.8"
 metrix = { version = "0.13", optional = true, features = ["log"] }
 

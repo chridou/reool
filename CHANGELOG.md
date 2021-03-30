@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.29.0
+    * bump `redis-rs` to 0.20
+
 ## 0.28.0 (BREAKING CHANGES)
     * update to tokio 1
     * bump `redis-rs` to 0.19

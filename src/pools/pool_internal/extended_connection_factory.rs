@@ -2,8 +2,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::prelude::*;
 use future::BoxFuture;
+use futures::prelude::*;
 use log::{trace, warn};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -104,7 +104,7 @@ impl<T: Poolable> ExtendedConnectionFactory<T> {
                         }
 
                         attempt += 1;
-                    },
+                    }
                 }
             };
 
