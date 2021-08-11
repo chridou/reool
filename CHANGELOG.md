@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.30.0
+    * bump `redis-rs` to 0.21
 ## 0.29.0
     * bump `redis-rs` to 0.20
 
