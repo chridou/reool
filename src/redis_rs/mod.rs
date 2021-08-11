@@ -32,8 +32,9 @@ impl ConnectionFactory for RedisRsFactory {
             // FIXME: Doesn't work with URLs without host (e.g. unix sockets)
             // This should ideally be implemented in the redis crate.
 
-            let mut url = redis::parse_redis_url(&self.connects_to)
-                .map_err(|()| Error::message(format!("Invalid redis url: {}", self.connects_to)))?;
+            let mut url = redis::parse_redis_url(&self.connects_to).ok_or_else(|| {
+                Error::message(format!("Invalid redis url: {}", self.connects_to))
+            })?;
 
             let resolver = TokioAsyncResolver::tokio_from_system_conf()
                 .map_err(|err| Error::new("Failed to resolve", Some(err)))?;
